@@ -20,3 +20,6 @@ domain = { path = "src/crates/domain" }
 api = { path = "src/crates/api" }
 infrastructure = { path = "src/crates/infrastructure" }
 tokio = { version = "1.49.0", features = ["full"] }
+apalis = "0.7.4"
+apalis-redis = "0.7.4"
+mongodb = "3.4.1"

@@ -1,6 +1,8 @@
+use async_trait::async_trait;
+use mongodb::bson::doc;
 use mongodb::{Client, Database, Collection};
 use domain::task::entity::TaskEntity;
-use domain::task::repository::TaskEntityRepository;
+use domain::task::repository::{TaskEntityRepository, RepositoryError};
 
 pub struct TaskRepositoryImpl {
     pub client: Client,
@@ -16,24 +18,29 @@ impl TaskRepositoryImpl {
     }
 }
 
+#[async_trait]
 impl TaskEntityRepository for TaskRepositoryImpl {
-    fn create_task_entity(&self, task_entity: TaskEntity) -> Result<TaskEntity, Error> {
-        self.collection.insert_one(task_entity, None).await?;
+    async fn create_task_entity(&self, task_entity: TaskEntity) -> Result<TaskEntity, RepositoryError> {
+        self.collection.insert_one(&task_entity).await?;
         Ok(task_entity)
     }
 
-    fn get_task_entity(&self, id: String) -> Result<TaskEntity, Error> {
-        self.collection.find_one(doc! {"_id": id}, None).await?;
+    async fn get_task_entity(&self, id: String) -> Result<TaskEntity, RepositoryError> {
+        let task_entity = self.collection
+            .find_one(doc! {"_id": &id})
+            .await?
+            .ok_or_else(|| format!("task entity not found: {}", id))?;
         Ok(task_entity)
     }
 
-    fn update_task_entity(&self, task_entity: TaskEntity) -> Result<TaskEntity, Error> {
-        self.collection.update_one(doc! {"_id": task_entity.id}, doc! {"$set": task_entity}, None).await?;
+    async fn update_task_entity(&self, task_entity: TaskEntity) -> Result<TaskEntity, RepositoryError> {
+        let filter = doc! {"_id": &task_entity.id};
+        self.collection.replace_one(filter, &task_entity).await?;
         Ok(task_entity)
     }
 
-    fn delete_task_entity(&self, id: String) -> Result<(), Error> {
-        self.collection.delete_one(doc! {"_id": id}, None).await?;
+    async fn delete_task_entity(&self, id: String) -> Result<(), RepositoryError> {
+        self.collection.delete_one(doc! {"_id": &id}).await?;
         Ok(())
     }
 }

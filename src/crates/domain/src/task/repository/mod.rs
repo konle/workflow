@@ -11,3 +11,4 @@ pub trait TaskEntityRepository: Send + Sync {
     async fn update_task_entity(&self, task_entity: TaskEntity) -> Result<TaskEntity, RepositoryError>;
     async fn delete_task_entity(&self, id: String) -> Result<(), RepositoryError>;
 }
+

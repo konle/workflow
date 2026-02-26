@@ -46,6 +46,8 @@ pub struct WorkflowInstanceEntity {
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
     pub context: JsonValue,
+    pub entry_node: String, // 入口节点
+    pub current_node: String, // 当前节点
     pub nodes: Vec<WorkflowNodeInstanceEntity>,
 }
 
@@ -76,4 +78,36 @@ pub struct WorkflowNodeInstanceEntity {
     pub error_message: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl WorkflowInstanceEntity {
+    pub fn get_current_node(&self) -> String {
+        if self.current_node.is_empty() {
+            self.entry_node.clone()
+        } else {
+            self.current_node.clone()
+        }
+    }
+    pub fn get_node_by_id(&self, node_id: &str) -> Option<&WorkflowNodeInstanceEntity> {
+        self.nodes.iter().find(|node| node.node_id == node_id)
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.status == WorkflowInstanceStatus::Completed
+    }
+    pub fn is_failed(&self) -> bool {
+        self.status == WorkflowInstanceStatus::Failed
+    }
+    pub fn is_suspended(&self) -> bool {
+        self.status == WorkflowInstanceStatus::Suspended
+    }
+    pub fn is_canceled(&self) -> bool {
+        self.status == WorkflowInstanceStatus::Canceled
+    }
+    pub fn is_running(&self) -> bool {
+        self.status == WorkflowInstanceStatus::Running
+    }
+    pub fn is_pending(&self) -> bool {
+        self.status == WorkflowInstanceStatus::Pending
+    }
 }

@@ -53,6 +53,31 @@ impl WorkflowInstanceStatus {
             _ => None,
         }
     }
+
+    /// State machine transition rules:
+    ///   Pending   -> Running
+    ///   Running   -> Completed | Failed | Suspended
+    ///   Failed    -> Pending (retry) | Canceled
+    ///   Suspended -> Running (resume) | Canceled
+    ///   Completed -> (terminal)
+    ///   Canceled  -> (terminal)
+    pub fn can_transition_to(&self, target: &WorkflowInstanceStatus) -> bool {
+        matches!(
+            (self, target),
+            (WorkflowInstanceStatus::Pending, WorkflowInstanceStatus::Running)
+                | (WorkflowInstanceStatus::Running, WorkflowInstanceStatus::Completed)
+                | (WorkflowInstanceStatus::Running, WorkflowInstanceStatus::Failed)
+                | (WorkflowInstanceStatus::Running, WorkflowInstanceStatus::Suspended)
+                | (WorkflowInstanceStatus::Failed, WorkflowInstanceStatus::Pending)
+                | (WorkflowInstanceStatus::Failed, WorkflowInstanceStatus::Canceled)
+                | (WorkflowInstanceStatus::Suspended, WorkflowInstanceStatus::Running)
+                | (WorkflowInstanceStatus::Suspended, WorkflowInstanceStatus::Canceled)
+        )
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, WorkflowInstanceStatus::Completed | WorkflowInstanceStatus::Canceled)
+    }
 }
 
 // 任务状态枚举 用于表示任务模板的状态 如草稿和已发布状态
@@ -103,7 +128,7 @@ impl TaskInstanceStatus {
     }
 }
 // 任务类型枚举 用于表示任务的类型 如http、grpc、审批等
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TaskType {
     Http,
     Grpc,
