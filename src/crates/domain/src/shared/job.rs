@@ -7,7 +7,7 @@ pub struct ExecuteWorkflowJob {
     pub tenant_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowCallerContext {
     pub workflow_instance_id: String,
     pub node_id: String,

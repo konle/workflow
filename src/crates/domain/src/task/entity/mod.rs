@@ -88,6 +88,8 @@ impl TaskEntity {
     }
 }
 
+use crate::shared::job::WorkflowCallerContext;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskInstanceEntity {
     pub id: String,
@@ -103,4 +105,5 @@ pub struct TaskInstanceEntity {
     pub output: Option<JsonValue>,
     pub error_message: Option<String>,
     pub execution_duration: Option<u64>, // 执行时间 单位：毫秒
+    pub caller_context: Option<WorkflowCallerContext>,
 }

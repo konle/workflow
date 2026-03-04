@@ -5,6 +5,7 @@ use crate::workflow::entity::{
     NodeExecutionStatus, WorkflowInstanceEntity, WorkflowNodeInstanceEntity,
 };
 use crate::workflow::service::WorkflowService;
+use crate::task::service::TaskInstanceService;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;

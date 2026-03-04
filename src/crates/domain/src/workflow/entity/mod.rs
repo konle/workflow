@@ -1,7 +1,7 @@
 use crate::shared::form::Form;
 use crate::shared::workflow::{TaskType, WorkflowInstanceStatus};
 use crate::shared::workflow::WorkflowStatus;
-use crate::task::entity::TaskTemplate;
+use crate::task::entity::{TaskTemplate, TaskInstanceEntity};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -49,6 +49,9 @@ pub struct WorkflowInstanceEntity {
     pub entry_node: String, // 入口节点
     pub current_node: String, // 当前节点
     pub nodes: Vec<WorkflowNodeInstanceEntity>,
+    pub epoch: u64,
+    pub locked_by: Option<String>,
+    pub locked_duration: Option<std::time::Duration>, // u64改成时间
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,7 +73,7 @@ pub struct NodeOutput {
 pub struct WorkflowNodeInstanceEntity {
     pub node_id: String,
     pub node_type: TaskType,
-    pub config: TaskTemplate,
+    pub task_instance: TaskInstanceEntity,
     pub context: JsonValue,
     pub next_node: Option<String>,
     pub status: NodeExecutionStatus,

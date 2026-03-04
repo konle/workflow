@@ -30,6 +30,7 @@ impl WorkflowStatus {
 pub enum WorkflowInstanceStatus {
     Pending,
     Running,
+    Await,
     Completed,
     Failed,
     Canceled,
@@ -50,17 +51,19 @@ impl WorkflowInstanceStatus {
             "failed" => Some(WorkflowInstanceStatus::Failed),
             "canceled" => Some(WorkflowInstanceStatus::Canceled),
             "suspended" => Some(WorkflowInstanceStatus::Suspended),
+            "await" => Some(WorkflowInstanceStatus::Await),
             _ => None,
         }
     }
 
     /// State machine transition rules:
     ///   Pending   -> Running
-    ///   Running   -> Completed | Failed | Suspended
+    ///   Running   -> Completed | Failed | Suspended | Await
     ///   Failed    -> Pending (retry) | Canceled
     ///   Suspended -> Running (resume) | Canceled
     ///   Completed -> (terminal)
     ///   Canceled  -> (terminal)
+    ///   Await     -> Pending
     pub fn can_transition_to(&self, target: &WorkflowInstanceStatus) -> bool {
         matches!(
             (self, target),
@@ -68,10 +71,13 @@ impl WorkflowInstanceStatus {
                 | (WorkflowInstanceStatus::Running, WorkflowInstanceStatus::Completed)
                 | (WorkflowInstanceStatus::Running, WorkflowInstanceStatus::Failed)
                 | (WorkflowInstanceStatus::Running, WorkflowInstanceStatus::Suspended)
+                | (WorkflowInstanceStatus::Running, WorkflowInstanceStatus::Await)
                 | (WorkflowInstanceStatus::Failed, WorkflowInstanceStatus::Pending)
                 | (WorkflowInstanceStatus::Failed, WorkflowInstanceStatus::Canceled)
                 | (WorkflowInstanceStatus::Suspended, WorkflowInstanceStatus::Running)
                 | (WorkflowInstanceStatus::Suspended, WorkflowInstanceStatus::Canceled)
+                | (WorkflowInstanceStatus::Await, WorkflowInstanceStatus::Pending)
+                | (WorkflowInstanceStatus::Await, WorkflowInstanceStatus::Running)
         )
     }
 

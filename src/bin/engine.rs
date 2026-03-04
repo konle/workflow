@@ -4,11 +4,11 @@ use apalis_redis::RedisStorage;
 use domain::plugin::manager::PluginManager;
 use domain::plugin::plugins::http::HttpPlugin;
 use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob, TaskDispatcher};
+use domain::task::service::TaskInstanceService;
 use domain::workflow::service::WorkflowService;
 use domain::workflow::entity::NodeExecutionStatus;
 use infrastructure::queue::consumer;
 use async_trait::async_trait;
-
 struct ApalisDispatcher {
     task_storage: RedisStorage<ExecuteTaskJob>,
     workflow_storage: RedisStorage<ExecuteWorkflowJob>,
@@ -46,15 +46,43 @@ async fn handle_workflow_job(job: ExecuteWorkflowJob, manager: Data<Arc<PluginMa
     Ok(())
 }
 
-async fn handle_task_job(job: ExecuteTaskJob, manager: Data<Arc<PluginManager>>) -> Result<(), std::io::Error> {
+use domain::task::manager::TaskManager;
+use domain::task::executors::http::HttpTaskExecutor;
+
+async fn handle_task_job(
+    job: ExecuteTaskJob, 
+    ctx: Data<(Arc<PluginManager>, Arc<TaskManager>)>
+) -> Result<(), std::io::Error> {
+    let manager = &ctx.0;
+    let task_manager = &ctx.1;
     println!("Executing task: {}", job.task_instance_id);
 
     // 1. 获取任务的 Config
-    // TODO: 从 MongoDB 加载 TaskInstanceEntity
-    // 这里我们先模拟，如果这是一个来自于工作流的任务，我们需要利用 HttpPlugin 真实的执行逻辑
-    // 为了完整示例，我们在后续版本中应该从 DB 获取 task template。
+    let mut task_instance_entity = task_manager
+        .task_instance_svc()
+        .get_task_instance_entity(job.task_instance_id)
+        .await
+        .map_err(|e| std::io::Error::other(e))?;
+
+    // 2. 分发并执行任务
+    let exec_result = task_manager
+        .execute_task(&task_instance_entity)
+        .await
+        .map_err(|e| std::io::Error::other(e))?;
+
+    // 3. 更新 TaskInstance 本身状态
+    task_instance_entity.task_status = match exec_result.status {
+        domain::workflow::entity::NodeExecutionStatus::Success => domain::shared::workflow::TaskInstanceStatus::Completed,
+        domain::workflow::entity::NodeExecutionStatus::Failed => domain::shared::workflow::TaskInstanceStatus::Failed,
+        _ => domain::shared::workflow::TaskInstanceStatus::Pending,
+    };
+    task_instance_entity.output = exec_result.output.clone().map(|o| o.data);
+    task_instance_entity.error_message = exec_result.error_message.clone();
     
-    // 我们假设它是被工作流触发的
+    // 保存 task_instance_entity 
+    task_manager.task_instance_svc().update_task_instance_entity(task_instance_entity).await.map_err(|e| std::io::Error::other(e))?;
+
+    // 4. 回调处理
     if let Some(ctx) = job.caller_context {
         let mut instance = manager
             .workflow_svc()
@@ -63,42 +91,26 @@ async fn handle_task_job(job: ExecuteTaskJob, manager: Data<Arc<PluginManager>>)
             .map_err(|e| std::io::Error::other(e))?;
 
         if let Some(node_index) = instance.nodes.iter().position(|n| n.node_id == ctx.node_id) {
-            let node_config = instance.nodes[node_index].config.clone();
+            // 将 task 的执行结果同步到 workflow node
+            instance.nodes[node_index].status = exec_result.status;
+            instance.nodes[node_index].output = exec_result.output;
+            instance.nodes[node_index].error_message = exec_result.error_message;
 
-            // 如果是 HTTP 任务
-            if let domain::task::entity::TaskTemplate::Http(http_config) = node_config {
-                let http_plugin = HttpPlugin::new();
-                
-                // 执行真正的请求
-                match http_plugin.do_request(&http_config).await {
-                    Ok((status, output, err_msg)) => {
-                        instance.nodes[node_index].status = status;
-                        instance.nodes[node_index].output = output;
-                        instance.nodes[node_index].error_message = err_msg;
-                    }
-                    Err(e) => {
-                        instance.nodes[node_index].status = NodeExecutionStatus::Failed;
-                        instance.nodes[node_index].error_message = Some(e.to_string());
-                    }
-                }
+            manager
+                .workflow_svc()
+                .save_workflow_instance(&instance)
+                .await
+                .map_err(|e| std::io::Error::other(e))?;
 
-                // 保存更新后的工作流实例状态
-                manager
-                    .workflow_svc()
-                    .save_workflow_instance(&instance)
-                    .await
-                    .map_err(|e| std::io::Error::other(e))?;
-
-                // 唤醒工作流，让它继续推进
-                manager
-                    .dispatcher()
-                    .dispatch_workflow(ExecuteWorkflowJob {
-                        workflow_instance_id: ctx.workflow_instance_id,
-                        tenant_id: job.tenant_id,
-                    })
-                    .await
-                    .map_err(|e| std::io::Error::other(e))?;
-            }
+            // 唤醒工作流，让它继续推进
+            manager
+                .dispatcher()
+                .dispatch_workflow(ExecuteWorkflowJob {
+                    workflow_instance_id: ctx.workflow_instance_id,
+                    tenant_id: job.tenant_id,
+                })
+                .await
+                .map_err(|e| std::io::Error::other(e))?;
         }
     }
 
@@ -115,7 +127,13 @@ fn create_plugin_manager(
         workflow_storage,
     });
     let mut manager = PluginManager::new(workflow_svc, dispatcher);
-    manager.register(Box::new(HttpPlugin::new()));
+    manager.register(Box::new(domain::plugin::plugins::http::HttpPlugin::new()));
+    Arc::new(manager)
+}
+
+fn create_task_manager(task_instance_svc: Arc<TaskInstanceService>) -> Arc<TaskManager> {
+    let mut manager = TaskManager::new(task_instance_svc);
+    manager.register(Box::new(HttpTaskExecutor::new()));
     Arc::new(manager)
 }
 
@@ -128,9 +146,13 @@ async fn main() {
 
     let mongo_client = mongodb::Client::with_uri_str(&mongo_url).await.expect("failed to connect to MongoDB");
     let workflow_repo = Arc::new(
-        infrastructure::mongodb::workflow::workflow_repository_impl::WorkflowRepositoryImpl::new(mongo_client)
+        infrastructure::mongodb::workflow::workflow_repository_impl::WorkflowRepositoryImpl::new(mongo_client.clone())
     );
     let workflow_svc = Arc::new(WorkflowService::new(workflow_repo));
+    
+    let task_repo = Arc::new(infrastructure::mongodb::task::task_repository_impl::TaskInstanceRepositoryImpl::new(mongo_client.clone()));
+    let task_svc = Arc::new(TaskInstanceService::new(task_repo));
+    let task_manager = create_task_manager(task_svc);
     
     let wf_storage = consumer::create_workflow_storage(&redis_url).await;
     let task_storage = consumer::create_task_storage(&redis_url).await;
@@ -143,7 +165,7 @@ async fn main() {
         .build_fn(handle_workflow_job);
 
     let task_worker = WorkerBuilder::new("task-worker")
-        .data(plugin_manager.clone())
+        .data((plugin_manager.clone(), task_manager))
         .backend(task_storage)
         .build_fn(handle_task_job);
 
