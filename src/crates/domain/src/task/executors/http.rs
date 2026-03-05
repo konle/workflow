@@ -31,6 +31,13 @@ impl TaskExecutor for HttpTaskExecutor {
             _ => return Err(anyhow::anyhow!("Expected Http config but got other")),
         };
 
+        let input_data = json!({
+            "url": config.url,
+            "method": config.method,
+            "headers": config.headers,
+            "body": config.body,
+        });
+
         let mut last_error: Option<String> = None;
         let attempts = config.retry_count + 1;
 
@@ -74,6 +81,7 @@ impl TaskExecutor for HttpTaskExecutor {
                     if (200..300).contains(&status_code) {
                         return Ok(TaskExecutionResult {
                             status: NodeExecutionStatus::Success,
+                            input: Some(input_data),
                             output,
                             error_message: None,
                         });
@@ -98,6 +106,7 @@ impl TaskExecutor for HttpTaskExecutor {
         
         Ok(TaskExecutionResult {
             status: NodeExecutionStatus::Failed,
+            input: Some(input_data),
             output: None,
             error_message: Some(error_msg),
         })

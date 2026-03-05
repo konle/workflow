@@ -30,6 +30,8 @@ impl PluginInterface for HttpPlugin {
             caller_context: Some(WorkflowCallerContext {
                 workflow_instance_id: workflow_instance.workflow_instance_id.clone(),
                 node_id: node_instance.node_id.clone(),
+                parent_task_instance_id: None,
+                item_index: None,
             }),
         };
 

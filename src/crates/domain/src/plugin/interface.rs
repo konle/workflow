@@ -6,28 +6,33 @@ use crate::workflow::entity::{WorkflowNodeInstanceEntity, WorkflowInstanceEntity
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {
     pub status: NodeExecutionStatus,
-    pub dispatch_job: Option<ExecuteTaskJob>,
+    pub dispatch_jobs: Vec<ExecuteTaskJob>,
+    pub jump_to_node: Option<String>, // 插件决定走向，比如if条件为真，则跳转到then_task，否则跳转到else_task
 }
 
 impl ExecutionResult {
-    pub fn success() -> Self {
-        Self { status: NodeExecutionStatus::Success, dispatch_job: None }
+    pub fn success(jump_to_node: Option<String>) -> Self {
+        Self { status: NodeExecutionStatus::Success, dispatch_jobs: vec![], jump_to_node: jump_to_node }
     }
 
     pub fn failed() -> Self {
-        Self { status: NodeExecutionStatus::Failed, dispatch_job: None }
+        Self { status: NodeExecutionStatus::Failed, dispatch_jobs: vec![], jump_to_node: None }
     }
 
     pub fn suspended() -> Self {
-        Self { status: NodeExecutionStatus::Suspended, dispatch_job: None }
+        Self { status: NodeExecutionStatus::Suspended, dispatch_jobs: vec![], jump_to_node: None }
     }
 
     pub fn pending() -> Self {
-        Self { status: NodeExecutionStatus::Pending, dispatch_job: None }
+        Self { status: NodeExecutionStatus::Pending, dispatch_jobs: vec![], jump_to_node: None }
     }
 
     pub fn async_dispatch(job: ExecuteTaskJob) -> Self {
-        Self { status: NodeExecutionStatus::Suspended, dispatch_job: Some(job) }
+        Self { status: NodeExecutionStatus::Suspended, dispatch_jobs: vec![job], jump_to_node: None }
+    }
+
+    pub fn async_dispatch_multiple(jobs: Vec<ExecuteTaskJob>) -> Self {
+        Self { status: NodeExecutionStatus::Suspended, dispatch_jobs: jobs, jump_to_node: None }
     }
 }
 

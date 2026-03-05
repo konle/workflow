@@ -5,6 +5,7 @@ use crate::workflow::entity::{NodeExecutionStatus, NodeOutput};
 
 pub struct TaskExecutionResult {
     pub status: NodeExecutionStatus,
+    pub input: Option<serde_json::Value>,
     pub output: Option<NodeOutput>,
     pub error_message: Option<String>,
 }

@@ -5,7 +5,6 @@ use crate::workflow::entity::{
     NodeExecutionStatus, WorkflowInstanceEntity, WorkflowNodeInstanceEntity,
 };
 use crate::workflow::service::WorkflowService;
-use crate::task::service::TaskInstanceService;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -75,6 +74,8 @@ impl PluginManager {
 
             match node_status {
                 NodeExecutionStatus::Success => {
+
+
                     if let Some(next) = instance.nodes[node_index].next_node.clone() {
                         instance.current_node = next;
                         self.workflow_svc
@@ -136,7 +137,14 @@ impl PluginManager {
         instance.nodes[node_index].status = exec_result.status.clone();
         let action = match exec_result.status {
             NodeExecutionStatus::Success => {
-                if let Some(next) = instance.nodes[node_index].next_node.clone() {
+                // 如果插件动态指定了下一跳（If 节点算出来的），优先走跳转
+                if let Some(jump_to_node) = exec_result.jump_to_node {
+                    instance.current_node = jump_to_node;
+                    LoopAction::Advance
+                }
+
+
+                else if let Some(next) = instance.nodes[node_index].next_node.clone() {
                     instance.current_node = next;
                     LoopAction::Advance
                 } else {
@@ -172,7 +180,7 @@ impl PluginManager {
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        if let Some(job) = exec_result.dispatch_job {
+        for job in exec_result.dispatch_jobs {
             self.dispatcher.dispatch_task(job).await?;
         }
 

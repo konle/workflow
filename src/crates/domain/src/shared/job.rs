@@ -11,6 +11,8 @@ pub struct ExecuteWorkflowJob {
 pub struct WorkflowCallerContext {
     pub workflow_instance_id: String,
     pub node_id: String,
+    pub parent_task_instance_id: Option<String>,
+    pub item_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -77,7 +77,6 @@ impl WorkflowInstanceStatus {
                 | (WorkflowInstanceStatus::Suspended, WorkflowInstanceStatus::Running)
                 | (WorkflowInstanceStatus::Suspended, WorkflowInstanceStatus::Canceled)
                 | (WorkflowInstanceStatus::Await, WorkflowInstanceStatus::Pending)
-                | (WorkflowInstanceStatus::Await, WorkflowInstanceStatus::Running)
         )
     }
 
@@ -137,6 +136,8 @@ impl TaskInstanceStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TaskType {
     Http,
+    IfCondition,
+    Parallel,
     Grpc,
     Approval,
 }

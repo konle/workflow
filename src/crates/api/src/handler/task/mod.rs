@@ -3,8 +3,8 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
-use domain::task::entity::TaskEntity;
-use domain::task::service::TaskService;
+use domain::task::entity::{TaskEntity, TaskInstanceEntity};
+use domain::task::service::{TaskService, TaskInstanceService};
 use crate::error::ApiError;
 use crate::response::response::Response;
 use std::sync::Arc;
@@ -36,6 +36,30 @@ impl TaskHandler {
     }
 }
 
+#[derive(Clone)]
+pub struct TaskInstanceHandler {
+    pub task_instance_service: TaskInstanceService,
+}
+
+impl TaskInstanceHandler {
+    pub fn new(task_instance_service: TaskInstanceService) -> Self {
+        Self { task_instance_service }
+    }
+
+    pub async fn create_task_instance_entity(&self, task_instance_entity: TaskInstanceEntity) -> Result<TaskInstanceEntity, Box<dyn std::error::Error + Send + Sync>> {
+        self.task_instance_service.create_task_instance_entity(task_instance_entity).await
+    }
+
+    pub async fn get_task_instance_entity(&self, id: String) -> Result<TaskInstanceEntity, Box<dyn std::error::Error + Send + Sync>> {
+        self.task_instance_service.get_task_instance_entity(id).await
+    }
+
+    pub async fn update_task_instance_entity(&self, task_instance_entity: TaskInstanceEntity) -> Result<TaskInstanceEntity, Box<dyn std::error::Error + Send + Sync>> {
+        self.task_instance_service.update_task_instance_entity(task_instance_entity).await
+    }
+
+}
+
 // 注册路由到 group (等同于 Gin 的 group.POST、group.GET...)
 // 返回一个 Router，调用方使用 nest("/task", routes(...)) 挂载
 pub fn routes(handler: Arc<TaskHandler>) -> Router {
@@ -44,6 +68,14 @@ pub fn routes(handler: Arc<TaskHandler>) -> Router {
         .route("/:id", get(get_task))
         .route("/:id", put(update_task))
         .route("/:id", delete(delete_task))
+        .with_state(handler)
+}
+
+pub fn task_instance_routes(handler: Arc<TaskInstanceHandler>) -> Router {
+    Router::new()
+        .route("/", post(create_task_instance))
+        .route("/:id", get(get_task_instance))
+        .route("/:id", put(update_task_instance))
         .with_state(handler)
 }
 
@@ -82,3 +114,30 @@ async fn delete_task(
     handler.delete_task_entity(id).await?;
     Ok(Json(Response::success(())))
 }
+
+async fn create_task_instance(
+    State(handler): State<Arc<TaskInstanceHandler>>,
+    Json(task_instance_entity): Json<TaskInstanceEntity>,
+) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
+    let result = handler.create_task_instance_entity(task_instance_entity).await?;
+    Ok(Json(Response::success(result)))
+}
+
+async fn get_task_instance(
+    State(handler): State<Arc<TaskInstanceHandler>>,
+    Path(id): Path<String>,
+) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
+    let result = handler.get_task_instance_entity(id).await?;
+    Ok(Json(Response::success(result)))
+}
+
+async fn update_task_instance(
+    State(handler): State<Arc<TaskInstanceHandler>>,
+    Path(id): Path<String>,
+    Json(mut task_instance_entity): Json<TaskInstanceEntity>,
+) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
+    task_instance_entity.id = id;
+    let result = handler.update_task_instance_entity(task_instance_entity).await?;
+    Ok(Json(Response::success(result)))
+}
+
