@@ -71,17 +71,118 @@ impl WorkflowEntityRepository for WorkflowRepositoryImpl {
         Ok(result)
     }
 
+    async fn acquire_lock(
+        &self,
+        workflow_instance_id: &str,
+        worker_id: &str,
+        duration_ms: u64,
+    ) -> Result<WorkflowInstanceEntity, RepositoryError> {
+        let now = chrono::Utc::now();
+        let expiration = now - chrono::Duration::milliseconds(duration_ms as i64); 
+        
+        let filter = doc! {
+            "workflow_instance_id": workflow_instance_id,
+            "$or": [
+                { "locked_by": mongodb::bson::Bson::Null },
+                { "locked_at": { "$lt": expiration.to_rfc3339() } }
+            ]
+        };
+
+        let update_doc = doc! {
+            "$set": {
+                "locked_by": worker_id,
+                "locked_duration": duration_ms as i64,
+                "locked_at": now.to_rfc3339(),
+                "updated_at": now.to_rfc3339(),
+            },
+            "$inc": { "epoch": 1 }
+        };
+
+        let result = self.workflow_instance_collection
+            .find_one_and_update(filter, update_doc)
+            .return_document(mongodb::options::ReturnDocument::After)
+            .await?
+            .ok_or_else(|| format!("failed to acquire lock for instance {}", workflow_instance_id))?;
+
+        Ok(result)
+    }
+
+    async fn release_lock(
+        &self,
+        workflow_instance_id: &str,
+        worker_id: &str,
+    ) -> Result<(), RepositoryError> {
+        let filter = doc! {
+            "workflow_instance_id": workflow_instance_id,
+            "locked_by": worker_id,
+        };
+
+        let update_doc = doc! {
+            "$set": {
+                "locked_by": mongodb::bson::Bson::Null,
+                "locked_duration": mongodb::bson::Bson::Null,
+                "locked_at": mongodb::bson::Bson::Null,
+                "updated_at": chrono::Utc::now().to_rfc3339(),
+            },
+            "$inc": { "epoch": 1 }
+        };
+
+        let result = self.workflow_instance_collection
+            .update_one(filter, update_doc)
+            .await?;
+
+        if result.matched_count == 0 {
+            return Err(format!("failed to release lock for instance {} (not held by {})", workflow_instance_id, worker_id).into());
+        }
+
+        Ok(())
+    }
+
     async fn save_workflow_instance(
         &self,
         instance: &WorkflowInstanceEntity,
     ) -> Result<(), RepositoryError> {
+        let current_epoch = instance.epoch as i64;
         let filter = doc! {
             "workflow_instance_id": &instance.workflow_instance_id,
+            "epoch": current_epoch, // CAS check
         };
-        self.workflow_instance_collection
-            .replace_one(filter, instance)
-            .upsert(true)
+        
+        let mut update_instance = instance.clone();
+        update_instance.epoch += 1;
+        update_instance.updated_at = chrono::Utc::now();
+
+        let update_doc = mongodb::bson::to_document(&update_instance)
+            .map_err(|e| format!("Failed to serialize instance: {}", e))?;
+
+        let update = doc! {
+            "$set": update_doc
+        };
+
+        let result = self.workflow_instance_collection
+            .update_one(filter.clone(), update)
             .await?;
+
+        if result.matched_count == 0 {
+            // Check if it exists at all (might be an insert or a CAS failure)
+            let exists = self.workflow_instance_collection
+                .count_documents(doc! { "workflow_instance_id": &instance.workflow_instance_id })
+                .await?;
+                
+            if exists == 0 {
+                // If it doesn't exist, it's an initial insert, which is valid for save()
+                self.workflow_instance_collection
+                    .insert_one(update_instance)
+                    .await?;
+                return Ok(());
+            }
+
+            return Err(format!(
+                "Optimistic lock failed for workflow {}: expected epoch {}",
+                instance.workflow_instance_id, current_epoch
+            ).into());
+        }
+
         Ok(())
     }
 }

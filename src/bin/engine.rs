@@ -28,16 +28,11 @@ impl TaskDispatcher for ApalisDispatcher {
 }
 
 async fn handle_workflow_job(job: ExecuteWorkflowJob, manager: Data<Arc<PluginManager>>) -> Result<(), std::io::Error> {
-    println!("Executing workflow: {}", job.workflow_instance_id);
-
-    let mut workflow_instance = manager
-        .workflow_svc()
-        .get_workflow_instance(job.workflow_instance_id)
-        .await
-        .map_err(|e| std::io::Error::other(e))?;
-
+    println!("Executing workflow job: {} event: {:?}", job.workflow_instance_id, job.event);
+    
+    let worker_id = "workflow-worker-1"; // In a real cluster, this should be a unique ID like uuid
     manager
-        .execute_workflow(&mut workflow_instance)
+        .process_workflow_job(job, worker_id)
         .await
         .map_err(|e| std::io::Error::other(e))?;
 
@@ -58,7 +53,7 @@ async fn handle_task_job(
     // 1. 获取任务的 Config
     let mut task_instance_entity = task_manager
         .task_instance_svc()
-        .get_task_instance_entity(job.task_instance_id)
+        .get_task_instance_entity(job.task_instance_id.clone())
         .await
         .map_err(|e| std::io::Error::other(e))?;
 
@@ -83,123 +78,22 @@ async fn handle_task_job(
 
     // 4. 回调处理
     if let Some(ctx) = job.caller_context {
-        let mut instance = manager
-            .workflow_svc()
-            .get_workflow_instance(ctx.workflow_instance_id.clone())
+        manager
+            .dispatcher()
+            .dispatch_workflow(ExecuteWorkflowJob {
+                workflow_instance_id: ctx.workflow_instance_id,
+                tenant_id: job.tenant_id,
+                event: domain::shared::job::WorkflowEvent::NodeCallback {
+                    node_id: ctx.node_id,
+                    child_task_id: job.task_instance_id,
+                    status: exec_result.status,
+                    output: exec_result.output.map(|o| o.data),
+                    error_message: exec_result.error_message,
+                    input: exec_result.input,
+                },
+            })
             .await
             .map_err(|e| std::io::Error::other(e))?;
-
-        if let Some(node_index) = instance.nodes.iter().position(|n| n.node_id == ctx.node_id) {
-            if let Some(parent_id) = ctx.parent_task_instance_id {
-                // 这是 Parallel 节点的子任务回调，走 Gather 逻辑
-                let mut state = instance.nodes[node_index].task_instance.output.clone().unwrap_or(serde_json::json!({}));
-                let mut success_count = state["success_count"].as_u64().unwrap_or(0);
-                let mut failed_count = state["failed_count"].as_u64().unwrap_or(0);
-                let total_items = state["total_items"].as_u64().unwrap_or(0);
-                let mut dispatched_count = state["dispatched_count"].as_u64().unwrap_or(0);
-
-                if exec_result.status == domain::workflow::entity::NodeExecutionStatus::Success {
-                    success_count += 1;
-                } else if exec_result.status == domain::workflow::entity::NodeExecutionStatus::Failed {
-                    failed_count += 1;
-                }
-
-                // 获取 Parallel 的配置
-                let (concurrency, mode, max_failures) = match &instance.nodes[node_index].task_instance.task_template {
-                    domain::task::entity::TaskTemplate::Parallel(p) => (p.concurrency as u64, p.mode.clone(), p.max_failures),
-                    _ => (10, domain::task::entity::ParallelMode::Rolling, None),
-                };
-
-                let has_failed_threshold = match max_failures {
-                    Some(max) => failed_count > max as u64,
-                    None => false,
-                };
-
-                if has_failed_threshold {
-                    instance.nodes[node_index].status = domain::workflow::entity::NodeExecutionStatus::Failed;
-                    instance.nodes[node_index].error_message = Some(format!("Parallel max_failures threshold exceeded ({} failed)", failed_count));
-                } else if success_count + failed_count == total_items {
-                    instance.nodes[node_index].status = domain::workflow::entity::NodeExecutionStatus::Success;
-                } else {
-                    // 没执行完，派发新任务
-                    let mut jobs_to_dispatch = Vec::new();
-                    
-                    if mode == domain::task::entity::ParallelMode::Rolling {
-                        if dispatched_count < total_items {
-                            jobs_to_dispatch.push(dispatched_count);
-                            dispatched_count += 1;
-                        }
-                    } else if mode == domain::task::entity::ParallelMode::Batch {
-                        if success_count + failed_count == dispatched_count {
-                            let end = std::cmp::min(dispatched_count + concurrency, total_items);
-                            for i in dispatched_count..end {
-                                jobs_to_dispatch.push(i);
-                            }
-                            dispatched_count = end;
-                        }
-                    }
-
-                    // 批量投递新任务
-                    for idx in jobs_to_dispatch {
-                        let child_ctx = domain::shared::job::WorkflowCallerContext {
-                            workflow_instance_id: ctx.workflow_instance_id.clone(),
-                            node_id: ctx.node_id.clone(),
-                            parent_task_instance_id: Some(parent_id.clone()),
-                            item_index: Some(idx as usize),
-                        };
-                        let child_job = ExecuteTaskJob {
-                            task_instance_id: format!("{}-{}-{}", ctx.workflow_instance_id, ctx.node_id, idx),
-                            tenant_id: job.tenant_id.clone(),
-                            caller_context: Some(child_ctx),
-                        };
-                        manager.dispatcher().dispatch_task(child_job).await.map_err(|e| std::io::Error::other(e))?;
-                    }
-                }
-
-                // 保存状态
-                state["success_count"] = serde_json::json!(success_count);
-                state["failed_count"] = serde_json::json!(failed_count);
-                state["dispatched_count"] = serde_json::json!(dispatched_count);
-                instance.nodes[node_index].task_instance.output = Some(state);
-
-                manager.workflow_svc().save_workflow_instance(&instance).await.map_err(|e| std::io::Error::other(e))?;
-
-                // 如果 Parallel 节点已完成或失败，唤醒工作流推进到下一节点
-                if instance.nodes[node_index].status == domain::workflow::entity::NodeExecutionStatus::Success 
-                || instance.nodes[node_index].status == domain::workflow::entity::NodeExecutionStatus::Failed {
-                    manager.dispatcher().dispatch_workflow(ExecuteWorkflowJob {
-                        workflow_instance_id: ctx.workflow_instance_id,
-                        tenant_id: job.tenant_id,
-                    }).await.map_err(|e| std::io::Error::other(e))?;
-                }
-
-            } else {
-                // 普通节点（非子任务）的回调
-                instance.nodes[node_index].status = exec_result.status;
-                instance.nodes[node_index].output = exec_result.output.clone();
-                instance.nodes[node_index].error_message = exec_result.error_message.clone();
-                instance.nodes[node_index].task_instance.input = exec_result.input.clone();
-                instance.nodes[node_index].task_instance.output = exec_result.output.clone().map(|o| o.data);
-                instance.nodes[node_index].task_instance.error_message = exec_result.error_message.clone();
-                instance.nodes[node_index].task_instance.task_status = task_instance_entity.task_status.clone();
-
-                manager
-                    .workflow_svc()
-                    .save_workflow_instance(&instance)
-                    .await
-                    .map_err(|e| std::io::Error::other(e))?;
-
-                // 唤醒工作流，让它继续推进
-                manager
-                    .dispatcher()
-                    .dispatch_workflow(ExecuteWorkflowJob {
-                        workflow_instance_id: ctx.workflow_instance_id,
-                        tenant_id: job.tenant_id,
-                    })
-                    .await
-                    .map_err(|e| std::io::Error::other(e))?;
-            }
-        }
     }
 
     Ok(())

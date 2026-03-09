@@ -21,7 +21,18 @@ impl WorkflowService {
         self.workflow_entity_repository.get_workflow_instance(id).await
     }
 
+    pub async fn acquire_lock(&self, workflow_instance_id: &str, worker_id: &str, duration_ms: u64) -> Result<WorkflowInstanceEntity, RepositoryError> {
+        self.workflow_entity_repository.acquire_lock(workflow_instance_id, worker_id, duration_ms).await
+    }
+
+    pub async fn release_lock(&self, workflow_instance_id: &str, worker_id: &str) -> Result<(), RepositoryError> {
+        self.workflow_entity_repository.release_lock(workflow_instance_id, worker_id).await
+    }
+
     pub async fn save_workflow_instance(&self, instance: &WorkflowInstanceEntity) -> Result<(), RepositoryError> {
+        // CAS is handled inside the repository by checking the epoch.
+        // We do not increment the epoch here, the repository should do that during the update
+        // to ensure it accurately reflects the DB state.
         self.workflow_entity_repository.save_workflow_instance(instance).await
     }
 

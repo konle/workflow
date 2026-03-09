@@ -20,6 +20,19 @@ pub trait WorkflowEntityRepository: Send + Sync {
         to_status: &WorkflowInstanceStatus,
     ) -> Result<WorkflowInstanceEntity, RepositoryError>;
 
+    async fn acquire_lock(
+        &self,
+        workflow_instance_id: &str,
+        worker_id: &str,
+        duration_ms: u64,
+    ) -> Result<WorkflowInstanceEntity, RepositoryError>;
+
+    async fn release_lock(
+        &self,
+        workflow_instance_id: &str,
+        worker_id: &str,
+    ) -> Result<(), RepositoryError>;
+
     async fn save_workflow_instance(
         &self,
         instance: &WorkflowInstanceEntity,

@@ -2,9 +2,30 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WorkflowEvent {
+    Start,
+    NodeCallback {
+        node_id: String,
+        child_task_id: String,
+        status: crate::workflow::entity::NodeExecutionStatus,
+        output: Option<serde_json::Value>,
+        error_message: Option<String>,
+        input: Option<serde_json::Value>,
+    },
+}
+
+impl Default for WorkflowEvent {
+    fn default() -> Self {
+        WorkflowEvent::Start
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteWorkflowJob {
     pub workflow_instance_id: String,
     pub tenant_id: String,
+    #[serde(default)]
+    pub event: WorkflowEvent,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

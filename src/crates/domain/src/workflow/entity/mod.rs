@@ -51,7 +51,8 @@ pub struct WorkflowInstanceEntity {
     pub nodes: Vec<WorkflowNodeInstanceEntity>,
     pub epoch: u64,
     pub locked_by: Option<String>,
-    pub locked_duration: Option<std::time::Duration>, // u64改成时间
+    pub locked_duration: Option<u64>, // milliseconds
+    pub locked_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

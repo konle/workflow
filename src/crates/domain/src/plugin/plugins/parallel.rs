@@ -4,7 +4,9 @@ use serde_json::Value as JsonValue;
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::workflow::TaskType;
 use crate::shared::job::{ExecuteTaskJob, WorkflowCallerContext};
-use crate::workflow::entity::{WorkflowInstanceEntity, WorkflowNodeInstanceEntity};
+use crate::workflow::entity::{
+    NodeExecutionStatus, WorkflowInstanceEntity, WorkflowNodeInstanceEntity,
+};
 use crate::task::entity::TaskTemplate;
 
 pub struct ParallelPlugin {}
@@ -81,6 +83,94 @@ impl PluginInterface for ParallelPlugin {
         }
 
         Ok(ExecutionResult::async_dispatch_multiple(jobs))
+    }
+
+    async fn handle_callback(
+        &self,
+        _executor: &dyn PluginExecutor,
+        node_instance: &mut WorkflowNodeInstanceEntity,
+        workflow_instance: &mut WorkflowInstanceEntity,
+        _child_task_id: &str,
+        status: &NodeExecutionStatus,
+        _output: &Option<serde_json::Value>,
+        _error_message: &Option<String>,
+        _input: &Option<serde_json::Value>,
+    ) -> anyhow::Result<ExecutionResult> {
+        let template = match &node_instance.task_instance.task_template {
+            TaskTemplate::Parallel(t) => t,
+            _ => return Err(anyhow::anyhow!("Invalid task template for ParallelPlugin")),
+        };
+
+        let mut state = node_instance.task_instance.output.clone().unwrap_or(serde_json::json!({}));
+        let mut success_count = state["success_count"].as_u64().unwrap_or(0);
+        let mut failed_count = state["failed_count"].as_u64().unwrap_or(0);
+        let total_items = state["total_items"].as_u64().unwrap_or(0);
+        let mut dispatched_count = state["dispatched_count"].as_u64().unwrap_or(0);
+
+        if *status == NodeExecutionStatus::Success {
+            success_count += 1;
+        } else if *status == NodeExecutionStatus::Failed {
+            failed_count += 1;
+        }
+
+        let concurrency = template.concurrency as u64;
+        let mode = template.mode.clone();
+        let max_failures = template.max_failures;
+
+        let has_failed_threshold = match max_failures {
+            Some(max) => failed_count > max as u64,
+            None => false,
+        };
+
+        let exec_result = if has_failed_threshold {
+            node_instance.error_message = Some(format!("Parallel max_failures threshold exceeded ({} failed)", failed_count));
+            ExecutionResult::failed()
+        } else if success_count + failed_count == total_items {
+            ExecutionResult::success(None)
+        } else {
+            // 没执行完，派发新任务
+            let mut jobs_to_dispatch = Vec::new();
+            
+            if mode == crate::task::entity::ParallelMode::Rolling {
+                if dispatched_count < total_items {
+                    jobs_to_dispatch.push(dispatched_count);
+                    dispatched_count += 1;
+                }
+            } else if mode == crate::task::entity::ParallelMode::Batch {
+                if success_count + failed_count == dispatched_count {
+                    let end = std::cmp::min(dispatched_count + concurrency, total_items);
+                    for i in dispatched_count..end {
+                        jobs_to_dispatch.push(i);
+                    }
+                    dispatched_count = end;
+                }
+            }
+
+            let mut new_jobs = Vec::new();
+            for idx in jobs_to_dispatch {
+                let caller_context = WorkflowCallerContext {
+                    workflow_instance_id: workflow_instance.workflow_instance_id.clone(),
+                    node_id: node_instance.node_id.clone(),
+                    parent_task_instance_id: Some(node_instance.task_instance.id.clone()),
+                    item_index: Some(idx as usize),
+                };
+                let child_job = ExecuteTaskJob {
+                    task_instance_id: format!("{}-{}-{}", workflow_instance.workflow_instance_id, node_instance.node_id, idx),
+                    tenant_id: "default".to_string(), // TODO: 动态获取
+                    caller_context: Some(caller_context),
+                };
+                new_jobs.push(child_job);
+            }
+            ExecutionResult::async_dispatch_multiple(new_jobs)
+        };
+
+        // 保存状态
+        state["success_count"] = serde_json::json!(success_count);
+        state["failed_count"] = serde_json::json!(failed_count);
+        state["dispatched_count"] = serde_json::json!(dispatched_count);
+        node_instance.task_instance.output = Some(state);
+
+        Ok(exec_result)
     }
 
     fn plugin_type(&self) -> TaskType {

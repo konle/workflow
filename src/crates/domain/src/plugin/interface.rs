@@ -45,6 +45,32 @@ pub trait PluginInterface: Send + Sync {
         workflow_instance: &mut WorkflowInstanceEntity,
     ) -> anyhow::Result<ExecutionResult>;
 
+    // 新增: 处理异步回调
+    async fn handle_callback(
+        &self,
+        _executor: &dyn PluginExecutor,
+        node_instance: &mut WorkflowNodeInstanceEntity,
+        _workflow_instance: &mut WorkflowInstanceEntity,
+        _child_task_id: &str,
+        status: &NodeExecutionStatus,
+        output: &Option<serde_json::Value>,
+        error_message: &Option<String>,
+        input: &Option<serde_json::Value>,
+    ) -> anyhow::Result<ExecutionResult> {
+        // 默认实现，如果是普通节点，子任务完成代表节点完成
+        node_instance.output = output.clone().map(|data| crate::workflow::entity::NodeOutput { data });
+        node_instance.error_message = error_message.clone();
+        node_instance.task_instance.input = input.clone();
+        node_instance.task_instance.output = output.clone();
+        node_instance.task_instance.error_message = error_message.clone();
+        
+        match status {
+            NodeExecutionStatus::Success => Ok(ExecutionResult::success(None)),
+            NodeExecutionStatus::Failed => Ok(ExecutionResult::failed()),
+            _ => Ok(ExecutionResult::pending()),
+        }
+    }
+
     fn plugin_type(&self) -> TaskType;
 }
 
@@ -54,5 +80,16 @@ pub trait PluginExecutor: Send + Sync {
         &self,
         node_instance: &mut WorkflowNodeInstanceEntity,
         workflow_instance: &mut WorkflowInstanceEntity,
+    ) -> anyhow::Result<ExecutionResult>;
+
+    async fn handle_node_callback(
+        &self,
+        node_instance: &mut WorkflowNodeInstanceEntity,
+        workflow_instance: &mut WorkflowInstanceEntity,
+        child_task_id: &str,
+        status: &NodeExecutionStatus,
+        output: &Option<serde_json::Value>,
+        error_message: &Option<String>,
+        input: &Option<serde_json::Value>,
     ) -> anyhow::Result<ExecutionResult>;
 }

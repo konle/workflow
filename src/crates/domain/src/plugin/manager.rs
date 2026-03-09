@@ -43,6 +43,62 @@ impl PluginManager {
         self.plugins.insert(task_type, plugin);
     }
 
+    pub async fn process_workflow_job(&self, job: crate::shared::job::ExecuteWorkflowJob, worker_id: &str) -> anyhow::Result<()> {
+        let mut instance = match self.workflow_svc.acquire_lock(&job.workflow_instance_id, worker_id, 10000).await {
+            Ok(inst) => inst,
+            Err(e) => {
+                println!("Failed to acquire lock for {}: {}, skipping or retrying later...", job.workflow_instance_id, e);
+                return Ok(()); // Lock not acquired, event is effectively ignored or would be retried based on queue settings
+            }
+        };
+
+        if !instance.is_pending() && !instance.is_running() {
+            // Must release lock if we bail out early
+            let _ = self.workflow_svc.release_lock(&instance.workflow_instance_id, worker_id).await;
+            return Ok(());
+        }
+
+        let result = match job.event {
+            crate::shared::job::WorkflowEvent::Start => {
+                self.execute_workflow(&mut instance).await
+            }
+            crate::shared::job::WorkflowEvent::NodeCallback { node_id, child_task_id, status, output, error_message, input } => {
+                let mut callback_result = Ok(());
+                if let Some(node_index) = instance.nodes.iter().position(|n| n.node_id == node_id) {
+                    // Update current_node to ensure execute_workflow loop starts from here if it's not already
+                    instance.current_node = node_id.clone();
+                    
+                    let mut node = instance.nodes[node_index].clone();
+                    match self.handle_node_callback(&mut node, &mut instance, &child_task_id, &status, &output, &error_message, &input).await {
+                        Ok(exec_result) => {
+                            instance.nodes[node_index] = node;
+                            match self.apply_exec_result(&mut instance, node_index, exec_result).await {
+                                Ok(action) => {
+                                    match action {
+                                        LoopAction::Advance | LoopAction::Retry => {
+                                            callback_result = self.execute_workflow_loop(&mut instance).await;
+                                        },
+                                        LoopAction::Done => {
+                                            // Completed or suspended, stop
+                                        }
+                                    }
+                                }
+                                Err(e) => callback_result = Err(e),
+                            }
+                        }
+                        Err(e) => callback_result = Err(e),
+                    }
+                }
+                callback_result
+            }
+        };
+
+        // Always attempt to release the lock when done
+        let _ = self.workflow_svc.release_lock(&job.workflow_instance_id, worker_id).await;
+
+        result
+    }
+
     pub async fn execute_workflow(
         &self,
         workflow_instance: &mut WorkflowInstanceEntity,
@@ -51,6 +107,14 @@ impl PluginManager {
             .start_instance(&workflow_instance.workflow_instance_id)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
+
+        self.execute_workflow_loop(workflow_instance).await
+    }
+
+    async fn execute_workflow_loop(
+        &self,
+        workflow_instance: &mut WorkflowInstanceEntity,
+    ) -> anyhow::Result<()> {
 
         loop {
             let mut instance = self
@@ -134,6 +198,16 @@ impl PluginManager {
                 ExecutionResult::failed()
             }
         };
+        let action = self.apply_exec_result(instance, node_index, exec_result).await?;
+        Ok(action)
+    }
+
+    async fn apply_exec_result(
+        &self,
+        instance: &mut WorkflowInstanceEntity,
+        node_index: usize,
+        exec_result: ExecutionResult,
+    ) -> anyhow::Result<LoopAction> {
         instance.nodes[node_index].status = exec_result.status.clone();
         let action = match exec_result.status {
             NodeExecutionStatus::Success => {
@@ -203,5 +277,25 @@ impl PluginExecutor for PluginManager {
         })?;
 
         plugin.execute(self, node_instance, workflow_instance).await
+    }
+
+    async fn handle_node_callback(
+        &self,
+        node_instance: &mut WorkflowNodeInstanceEntity,
+        workflow_instance: &mut WorkflowInstanceEntity,
+        child_task_id: &str,
+        status: &NodeExecutionStatus,
+        output: &Option<serde_json::Value>,
+        error_message: &Option<String>,
+        input: &Option<serde_json::Value>,
+    ) -> anyhow::Result<ExecutionResult> {
+        let plugin = self.plugins.get(&node_instance.node_type).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no plugin registered for task type: {:?}",
+                node_instance.node_type
+            )
+        })?;
+
+        plugin.handle_callback(self, node_instance, workflow_instance, child_task_id, status, output, error_message, input).await
     }
 }
