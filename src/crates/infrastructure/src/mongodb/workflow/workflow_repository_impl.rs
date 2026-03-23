@@ -188,6 +188,14 @@ impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
         Ok(())
     }
 
+    async fn create_workflow_instance(
+        &self,
+        instance: &WorkflowInstanceEntity,
+    ) -> Result<WorkflowInstanceEntity, RepositoryError> {
+        self.workflow_instance_collection.insert_one(instance).await?;
+        Ok(instance.clone())
+    }
+
     async fn save_workflow_instance(
         &self,
         instance: &WorkflowInstanceEntity,

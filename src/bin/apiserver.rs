@@ -40,9 +40,13 @@ async fn main() {
     let workflow_inst_service = WorkflowInstanceService::new(workflow_inst_repo);
 
     let task_handler = Arc::new(TaskHandler::new(task_service));
-    let task_instance_handler = Arc::new(TaskInstanceHandler::new(task_instance_service, dispatcher));
-    let workflow_handler = Arc::new(WorkflowHandler::new(workflow_def_service));
-    let workflow_instance_handler = Arc::new(WorkflowInstanceHandler::new(workflow_inst_service));
+    let task_instance_handler = Arc::new(TaskInstanceHandler::new(task_instance_service, dispatcher.clone()));
+    let workflow_handler = Arc::new(WorkflowHandler::new(workflow_def_service.clone()));
+    let workflow_instance_handler = Arc::new(WorkflowInstanceHandler::new(
+        workflow_def_service,
+        workflow_inst_service,
+        dispatcher,
+    ));
 
     let app = create_router(
         task_handler,

@@ -44,6 +44,11 @@ pub trait WorkflowInstanceRepository: Send + Sync {
         worker_id: &str,
     ) -> Result<(), RepositoryError>;
 
+    async fn create_workflow_instance(
+        &self,
+        instance: &WorkflowInstanceEntity,
+    ) -> Result<WorkflowInstanceEntity, RepositoryError>;
+
     async fn save_workflow_instance(
         &self,
         instance: &WorkflowInstanceEntity,

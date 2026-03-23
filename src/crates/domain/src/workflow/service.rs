@@ -1,6 +1,13 @@
 use std::sync::Arc;
-use crate::shared::workflow::WorkflowInstanceStatus;
-use crate::workflow::entity::{WorkflowEntity, WorkflowInstanceEntity, WorkflowMetaEntity};
+use chrono::Utc;
+use serde_json::Value as JsonValue;
+use uuid::Uuid;
+use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
+use crate::task::entity::TaskInstanceEntity;
+use crate::workflow::entity::{
+    NodeExecutionStatus, WorkflowEntity, WorkflowInstanceEntity,
+    WorkflowMetaEntity, WorkflowNodeInstanceEntity,
+};
 use crate::workflow::repository::{WorkflowDefinitionRepository, WorkflowInstanceRepository, RepositoryError};
 
 #[derive(Clone)]
@@ -54,6 +61,72 @@ impl WorkflowInstanceService {
 
     pub async fn get_workflow_instance(&self, id: String) -> Result<WorkflowInstanceEntity, RepositoryError> {
         self.repository.get_workflow_instance(id).await
+    }
+
+    /// Expand a workflow template into a runnable instance (Pending, epoch=0).
+    pub async fn create_instance(
+        &self,
+        workflow_entity: &WorkflowEntity,
+        context: JsonValue,
+    ) -> Result<WorkflowInstanceEntity, RepositoryError> {
+        let now = Utc::now();
+        let instance_id = Uuid::new_v4().to_string();
+
+        let entry_node = workflow_entity.nodes.first()
+            .map(|n| n.node_id.clone())
+            .unwrap_or_default();
+
+        let nodes: Vec<WorkflowNodeInstanceEntity> = workflow_entity.nodes.iter().map(|node| {
+            let task_instance_id = Uuid::new_v4().to_string();
+            WorkflowNodeInstanceEntity {
+                node_id: node.node_id.clone(),
+                node_type: node.node_type.clone(),
+                task_instance: TaskInstanceEntity {
+                    id: task_instance_id.clone(),
+                    task_id: String::new(),
+                    task_name: String::new(),
+                    task_type: node.node_type.clone(),
+                    task_template: node.config.clone(),
+                    task_status: TaskInstanceStatus::Pending,
+                    task_instance_id,
+                    created_at: now,
+                    updated_at: now,
+                    deleted_at: None,
+                    input: None,
+                    output: None,
+                    error_message: None,
+                    execution_duration: None,
+                    caller_context: None,
+                },
+                context: node.context.clone(),
+                next_node: node.next_node.clone(),
+                status: NodeExecutionStatus::Pending,
+                output: None,
+                error_message: None,
+                created_at: now,
+                updated_at: now,
+            }
+        }).collect();
+
+        let instance = WorkflowInstanceEntity {
+            workflow_instance_id: instance_id,
+            workflow_meta_id: workflow_entity.workflow_meta_id.clone(),
+            workflow_version: workflow_entity.version,
+            status: WorkflowInstanceStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+            context,
+            entry_node: entry_node.clone(),
+            current_node: entry_node,
+            nodes,
+            epoch: 0,
+            locked_by: None,
+            locked_duration: None,
+            locked_at: None,
+        };
+
+        self.repository.create_workflow_instance(&instance).await
     }
 
     pub async fn acquire_lock(&self, workflow_instance_id: &str, worker_id: &str, duration_ms: u64) -> Result<WorkflowInstanceEntity, RepositoryError> {
