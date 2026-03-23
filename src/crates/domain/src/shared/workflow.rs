@@ -162,6 +162,7 @@ pub enum TaskType {
     Http,
     IfCondition,
     Parallel,
+    ForkJoin,
     Grpc,
     Approval,
 }

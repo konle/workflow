@@ -175,7 +175,81 @@ pub struct WorkflowInstanceEntity {
 
 ---
 
-## 5. 总结与扩展
+## 5. 异构并发容器 (ForkJoin Plugin) 深度剖析
+
+### 5.1 Parallel vs ForkJoin
+
+| 维度 | Parallel (同构并发/数据并行) | ForkJoin (异构并发/任务并行) |
+|------|------|------|
+| 数据源 | 一个 JSON 数组 × 同一个任务模板 | N 个**不同的** TaskTemplate |
+| 子任务类型 | 全部相同（如全是 HTTP） | 可以不同（HTTP + gRPC + ...） |
+| 典型场景 | "给 1000 个用户各发一封邮件" | "同时拉用户数据 + 发通知 + 生成报告" |
+| 并发控制 | concurrency + Rolling/Batch | 同样 concurrency + Rolling/Batch |
+| 失败控制 | max_failures | 同样 max_failures |
+
+二者本质上共享同一套 Scatter-Gather + Callback 状态机，区别仅在于数据源：Parallel 从数组动态展开 N 个相同任务，ForkJoin 从静态列表展开 N 个不同任务。
+
+### 5.2 模板定义
+
+```rust
+pub struct ForkJoinTemplate {
+    pub tasks: Vec<ForkJoinTaskItem>,   // 子任务列表
+    pub concurrency: u32,               // 并发度
+    pub mode: ParallelMode,             // Rolling / Batch
+    pub max_failures: Option<u32>,      // 最大失败容忍数
+}
+
+pub struct ForkJoinTaskItem {
+    pub task_key: String,               // 容器内唯一标识
+    pub name: String,                   // 可读名称
+    pub task_template: TaskTemplate,    // 任意原子任务模板 (Http, gRPC, ...)
+}
+```
+
+### 5.3 子任务类型约束
+
+由于引擎采用 Workflow Worker (编排) / Task Worker (执行) 双角色分离架构，容器类插件 (`Parallel`, `ForkJoin`) 和控制流插件 (`IfCondition`) 仅有 `PluginInterface` 实现（编排侧），没有 `TaskExecutor` 实现（执行侧）。
+
+因此：**容器的子任务只能是拥有 `TaskExecutor` 的原子任务类型**（Http, gRPC, Approval 等）。
+
+```
+ForkJoin.execute()
+  → 派发子任务 ExecuteTaskJob(template=Parallel)
+  → Task Worker 消费
+  → TaskManager 找不到 Parallel 的 TaskExecutor ❌
+```
+
+如需嵌套容器逻辑，正确的做法是将内层容器建模为一个**子工作流**，由 Workflow Worker 独立编排。
+
+### 5.4 状态机存储
+
+与 Parallel 一样借用 `TaskInstanceEntity.output`，但额外包含 `results` Map 用于按 `task_key` 索引每个子任务的执行结果：
+
+```json
+{
+  "total_tasks": 3,
+  "dispatched_count": 3,
+  "success_count": 1,
+  "failed_count": 0,
+  "results": {
+    "fetch_user": { "status": "Success", "output": { ... } },
+    "send_email": { "status": "Failed", "error": "timeout" },
+    "notify_slack": null
+  }
+}
+```
+
+后续节点可通过 `task_key` 精确引用某个子任务的输出结果。
+
+### 5.5 Scatter & Gather 流程
+
+**Scatter (execute)**：读取 `tasks` 列表 → 初始化状态机 → 按 `concurrency` 派发前 N 个子任务 → `caller_context.item_index` 记录子任务在列表中的索引。
+
+**Gather (handle_callback)**：与 Parallel 共享完全相同的决策逻辑（状态聚合 → 失败熔断 → 完成检测 → 并发补货），唯一区别是额外将结果写入 `results[task_key]`。
+
+---
+
+## 6. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
 

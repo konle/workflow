@@ -13,7 +13,8 @@ pub enum TaskTemplate {
     Grpc,
     Approval,
     IfCondition(IfConditionTemplate),
-    Parallel(ParallelTemplate), // 同构同类型原子任务并发执行，需要等待所有任务执行完成，然后合并结果
+    Parallel(ParallelTemplate),
+    ForkJoin(ForkJoinTemplate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +43,21 @@ pub struct ParallelTemplate {
     /// - 若设为 N，则允许最多 N 个任务失败。超过 N 时整体失败。
     /// - 若为 None，则无论失败多少个，都坚持执行完所有任务。
     pub max_failures: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ForkJoinTemplate {
+    pub tasks: Vec<ForkJoinTaskItem>,
+    pub concurrency: u32,
+    pub mode: ParallelMode,
+    pub max_failures: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ForkJoinTaskItem {
+    pub task_key: String,
+    pub name: String,
+    pub task_template: TaskTemplate,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
