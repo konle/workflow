@@ -1134,6 +1134,7 @@ dependencies = [
 name = "infrastructure"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "apalis",
  "apalis-redis",
  "async-trait",

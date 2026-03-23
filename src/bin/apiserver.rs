@@ -3,6 +3,8 @@ use tokio::net::TcpListener;
 
 use infrastructure::mongodb::task::task_repository_impl::{TaskRepositoryImpl, TaskInstanceRepositoryImpl};
 use infrastructure::mongodb::workflow::workflow_repository_impl::{WorkflowDefinitionRepositoryImpl, WorkflowInstanceRepositoryImpl};
+use infrastructure::queue::consumer;
+use infrastructure::queue::dispatcher::ApalisDispatcher;
 
 use domain::task::service::{TaskService, TaskInstanceService};
 use domain::workflow::service::{WorkflowDefinitionService, WorkflowInstanceService};
@@ -15,9 +17,17 @@ use api::router::create_router;
 async fn main() {
     println!("API server starting...");
 
-    let mongo_client = mongodb::Client::with_uri_str("mongodb://localhost:27017")
+    let mongo_url = std::env::var("MONGO_URL").unwrap_or_else(|_| "mongodb://127.0.0.1:27017".to_string());
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+
+    let mongo_client = mongodb::Client::with_uri_str(&mongo_url)
         .await
         .expect("failed to connect to MongoDB");
+
+    let task_storage = consumer::create_task_storage(&redis_url).await;
+    let workflow_storage = consumer::create_workflow_storage(&redis_url).await;
+    let dispatcher: Arc<dyn domain::shared::job::TaskDispatcher> =
+        Arc::new(ApalisDispatcher::new(task_storage, workflow_storage));
 
     let task_repo = Arc::new(TaskRepositoryImpl::new(mongo_client.clone()));
     let task_instance_repo = Arc::new(TaskInstanceRepositoryImpl::new(mongo_client.clone()));
@@ -30,7 +40,7 @@ async fn main() {
     let workflow_inst_service = WorkflowInstanceService::new(workflow_inst_repo);
 
     let task_handler = Arc::new(TaskHandler::new(task_service));
-    let task_instance_handler = Arc::new(TaskInstanceHandler::new(task_instance_service));
+    let task_instance_handler = Arc::new(TaskInstanceHandler::new(task_instance_service, dispatcher));
     let workflow_handler = Arc::new(WorkflowHandler::new(workflow_def_service));
     let workflow_instance_handler = Arc::new(WorkflowInstanceHandler::new(workflow_inst_service));
 

@@ -2,30 +2,11 @@ use std::sync::Arc;
 use apalis::prelude::*;
 use apalis_redis::RedisStorage;
 use domain::plugin::manager::PluginManager;
-use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob, TaskDispatcher};
+use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob};
 use domain::task::service::TaskInstanceService;
 use domain::workflow::service::WorkflowInstanceService;
 use infrastructure::queue::consumer;
-use async_trait::async_trait;
-struct ApalisDispatcher {
-    task_storage: RedisStorage<ExecuteTaskJob>,
-    workflow_storage: RedisStorage<ExecuteWorkflowJob>,
-}
-
-#[async_trait]
-impl TaskDispatcher for ApalisDispatcher {
-    async fn dispatch_task(&self, job: ExecuteTaskJob) -> anyhow::Result<()> {
-        let mut storage = self.task_storage.clone();
-        storage.push(job).await.map_err(|e| anyhow::anyhow!("Failed to push task: {}", e))?;
-        Ok(())
-    }
-
-    async fn dispatch_workflow(&self, job: ExecuteWorkflowJob) -> anyhow::Result<()> {
-        let mut storage = self.workflow_storage.clone();
-        storage.push(job).await.map_err(|e| anyhow::anyhow!("Failed to push workflow: {}", e))?;
-        Ok(())
-    }
-}
+use infrastructure::queue::dispatcher::ApalisDispatcher;
 
 async fn handle_workflow_job(job: ExecuteWorkflowJob, manager: Data<Arc<PluginManager>>) -> Result<(), std::io::Error> {
     println!("Executing workflow job: {} event: {:?}", job.workflow_instance_id, job.event);
@@ -104,10 +85,7 @@ fn create_plugin_manager(
     task_storage: RedisStorage<ExecuteTaskJob>,
     workflow_storage: RedisStorage<ExecuteWorkflowJob>,
 ) -> Arc<PluginManager> {
-    let dispatcher = Arc::new(ApalisDispatcher {
-        task_storage,
-        workflow_storage,
-    });
+    let dispatcher = Arc::new(ApalisDispatcher::new(task_storage, workflow_storage));
     let mut manager = PluginManager::new(workflow_instance_svc, dispatcher);
     manager.register(Box::new(domain::plugin::plugins::http::HttpPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::parallel::ParallelPlugin::new()));

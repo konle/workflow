@@ -114,6 +114,7 @@ pub enum TaskInstanceStatus {
     Running,
     Completed,
     Failed,
+    Canceled,
 }
 impl Display for TaskInstanceStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -128,8 +129,31 @@ impl TaskInstanceStatus {
             "running" => Some(TaskInstanceStatus::Running),
             "completed" => Some(TaskInstanceStatus::Completed),
             "failed" => Some(TaskInstanceStatus::Failed),
+            "canceled" => Some(TaskInstanceStatus::Canceled),
             _ => None,
         }
+    }
+
+    /// State machine transition rules:
+    ///   Pending   -> Running | Canceled
+    ///   Running   -> Completed | Failed
+    ///   Failed    -> Pending (retry) | Canceled
+    ///   Completed -> (terminal)
+    ///   Canceled  -> (terminal)
+    pub fn can_transition_to(&self, target: &TaskInstanceStatus) -> bool {
+        matches!(
+            (self, target),
+            (TaskInstanceStatus::Pending, TaskInstanceStatus::Running)
+                | (TaskInstanceStatus::Pending, TaskInstanceStatus::Canceled)
+                | (TaskInstanceStatus::Running, TaskInstanceStatus::Completed)
+                | (TaskInstanceStatus::Running, TaskInstanceStatus::Failed)
+                | (TaskInstanceStatus::Failed, TaskInstanceStatus::Pending)
+                | (TaskInstanceStatus::Failed, TaskInstanceStatus::Canceled)
+        )
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, TaskInstanceStatus::Completed | TaskInstanceStatus::Canceled)
     }
 }
 // 任务类型枚举 用于表示任务的类型 如http、grpc、审批等

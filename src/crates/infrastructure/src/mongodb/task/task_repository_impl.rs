@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use mongodb::bson::doc;
 use mongodb::{Client, Database, Collection};
+use domain::shared::workflow::TaskInstanceStatus;
 use domain::task::entity::{TaskEntity, TaskInstanceEntity};
 use domain::task::repository::{TaskEntityRepository, TaskInstanceEntityRepository, RepositoryError};
 
@@ -53,7 +54,37 @@ impl TaskInstanceEntityRepository for TaskInstanceRepositoryImpl {
         Ok(task_instance_entity)
     }
 
+    async fn transfer_status(
+        &self,
+        task_instance_id: &str,
+        from_status: &TaskInstanceStatus,
+        to_status: &TaskInstanceStatus,
+    ) -> Result<TaskInstanceEntity, RepositoryError> {
+        let from_str = format!("{:?}", from_status);
+        let to_str = format!("{:?}", to_status);
 
+        let filter = doc! {
+            "task_instance_id": task_instance_id,
+            "task_status": &from_str,
+        };
+        let update = doc! {
+            "$set": {
+                "task_status": &to_str,
+                "updated_at": chrono::Utc::now().to_rfc3339(),
+            }
+        };
+
+        let result = self.collection
+            .find_one_and_update(filter, update)
+            .return_document(mongodb::options::ReturnDocument::After)
+            .await?
+            .ok_or_else(|| format!(
+                "CAS failed: task instance {} not in expected state {}",
+                task_instance_id, from_str
+            ))?;
+
+        Ok(result)
+    }
 }
 
 #[async_trait]
