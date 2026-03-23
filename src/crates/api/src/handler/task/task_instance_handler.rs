@@ -1,12 +1,13 @@
 use axum::{
-    extract::{Path, State},
-    routing::{get, post, put},
+    extract::{Extension, Path, State},
+    routing::{get, post},
     Json, Router,
 };
 use domain::shared::job::{ExecuteTaskJob, TaskDispatcher};
 use domain::task::entity::TaskInstanceEntity;
 use domain::task::service::TaskInstanceService;
 use crate::error::ApiError;
+use crate::middleware::auth::AuthContext;
 use crate::response::response::Response;
 use std::sync::Arc;
 
@@ -24,71 +25,86 @@ impl TaskInstanceHandler {
 
 pub fn routes(handler: Arc<TaskInstanceHandler>) -> Router {
     Router::new()
-        .route("/", post(create_task_instance))
-        .route("/:id", get(get_task_instance))
-        .route("/:id", put(update_task_instance))
-        .route("/:id/execute", post(execute_task_instance))
-        .route("/:id/retry", post(retry_task_instance))
-        .route("/:id/cancel", post(cancel_task_instance))
+        .route("/", post(create_task_instance).get(list_task_instances))
+        .route("/{id}", get(get_task_instance).put(update_task_instance))
+        .route("/{id}/execute", post(execute_task_instance))
+        .route("/{id}/retry", post(retry_task_instance))
+        .route("/{id}/cancel", post(cancel_task_instance))
         .with_state(handler)
 }
 
 async fn create_task_instance(
     State(handler): State<Arc<TaskInstanceHandler>>,
-    Json(task_instance_entity): Json<TaskInstanceEntity>,
+    Extension(auth): Extension<AuthContext>,
+    Json(mut entity): Json<TaskInstanceEntity>,
 ) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
-    let result = handler.service.create_task_instance_entity(task_instance_entity).await?;
+    entity.tenant_id = auth.tenant_id;
+    let result = handler.service.create_task_instance_entity(entity).await?;
+    Ok(Json(Response::success(result)))
+}
+
+async fn list_task_instances(
+    State(handler): State<Arc<TaskInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Response<Vec<TaskInstanceEntity>>>, ApiError> {
+    let result = handler.service.list_task_instance_entities(&auth.tenant_id).await?;
     Ok(Json(Response::success(result)))
 }
 
 async fn get_task_instance(
     State(handler): State<Arc<TaskInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
-    let result = handler.service.get_task_instance_entity(id).await?;
+    let result = handler.service.get_task_instance_entity_scoped(&auth.tenant_id, &id).await?;
     Ok(Json(Response::success(result)))
 }
 
 async fn update_task_instance(
     State(handler): State<Arc<TaskInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(mut task_instance_entity): Json<TaskInstanceEntity>,
+    Json(mut entity): Json<TaskInstanceEntity>,
 ) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
-    task_instance_entity.id = id;
-    let result = handler.service.update_task_instance_entity(task_instance_entity).await?;
+    entity.id = id;
+    entity.tenant_id = auth.tenant_id;
+    let result = handler.service.update_task_instance_entity(entity).await?;
     Ok(Json(Response::success(result)))
 }
 
-/// Pending -> Running, then dispatch to task worker queue.
 async fn execute_task_instance(
     State(handler): State<Arc<TaskInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
+    handler.service.get_task_instance_entity_scoped(&auth.tenant_id, &id).await?;
     let updated = handler.service.submit_instance(&id).await?;
 
     handler.dispatcher.dispatch_task(ExecuteTaskJob {
         task_instance_id: updated.task_instance_id.clone(),
-        tenant_id: String::new(),
+        tenant_id: auth.tenant_id,
         caller_context: None,
     }).await.map_err(|e| ApiError::internal(e.to_string()))?;
 
     Ok(Json(Response::success(updated)))
 }
 
-/// Failed -> Pending, ready for re-execution.
 async fn retry_task_instance(
     State(handler): State<Arc<TaskInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
+    handler.service.get_task_instance_entity_scoped(&auth.tenant_id, &id).await?;
     let result = handler.service.retry_instance(&id).await?;
     Ok(Json(Response::success(result)))
 }
 
-/// Pending | Failed -> Canceled.
 async fn cancel_task_instance(
     State(handler): State<Arc<TaskInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
+    handler.service.get_task_instance_entity_scoped(&auth.tenant_id, &id).await?;
     let result = handler.service.cancel_instance(&id).await?;
     Ok(Json(Response::success(result)))
 }

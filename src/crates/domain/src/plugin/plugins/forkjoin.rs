@@ -77,7 +77,7 @@ impl PluginInterface for ForkJoinPlugin {
                     node_instance.node_id,
                     index
                 ),
-                tenant_id: "default".to_string(),
+                tenant_id: workflow_instance.tenant_id.clone(),
                 caller_context: Some(caller_context),
             };
             jobs.push(job);
@@ -180,7 +180,7 @@ impl PluginInterface for ForkJoinPlugin {
                             node_instance.node_id,
                             idx
                         ),
-                        tenant_id: "default".to_string(),
+                        tenant_id: workflow_instance.tenant_id.clone(),
                         caller_context: Some(caller_context),
                     }
                 })

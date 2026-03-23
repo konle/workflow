@@ -2,14 +2,21 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use infrastructure::mongodb::task::task_repository_impl::{TaskRepositoryImpl, TaskInstanceRepositoryImpl};
+use infrastructure::mongodb::tenant::tenant_repository_impl::TenantRepositoryImpl;
+use infrastructure::mongodb::user::user_repository_impl::{UserRepositoryImpl, UserTenantRoleRepositoryImpl};
 use infrastructure::mongodb::workflow::workflow_repository_impl::{WorkflowDefinitionRepositoryImpl, WorkflowInstanceRepositoryImpl};
 use infrastructure::queue::consumer;
 use infrastructure::queue::dispatcher::ApalisDispatcher;
 
 use domain::task::service::{TaskService, TaskInstanceService};
+use domain::tenant::service::TenantService;
+use domain::user::service::UserService;
 use domain::workflow::service::{WorkflowDefinitionService, WorkflowInstanceService};
 
+use api::handler::auth::AuthHandler;
 use api::handler::task::{TaskHandler, TaskInstanceHandler};
+use api::handler::tenant::TenantHandler;
+use api::handler::user::UserHandler;
 use api::handler::workflow::{WorkflowHandler, WorkflowInstanceHandler};
 use api::router::create_router;
 
@@ -31,14 +38,22 @@ async fn main() {
 
     let task_repo = Arc::new(TaskRepositoryImpl::new(mongo_client.clone()));
     let task_instance_repo = Arc::new(TaskInstanceRepositoryImpl::new(mongo_client.clone()));
+    let tenant_repo = Arc::new(TenantRepositoryImpl::new(mongo_client.clone()));
+    let user_repo = Arc::new(UserRepositoryImpl::new(mongo_client.clone()));
+    let role_repo = Arc::new(UserTenantRoleRepositoryImpl::new(mongo_client.clone()));
     let workflow_def_repo = Arc::new(WorkflowDefinitionRepositoryImpl::new(mongo_client.clone()));
     let workflow_inst_repo = Arc::new(WorkflowInstanceRepositoryImpl::new(mongo_client.clone()));
 
     let task_service = TaskService::new(task_repo);
     let task_instance_service = TaskInstanceService::new(task_instance_repo);
+    let tenant_service = TenantService::new(tenant_repo);
+    let user_service = UserService::new(user_repo, role_repo);
     let workflow_def_service = WorkflowDefinitionService::new(workflow_def_repo);
     let workflow_inst_service = WorkflowInstanceService::new(workflow_inst_repo);
 
+    let auth_handler = Arc::new(AuthHandler::new(user_service.clone()));
+    let tenant_handler = Arc::new(TenantHandler::new(tenant_service));
+    let user_handler = Arc::new(UserHandler::new(user_service));
     let task_handler = Arc::new(TaskHandler::new(task_service));
     let task_instance_handler = Arc::new(TaskInstanceHandler::new(task_instance_service, dispatcher.clone()));
     let workflow_handler = Arc::new(WorkflowHandler::new(workflow_def_service.clone()));
@@ -49,16 +64,21 @@ async fn main() {
     ));
 
     let app = create_router(
+        auth_handler,
+        tenant_handler,
+        user_handler,
         task_handler,
         task_instance_handler,
         workflow_handler,
         workflow_instance_handler,
     );
 
-    let listener = TcpListener::bind("0.0.0.0:3000")
+    let port = std::env::var("API_PORT").unwrap_or_else(|_| "3000".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = TcpListener::bind(&addr)
         .await
-        .expect("failed to bind to 0.0.0.0:3000");
+        .unwrap_or_else(|_| panic!("failed to bind to {}", addr));
 
-    println!("API server ready at 0.0.0.0:3000");
+    println!("API server ready at {}", addr);
     axum::serve(listener, app).await.expect("server error");
 }

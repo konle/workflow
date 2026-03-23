@@ -324,11 +324,104 @@ sequenceDiagram
 
 ---
 
-## 7. 总结与扩展
+## 7. 多租户系统 (Multi-Tenancy)
+
+### 7.1 设计总则
+
+系统从数据模型层面原生支持多租户，所有工作流和原子任务均携带 `tenant_id`。租户隔离的**唯一门禁**在 API Server 侧，执行引擎（Worker）对租户完全无感知，只按 Job 维度执行。
+
+```
+请求 → [AuthMiddleware] → [TenantGuard] → [PermissionGuard] → Handler
+         ↓                    ↓                 ↓
+    验证 JWT Token       校验租户状态         检查角色权限
+    解析 AuthContext      注入 tenant_id      匹配路由所需权限
+```
+
+### 7.2 核心实体
+
+**租户表 (TenantEntity)**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| tenant_id | String | 主键 |
+| name | String | 租户名称 |
+| description | String | 描述 |
+| status | TenantStatus | Active / Suspended / Deleted |
+| max_workflows | Option\<u32\> | 配额：最大工作流模板数 |
+| max_instances | Option\<u32\> | 配额：最大运行实例数 |
+
+**用户表 (UserEntity)**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| user_id | String | 主键 |
+| username | String | 唯一 |
+| email | String | 唯一 |
+| password_hash | String | bcrypt 哈希 |
+| is_super_admin | bool | 系统级超管标记 |
+| status | UserStatus | Active / Disabled |
+
+**用户-租户角色关联表 (UserTenantRole)**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| user_id | String | 外键 |
+| tenant_id | String | 外键 |
+| role | TenantRole | TenantAdmin / Developer / Operator / Viewer |
+
+### 7.3 角色与权限矩阵
+
+| 权限域 | SuperAdmin | TenantAdmin | Developer | Operator | Viewer |
+|--------|:---:|:---:|:---:|:---:|:---:|
+| 租户管理（创建/暂停/删除） | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 跨租户访问 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 租户内用户管理 | ✅ | ✅ | ❌ | ❌ | ❌ |
+| 工作流/任务模板 CRUD | ✅ | ✅ | ✅ | ❌ | ❌ |
+| 实例 创建/执行/取消/重试 | ✅ | ✅ | ✅ | ✅ | ❌ |
+| 只读查看 | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+### 7.4 JWT Token 设计
+
+```json
+{
+  "sub": "user_id",
+  "username": "alice",
+  "is_super_admin": false,
+  "tenant_id": "tenant_001",
+  "role": "Developer",
+  "exp": 1700000000
+}
+```
+
+SuperAdmin 可通过 `X-Tenant-Id` Header 代入任意租户上下文。
+
+### 7.5 数据隔离
+
+所有 Repository 查询自动携带 `tenant_id` 过滤条件。Handler 从 `AuthContext` 获取 `tenant_id` 传递给 Service/Repository 层，确保数据不会跨租户泄漏。
+
+### 7.6 API 路由
+
+```
+/api/v1/auth             ← 公开（无需 JWT）
+  POST /login
+  POST /register
+
+/api/v1/tenants          ← SuperAdmin 专属
+  CRUD
+
+/api/v1/tenants/users    ← TenantAdmin+
+  邀请/移除/改角色
+
+/api/v1/workflow         ← 以下全部 tenant_id 自动隔离
+/api/v1/task
+```
+
+---
+
+## 8. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
 
 未来的扩展方案：
 1. **人工审批节点**：写一个 `ApprovalPlugin`，它连 Task Worker 都不需要找，`execute` 返回 `Pending` 后，直接等待外部 API 接口推入一个包含审批结果的 `NodeCallback` 事件到 Workflow 队列，就能顺滑将其唤醒。
 2. **延迟节点**：通过向 Apalis 推送定时消息，延时触发。
-3. **版本控制与安全防撕裂**：在 `workflow_svc.save_workflow_instance` 和并发更新时，可以结合 MongoDB 的 CAS (Compare And Swap) 来避免多个 Callback 同时更新 `success_count` 造成的数据覆写问题。

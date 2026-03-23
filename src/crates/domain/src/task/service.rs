@@ -21,12 +21,20 @@ impl TaskService {
         self.task_entity_repository.get_task_entity(id).await
     }
 
+    pub async fn get_task_entity_scoped(&self, tenant_id: &str, id: &str) -> Result<TaskEntity, RepositoryError> {
+        self.task_entity_repository.get_task_entity_scoped(tenant_id, id).await
+    }
+
+    pub async fn list_task_entities(&self, tenant_id: &str) -> Result<Vec<TaskEntity>, RepositoryError> {
+        self.task_entity_repository.list_task_entities(tenant_id).await
+    }
+
     pub async fn update_task_entity(&self, task_entity: TaskEntity) -> Result<TaskEntity, RepositoryError> {
         self.task_entity_repository.update_task_entity(task_entity).await
     }
-    
-    pub async fn delete_task_entity(&self, id: String) -> Result<(), RepositoryError> {
-        self.task_entity_repository.delete_task_entity(id).await
+
+    pub async fn delete_task_entity(&self, tenant_id: &str, id: &str) -> Result<(), RepositoryError> {
+        self.task_entity_repository.delete_task_entity(tenant_id, id).await
     }
 }
 
@@ -47,7 +55,15 @@ impl TaskInstanceService {
     pub async fn get_task_instance_entity(&self, id: String) -> Result<TaskInstanceEntity, RepositoryError> {
         self.task_instance_entity_repository.get_task_instance_entity(id).await
     }
-    
+
+    pub async fn get_task_instance_entity_scoped(&self, tenant_id: &str, id: &str) -> Result<TaskInstanceEntity, RepositoryError> {
+        self.task_instance_entity_repository.get_task_instance_entity_scoped(tenant_id, id).await
+    }
+
+    pub async fn list_task_instance_entities(&self, tenant_id: &str) -> Result<Vec<TaskInstanceEntity>, RepositoryError> {
+        self.task_instance_entity_repository.list_task_instance_entities(tenant_id).await
+    }
+
     pub async fn update_task_instance_entity(&self, task_instance_entity: TaskInstanceEntity) -> Result<TaskInstanceEntity, RepositoryError> {
         self.task_instance_entity_repository.update_task_instance_entity(task_instance_entity).await
     }

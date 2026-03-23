@@ -41,12 +41,20 @@ impl WorkflowDefinitionService {
         self.repository.get_workflow_meta_entity(workflow_meta_id).await
     }
 
+    pub async fn get_workflow_meta_entity_scoped(&self, tenant_id: &str, workflow_meta_id: &str) -> Result<WorkflowMetaEntity, RepositoryError> {
+        self.repository.get_workflow_meta_entity_scoped(tenant_id, workflow_meta_id).await
+    }
+
+    pub async fn list_workflow_meta_entities(&self, tenant_id: &str) -> Result<Vec<WorkflowMetaEntity>, RepositoryError> {
+        self.repository.list_workflow_meta_entities(tenant_id).await
+    }
+
     pub async fn save_workflow_meta_entity(&self, entity: &WorkflowMetaEntity) -> Result<(), RepositoryError> {
         self.repository.save_workflow_meta_entity(entity).await
     }
 
-    pub async fn delete_workflow_meta_entity(&self, workflow_meta_id: String) -> Result<(), RepositoryError> {
-        self.repository.delete_workflow_meta_entity(workflow_meta_id).await
+    pub async fn delete_workflow_meta_entity(&self, tenant_id: &str, workflow_meta_id: &str) -> Result<(), RepositoryError> {
+        self.repository.delete_workflow_meta_entity(tenant_id, workflow_meta_id).await
     }
 }
 
@@ -64,9 +72,18 @@ impl WorkflowInstanceService {
         self.repository.get_workflow_instance(id).await
     }
 
+    pub async fn get_workflow_instance_scoped(&self, tenant_id: &str, id: &str) -> Result<WorkflowInstanceEntity, RepositoryError> {
+        self.repository.get_workflow_instance_scoped(tenant_id, id).await
+    }
+
+    pub async fn list_workflow_instances(&self, tenant_id: &str) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError> {
+        self.repository.list_workflow_instances(tenant_id).await
+    }
+
     /// Expand a workflow template into a runnable instance (Pending, epoch=0).
     pub async fn create_instance(
         &self,
+        tenant_id: &str,
         workflow_entity: &WorkflowEntity,
         context: JsonValue,
         parent_context: Option<WorkflowCallerContext>,
@@ -86,6 +103,7 @@ impl WorkflowInstanceService {
                 node_type: node.node_type.clone(),
                 task_instance: TaskInstanceEntity {
                     id: task_instance_id.clone(),
+                    tenant_id: tenant_id.to_string(),
                     task_id: String::new(),
                     task_name: String::new(),
                     task_type: node.node_type.clone(),
@@ -113,6 +131,7 @@ impl WorkflowInstanceService {
 
         let instance = WorkflowInstanceEntity {
             workflow_instance_id: instance_id,
+            tenant_id: tenant_id.to_string(),
             workflow_meta_id: workflow_entity.workflow_meta_id.clone(),
             workflow_version: workflow_entity.version,
             status: WorkflowInstanceStatus::Pending,

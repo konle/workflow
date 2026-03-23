@@ -109,6 +109,7 @@ impl Display for TaskTemplate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskEntity {
     pub id: String,
+    pub tenant_id: String,
     pub name: String,
     pub task_type: TaskType,
     pub task_template: TaskTemplate,
@@ -122,6 +123,7 @@ pub struct TaskEntity {
 impl TaskEntity {
     pub fn new(
         id: String,
+        tenant_id: String,
         name: String,
         task_type: TaskType,
         task_template: TaskTemplate,
@@ -133,6 +135,7 @@ impl TaskEntity {
     ) -> Self {
         Self {
             id,
+            tenant_id,
             name,
             task_type,
             task_template,
@@ -150,6 +153,7 @@ use crate::shared::job::WorkflowCallerContext;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskInstanceEntity {
     pub id: String,
+    pub tenant_id: String,
     pub task_id: String,
     pub task_name: String,
     pub task_type: TaskType,

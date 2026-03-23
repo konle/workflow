@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     routing::{get, post},
     Json, Router,
 };
@@ -11,6 +11,7 @@ use domain::workflow::{
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use crate::error::ApiError;
+use crate::middleware::auth::AuthContext;
 use crate::response::response::Response;
 use std::sync::Arc;
 
@@ -41,49 +42,63 @@ impl WorkflowInstanceHandler {
 
 pub fn routes(handler: Arc<WorkflowInstanceHandler>) -> Router {
     Router::new()
-        .route("/", post(create_instance))
-        .route("/:id", get(get_instance))
-        .route("/:id/execute", post(execute_instance))
-        .route("/:id/cancel", post(cancel_instance))
-        .route("/:id/retry", post(retry_instance))
-        .route("/:id/resume", post(resume_instance))
+        .route("/", post(create_instance).get(list_instances))
+        .route("/{id}", get(get_instance))
+        .route("/{id}/execute", post(execute_instance))
+        .route("/{id}/cancel", post(cancel_instance))
+        .route("/{id}/retry", post(retry_instance))
+        .route("/{id}/resume", post(resume_instance))
         .with_state(handler)
 }
 
-/// Load template, expand nodes, persist as Pending (epoch=0).
 async fn create_instance(
     State(handler): State<Arc<WorkflowInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
     Json(req): Json<CreateWorkflowInstanceRequest>,
 ) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
+    handler.definition_service
+        .get_workflow_meta_entity_scoped(&auth.tenant_id, &req.workflow_meta_id)
+        .await?;
+
     let workflow_entity = handler.definition_service
         .get_workflow_entity(req.workflow_meta_id, req.version)
         .await?;
 
     let instance = handler.instance_service
-        .create_instance(&workflow_entity, req.context, None, 0)
+        .create_instance(&auth.tenant_id, &workflow_entity, req.context, None, 0)
         .await?;
 
     Ok(Json(Response::success(instance)))
 }
 
-async fn get_instance(
+async fn list_instances(
     State(handler): State<Arc<WorkflowInstanceHandler>>,
-    Path(id): Path<String>,
-) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
-    let result = handler.instance_service.get_workflow_instance(id).await?;
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Response<Vec<WorkflowInstanceEntity>>>, ApiError> {
+    let result = handler.instance_service.list_workflow_instances(&auth.tenant_id).await?;
     Ok(Json(Response::success(result)))
 }
 
-/// CAS Pending -> Running, then dispatch ExecuteWorkflowJob(Start) to queue.
-async fn execute_instance(
+async fn get_instance(
     State(handler): State<Arc<WorkflowInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
+    let result = handler.instance_service.get_workflow_instance_scoped(&auth.tenant_id, &id).await?;
+    Ok(Json(Response::success(result)))
+}
+
+async fn execute_instance(
+    State(handler): State<Arc<WorkflowInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
+    handler.instance_service.get_workflow_instance_scoped(&auth.tenant_id, &id).await?;
     let updated = handler.instance_service.start_instance(&id).await?;
 
     handler.dispatcher.dispatch_workflow(ExecuteWorkflowJob {
         workflow_instance_id: updated.workflow_instance_id.clone(),
-        tenant_id: String::new(),
+        tenant_id: auth.tenant_id,
         event: WorkflowEvent::Start,
     }).await.map_err(|e| ApiError::internal(e.to_string()))?;
 
@@ -92,24 +107,30 @@ async fn execute_instance(
 
 async fn cancel_instance(
     State(handler): State<Arc<WorkflowInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
+    handler.instance_service.get_workflow_instance_scoped(&auth.tenant_id, &id).await?;
     let result = handler.instance_service.cancel_instance(&id).await?;
     Ok(Json(Response::success(result)))
 }
 
 async fn retry_instance(
     State(handler): State<Arc<WorkflowInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
+    handler.instance_service.get_workflow_instance_scoped(&auth.tenant_id, &id).await?;
     let result = handler.instance_service.retry_instance(&id).await?;
     Ok(Json(Response::success(result)))
 }
 
 async fn resume_instance(
     State(handler): State<Arc<WorkflowInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
+    handler.instance_service.get_workflow_instance_scoped(&auth.tenant_id, &id).await?;
     let result = handler.instance_service.resume_instance(&id).await?;
     Ok(Json(Response::success(result)))
 }

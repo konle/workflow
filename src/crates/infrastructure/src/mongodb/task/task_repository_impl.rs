@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use futures::TryStreamExt;
 use mongodb::bson::doc;
 use mongodb::{Client, Database, Collection};
 use domain::shared::workflow::TaskInstanceStatus;
@@ -42,14 +43,30 @@ impl TaskInstanceEntityRepository for TaskInstanceRepositoryImpl {
 
     async fn get_task_instance_entity(&self, id: String) -> Result<TaskInstanceEntity, RepositoryError> {
         let task_instance_entity = self.collection
-            .find_one(doc! {"_id": &id})
+            .find_one(doc! {"task_instance_id": &id})
             .await?
             .ok_or_else(|| format!("task instance entity not found: {}", id))?;
         Ok(task_instance_entity)
     }
 
+    async fn get_task_instance_entity_scoped(&self, tenant_id: &str, id: &str) -> Result<TaskInstanceEntity, RepositoryError> {
+        let entity = self.collection
+            .find_one(doc! {"tenant_id": tenant_id, "task_instance_id": id})
+            .await?
+            .ok_or_else(|| format!("task instance not found: {} in tenant {}", id, tenant_id))?;
+        Ok(entity)
+    }
+
+    async fn list_task_instance_entities(&self, tenant_id: &str) -> Result<Vec<TaskInstanceEntity>, RepositoryError> {
+        let cursor = self.collection
+            .find(doc! {"tenant_id": tenant_id})
+            .await?;
+        let results: Vec<TaskInstanceEntity> = cursor.try_collect().await?;
+        Ok(results)
+    }
+
     async fn update_task_instance_entity(&self, task_instance_entity: TaskInstanceEntity) -> Result<TaskInstanceEntity, RepositoryError> {
-        let filter = doc! {"_id": &task_instance_entity.id};
+        let filter = doc! {"task_instance_id": &task_instance_entity.task_instance_id};
         self.collection.replace_one(filter, &task_instance_entity).await?;
         Ok(task_instance_entity)
     }
@@ -96,20 +113,36 @@ impl TaskEntityRepository for TaskRepositoryImpl {
 
     async fn get_task_entity(&self, id: String) -> Result<TaskEntity, RepositoryError> {
         let task_entity = self.collection
-            .find_one(doc! {"_id": &id})
+            .find_one(doc! {"id": &id})
             .await?
             .ok_or_else(|| format!("task entity not found: {}", id))?;
         Ok(task_entity)
     }
 
+    async fn get_task_entity_scoped(&self, tenant_id: &str, id: &str) -> Result<TaskEntity, RepositoryError> {
+        let entity = self.collection
+            .find_one(doc! {"tenant_id": tenant_id, "id": id})
+            .await?
+            .ok_or_else(|| format!("task entity not found: {} in tenant {}", id, tenant_id))?;
+        Ok(entity)
+    }
+
+    async fn list_task_entities(&self, tenant_id: &str) -> Result<Vec<TaskEntity>, RepositoryError> {
+        let cursor = self.collection
+            .find(doc! {"tenant_id": tenant_id})
+            .await?;
+        let results: Vec<TaskEntity> = cursor.try_collect().await?;
+        Ok(results)
+    }
+
     async fn update_task_entity(&self, task_entity: TaskEntity) -> Result<TaskEntity, RepositoryError> {
-        let filter = doc! {"_id": &task_entity.id};
+        let filter = doc! {"tenant_id": &task_entity.tenant_id, "id": &task_entity.id};
         self.collection.replace_one(filter, &task_entity).await?;
         Ok(task_entity)
     }
 
-    async fn delete_task_entity(&self, id: String) -> Result<(), RepositoryError> {
-        self.collection.delete_one(doc! {"_id": &id}).await?;
+    async fn delete_task_entity(&self, tenant_id: &str, id: &str) -> Result<(), RepositoryError> {
+        self.collection.delete_one(doc! {"tenant_id": tenant_id, "id": id}).await?;
         Ok(())
     }
 }

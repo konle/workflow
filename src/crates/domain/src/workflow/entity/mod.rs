@@ -41,6 +41,7 @@ pub struct WorkflowNodeEntity {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowInstanceEntity {
     pub workflow_instance_id: String,
+    pub tenant_id: String,
     pub workflow_meta_id: String,
     pub workflow_version: u32,
     pub status: WorkflowInstanceStatus,

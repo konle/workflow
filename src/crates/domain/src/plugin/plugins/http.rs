@@ -26,7 +26,7 @@ impl PluginInterface for HttpPlugin {
         // 构造异步任务
         let job = ExecuteTaskJob {
             task_instance_id: format!("{}-{}", workflow_instance.workflow_instance_id, node_instance.node_id),
-            tenant_id: "default".to_string(), // TODO: 从上下文中获取
+            tenant_id: workflow_instance.tenant_id.clone(),
             caller_context: Some(WorkflowCallerContext {
                 workflow_instance_id: workflow_instance.workflow_instance_id.clone(),
                 node_id: node_instance.node_id.clone(),

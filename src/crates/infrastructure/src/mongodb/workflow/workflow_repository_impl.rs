@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use futures::TryStreamExt;
 use mongodb::{Client, Database, Collection};
 use mongodb::bson::doc;
 use domain::shared::workflow::WorkflowInstanceStatus;
@@ -54,8 +55,26 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionRepositoryImpl {
         Ok(())
     }
 
-    async fn delete_workflow_meta_entity(&self, workflow_meta_id: String) -> Result<(), RepositoryError> {
-        self.workflow_meta_collection.delete_one(doc! {"workflow_meta_id": &workflow_meta_id}).await?;
+    async fn get_workflow_meta_entity_scoped(&self, tenant_id: &str, workflow_meta_id: &str) -> Result<WorkflowMetaEntity, RepositoryError> {
+        let entity = self.workflow_meta_collection
+            .find_one(doc! {"tenant_id": tenant_id, "workflow_meta_id": workflow_meta_id})
+            .await?
+            .ok_or_else(|| format!("workflow meta entity not found: {} in tenant {}", workflow_meta_id, tenant_id))?;
+        Ok(entity)
+    }
+
+    async fn list_workflow_meta_entities(&self, tenant_id: &str) -> Result<Vec<WorkflowMetaEntity>, RepositoryError> {
+        let cursor = self.workflow_meta_collection
+            .find(doc! {"tenant_id": tenant_id})
+            .await?;
+        let results: Vec<WorkflowMetaEntity> = cursor.try_collect().await?;
+        Ok(results)
+    }
+
+    async fn delete_workflow_meta_entity(&self, tenant_id: &str, workflow_meta_id: &str) -> Result<(), RepositoryError> {
+        self.workflow_meta_collection
+            .delete_one(doc! {"tenant_id": tenant_id, "workflow_meta_id": workflow_meta_id})
+            .await?;
         Ok(())
     }
 
@@ -87,6 +106,22 @@ impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
             .await?
             .ok_or_else(|| format!("workflow instance not found: {}", id))?;
         Ok(workflow_instance)
+    }
+
+    async fn get_workflow_instance_scoped(&self, tenant_id: &str, id: &str) -> Result<WorkflowInstanceEntity, RepositoryError> {
+        let instance = self.workflow_instance_collection
+            .find_one(doc! {"tenant_id": tenant_id, "workflow_instance_id": id})
+            .await?
+            .ok_or_else(|| format!("workflow instance not found: {} in tenant {}", id, tenant_id))?;
+        Ok(instance)
+    }
+
+    async fn list_workflow_instances(&self, tenant_id: &str) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError> {
+        let cursor = self.workflow_instance_collection
+            .find(doc! {"tenant_id": tenant_id})
+            .await?;
+        let results: Vec<WorkflowInstanceEntity> = cursor.try_collect().await?;
+        Ok(results)
     }
 
     async fn transfer_status(

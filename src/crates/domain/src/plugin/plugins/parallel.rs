@@ -76,7 +76,7 @@ impl PluginInterface for ParallelPlugin {
             let job = ExecuteTaskJob {
                 // Generate a unique task instance ID for the sub-task
                 task_instance_id: format!("{}-{}-{}", workflow_instance.workflow_instance_id, node_instance.node_id, index),
-                tenant_id: "default".to_string(), // TODO: 从上下文中获取
+                tenant_id: workflow_instance.tenant_id.clone(),
                 caller_context: Some(caller_context),
             };
             jobs.push(job);
@@ -156,7 +156,7 @@ impl PluginInterface for ParallelPlugin {
                 };
                 let child_job = ExecuteTaskJob {
                     task_instance_id: format!("{}-{}-{}", workflow_instance.workflow_instance_id, node_instance.node_id, idx),
-                    tenant_id: "default".to_string(), // TODO: 动态获取
+                    tenant_id: workflow_instance.tenant_id.clone(),
                     caller_context: Some(caller_context),
                 };
                 new_jobs.push(child_job);

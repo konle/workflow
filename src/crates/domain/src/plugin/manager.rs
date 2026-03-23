@@ -292,7 +292,7 @@ impl PluginManager {
             };
             self.dispatcher.dispatch_workflow(ExecuteWorkflowJob {
                 workflow_instance_id: parent_ctx.workflow_instance_id.clone(),
-                tenant_id: "default".to_string(),
+                tenant_id: instance.tenant_id.clone(),
                 event: WorkflowEvent::NodeCallback {
                     node_id: parent_ctx.node_id.clone(),
                     child_task_id: instance.workflow_instance_id.clone(),

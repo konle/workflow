@@ -10,20 +10,21 @@ pub trait WorkflowDefinitionRepository: Send + Sync {
     async fn get_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<WorkflowEntity, RepositoryError>;
     async fn save_workflow_entity(&self, entity: &WorkflowEntity) -> Result<(), RepositoryError>;
     async fn delete_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<(), RepositoryError>;
-    // 元数据表接口定义
+
     async fn get_workflow_meta_entity(&self, workflow_meta_id: String) -> Result<WorkflowMetaEntity, RepositoryError>;
+    async fn get_workflow_meta_entity_scoped(&self, tenant_id: &str, workflow_meta_id: &str) -> Result<WorkflowMetaEntity, RepositoryError>;
+    async fn list_workflow_meta_entities(&self, tenant_id: &str) -> Result<Vec<WorkflowMetaEntity>, RepositoryError>;
     async fn save_workflow_meta_entity(&self, entity: &WorkflowMetaEntity) -> Result<(), RepositoryError>;
-    async fn delete_workflow_meta_entity(&self, workflow_meta_id: String) -> Result<(), RepositoryError>;
+    async fn delete_workflow_meta_entity(&self, tenant_id: &str, workflow_meta_id: &str) -> Result<(), RepositoryError>;
     async fn create_workflow_meta_entity(&self, workflow_meta_entity: &WorkflowMetaEntity) -> Result<WorkflowMetaEntity, RepositoryError>;
 }
 
 #[async_trait]
 pub trait WorkflowInstanceRepository: Send + Sync {
     async fn get_workflow_instance(&self, id: String) -> Result<WorkflowInstanceEntity, RepositoryError>;
+    async fn get_workflow_instance_scoped(&self, tenant_id: &str, id: &str) -> Result<WorkflowInstanceEntity, RepositoryError>;
+    async fn list_workflow_instances(&self, tenant_id: &str) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError>;
 
-    /// CAS-style status update: only succeeds if the current status in DB matches `from_status`.
-    /// Uses filter(workflow_instance_id, status=from_status) to atomically update to `to_status`.
-    /// Returns the updated entity on success, or an error if the precondition fails.
     async fn transfer_status(
         &self,
         workflow_instance_id: &str,
