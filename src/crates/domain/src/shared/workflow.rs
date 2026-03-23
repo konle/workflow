@@ -161,6 +161,7 @@ impl TaskInstanceStatus {
 pub enum TaskType {
     Http,
     IfCondition,
+    ContextRewrite,
     Parallel,
     ForkJoin,
     SubWorkflow,

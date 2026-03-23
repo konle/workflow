@@ -535,11 +535,94 @@ DELETE /api/v1/workflow/meta/{meta_id}/variables/{id}        # 删除
 
 ---
 
-## 9. 总结与扩展
+## 9. 上下文重写插件 (ContextRewrite Plugin)
+
+### 9.1 定位
+
+纯计算同步节点，运行在 Workflow Worker（与 IfCondition 同级），**不需要 Task Worker**。在两个节点之间插入一段 Rhai 脚本，对工作流上下文做任意变换，结果写回 `workflow_instance.context` 供后续节点使用。
+
+典型场景：
+
+| 场景 | 说明 |
+|------|------|
+| 字段提取 | HTTP 响应 `{"data":{"users":[...]}}` → 提取为 `{"users":[...]}` |
+| 类型转换 | `"price":"99.5"` → `"price_num":99.5` |
+| 数据聚合 | 将 Parallel/ForkJoin 的多个子结果合并为一个汇总对象 |
+| 条件赋值 | 根据 `amount > 1000` 设置 `tier = "premium"` |
+| 变量重命名/清理 | 去除敏感字段、统一命名规范后传递给下游节点 |
+
+### 9.2 模板定义
+
+```rust
+pub struct ContextRewriteTemplate {
+    pub name: String,
+    pub script: String,          // Rhai 脚本，返回一个 Map
+    pub merge_mode: MergeMode,   // Merge(增量覆盖) | Replace(完全替换)
+}
+
+pub enum MergeMode {
+    Merge,    // 将脚本返回值 merge 进现有 context（默认）
+    Replace,  // 用脚本返回值完全替换 context
+}
+```
+
+### 9.3 Rhai 脚本规范
+
+引擎将合并后的变量上下文（`resolve_variables` 结果）注入 Rhai 作用域为 `ctx` 变量。脚本最后一行返回 `#{ ... }` Map 对象。
+
+```rhai
+// 示例：字段提取
+let users = ctx["response"]["data"]["users"];
+#{
+    "user_count": users.len(),
+    "user_names": users.map(|u| u.name)
+}
+```
+
+```rhai
+// 示例：条件赋值
+let tier = if ctx["amount"] > 1000 { "premium" } else { "standard" };
+#{
+    "customer_tier": tier,
+    "discount": if tier == "premium" { 0.2 } else { 0.0 }
+}
+```
+
+### 9.4 执行流程
+
+```
+Workflow Worker 命中 ContextRewrite 节点
+  ├─ 1. resolve_variables() 合并四层上下文 → merged_ctx
+  ├─ 2. 将 merged_ctx 注入 Rhai Scope 为 `ctx`
+  ├─ 3. 执行 script，获取返回的 Map
+  ├─ 4. Merge 模式 → context.extend(result)
+  │     Replace 模式 → context = result
+  ├─ 5. 写回 workflow_instance.context
+  └─ 6. 返回 ExecutionResult::success()，同步推进
+```
+
+### 9.5 安全约束
+
+| 维度 | 策略 |
+|------|------|
+| 沙箱 | Rhai 内建沙箱，无文件/网络/系统调用能力 |
+| 资源限制 | `Engine::set_max_operations(100_000)` 防止死循环 |
+| 超时 | 脚本执行超过 5 秒中断，节点标记 Failed |
+| Secret 变量 | 经 resolve_variables 解密注入到 ctx，但写回 context 前过滤掉 Secret 变量的 key |
+
+### 9.6 共享 Rhai 引擎
+
+ContextRewrite 与 IfCondition 共用 Rhai 引擎，提取为 `plugin/rhai_engine.rs` 共享模块，统一管理：
+- Rhai `Engine` 实例创建与配置（operations limit）
+- `ctx` 变量的注入逻辑
+- JSON ↔ Rhai Dynamic 的类型转换
+
+---
+
+## 10. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
 
 未来的扩展方案：
 1. **人工审批节点**：写一个 `ApprovalPlugin`，它连 Task Worker 都不需要找，`execute` 返回 `Pending` 后，直接等待外部 API 接口推入一个包含审批结果的 `NodeCallback` 事件到 Workflow 队列，就能顺滑将其唤醒。
 2. **延迟节点**：通过向 Apalis 推送定时消息，延时触发。
-3. **上下文重写插件**：基于 Rhai 脚本引擎，在节点之间插入一个纯计算节点，对工作流上下文做任意变换（字段提取、类型转换、数据聚合等），结果写回上下文供后续节点使用。

@@ -13,6 +13,7 @@ pub enum TaskTemplate {
     Grpc,
     Approval,
     IfCondition(IfConditionTemplate),
+    ContextRewrite(ContextRewriteTemplate),
     Parallel(ParallelTemplate),
     ForkJoin(ForkJoinTemplate),
     SubWorkflow(SubWorkflowTemplate),
@@ -89,6 +90,24 @@ pub struct IfConditionTemplate {
     pub name: String,
     pub then_task: Option<String>,
     pub else_task: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MergeMode {
+    Merge,
+    Replace,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextRewriteTemplate {
+    pub name: String,
+    pub script: String,
+    #[serde(default = "default_merge_mode")]
+    pub merge_mode: MergeMode,
+}
+
+fn default_merge_mode() -> MergeMode {
+    MergeMode::Merge
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

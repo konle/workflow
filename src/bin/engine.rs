@@ -94,6 +94,7 @@ fn create_plugin_manager(
     manager.register(Box::new(domain::plugin::plugins::http::HttpPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::parallel::ParallelPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::ifcondition::IfConditionPlugin::new()));
+    manager.register(Box::new(domain::plugin::plugins::contextrewrite::ContextRewritePlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::forkjoin::ForkJoinPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::subworkflow::SubWorkflowPlugin::new(
         workflow_definition_svc,
