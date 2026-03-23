@@ -1,6 +1,6 @@
 use axum::{
     extract::{Extension, Path, State},
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Json, Router,
 };
 use domain::workflow::{

@@ -4,6 +4,7 @@ use crate::handler::auth::{AuthHandler, routes as auth_routes};
 use crate::handler::task::{TaskHandler, TaskInstanceHandler, routes as task_routes};
 use crate::handler::tenant::{TenantHandler, routes as tenant_routes};
 use crate::handler::user::{UserHandler, routes as user_routes};
+use crate::handler::variable::{VariableHandler, tenant_variable_routes};
 use crate::handler::workflow::{WorkflowHandler, WorkflowInstanceHandler, routes as workflow_routes};
 use crate::middleware::auth::auth_middleware;
 use crate::middleware::permission::require_super_admin;
@@ -14,6 +15,7 @@ pub fn create_router(
     auth_handler: Arc<AuthHandler>,
     tenant_handler: Arc<TenantHandler>,
     user_handler: Arc<UserHandler>,
+    variable_handler: Arc<VariableHandler>,
     task_handler: Arc<TaskHandler>,
     task_instance_handler: Arc<TaskInstanceHandler>,
     workflow_handler: Arc<WorkflowHandler>,
@@ -31,8 +33,9 @@ pub fn create_router(
     let protected = Router::new()
         .nest("/tenants", tenant_mgmt)
         .nest("/users", user_mgmt)
+        .nest("/variables", tenant_variable_routes(variable_handler.clone()))
         .nest("/task", task_routes(task_handler, task_instance_handler))
-        .nest("/workflow", workflow_routes(workflow_handler, workflow_instance_handler))
+        .nest("/workflow", workflow_routes(workflow_handler, workflow_instance_handler, variable_handler))
         .layer(middleware::from_fn(auth_middleware));
 
     let v1 = Router::new()

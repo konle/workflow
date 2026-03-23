@@ -27,6 +27,13 @@ impl ApiError {
             message: message.to_string(),
         }
     }
+
+    pub fn forbidden(message: impl ToString) -> Self {
+        ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: message.to_string(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {

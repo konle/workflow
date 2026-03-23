@@ -418,10 +418,128 @@ SuperAdmin 可通过 `X-Tenant-Id` Header 代入任意租户上下文。
 
 ---
 
-## 8. 总结与扩展
+## 8. 变量系统 (Variable System)
+
+### 8.1 设计总则
+
+变量系统为工作流引擎提供了统一的外部配置注入能力。用户可以在不修改工作流模板的前提下，通过变量来改变运行时行为（如切换 API 地址、注入凭证等）。变量按作用域分层，越靠近执行现场的变量优先级越高。
+
+### 8.2 变量层级与优先级
+
+| 优先级 | 层级 | scope_id | 说明 | 来源 |
+|:------:|------|----------|------|------|
+| 1 (最低) | **租户变量** | `tenant_id` | 全租户共享的基础配置 | `VariableEntity (scope=Tenant)` |
+| 2 | **工作流模板变量** | `workflow_meta_id` | 某个工作流的默认配置 | `VariableEntity (scope=WorkflowMeta)` |
+| 3 | **工作流实例变量** | `workflow_instance_id` | 运行时传入的上下文 | `WorkflowInstanceEntity.context` |
+| 4 (最高) | **节点上下文** | `node_id` | 单节点的局部覆盖 | `WorkflowNodeInstanceEntity.context` |
+
+> 优先级 3、4 已存在于现有实体的 `context` 字段中，无需额外建模。变量系统仅为优先级 1、2 新增持久化实体。
+
+### 8.3 变量实体
+
+```rust
+pub enum VariableScope {
+    Tenant,        // 租户级
+    WorkflowMeta,  // 工作流模板级
+}
+
+pub enum VariableType {
+    String,
+    Number,
+    Bool,
+    Json,
+    Secret,  // 加密存储，API 掩码返回
+}
+
+pub struct VariableEntity {
+    pub id: String,
+    pub tenant_id: String,
+    pub scope: VariableScope,
+    pub scope_id: String,          // tenant_id 或 workflow_meta_id
+    pub key: String,               // 变量名，scope_id + key 唯一
+    pub value: String,             // 存储值（Secret 类型 AES-256-GCM 加密）
+    pub variable_type: VariableType,
+    pub description: Option<String>,
+    pub created_by: String,        // user_id
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+```
+
+### 8.4 变量类型与安全策略
+
+| 类型 | 存储方式 | API 响应 | 引擎解析 |
+|------|----------|----------|----------|
+| `String` | 明文 | 明文 | 原样注入 |
+| `Number` | 明文 | 明文 | 解析为 `f64` |
+| `Bool` | 明文 | 明文 | 解析为 `bool` |
+| `Json` | 明文 JSON | 明文 | 解析为 `serde_json::Value` |
+| `Secret` | **AES-256-GCM 加密** | `"******"` 掩码 | **运行时解密注入，不落盘到 output** |
+
+加密密钥来源于环境变量 `VARIABLE_ENCRYPT_KEY`，缺失时拒绝启动。
+
+### 8.5 变量解析流程
+
+引擎在执行每个节点前，由 `VariableService::resolve_variables` 构造合并后的变量上下文：
+
+```
+resolve_variables(tenant_id, workflow_meta_id, instance_context, node_context):
+    merged = {}
+    merged.extend(load_tenant_variables(tenant_id))          // 优先级 1
+    merged.extend(load_workflow_meta_variables(meta_id))      // 优先级 2 覆盖 1
+    merged.extend(instance_context)                           // 优先级 3 覆盖 2
+    merged.extend(node_context)                               // 优先级 4 覆盖 3
+    return merged
+```
+
+Rhai 表达式（IfCondition）和模板渲染（HTTP URL/Body）均基于此 `merged` 上下文执行。Secret 类型的变量在解析阶段解密注入，但**绝不写入** `TaskInstanceEntity.output`，防止凭证泄漏到持久化层。
+
+### 8.6 权限矩阵
+
+| 操作 | SuperAdmin | TenantAdmin | Developer | Operator | Viewer |
+|------|:---:|:---:|:---:|:---:|:---:|
+| 租户变量 CRUD | ✅ | ✅ | 仅读（Secret 掩码） | 仅读（Secret 掩码） | 仅读（Secret 掩码） |
+| 租户 Secret 变量 创建/改值 | ✅ | ✅ | ❌ | ❌ | ❌ |
+| 模板变量 CRUD | ✅ | ✅ | ✅ | 仅读 | 仅读 |
+| 模板 Secret 变量 创建/改值 | ✅ | ✅ | ✅ | ❌ | ❌ |
+
+### 8.7 API 路由
+
+```
+# 租户变量
+GET    /api/v1/variables                                    # 列表
+POST   /api/v1/variables                                    # 创建
+GET    /api/v1/variables/{id}                               # 详情（Secret 掩码）
+PUT    /api/v1/variables/{id}                               # 更新
+DELETE /api/v1/variables/{id}                               # 删除
+
+# 工作流模板变量
+GET    /api/v1/workflow/meta/{meta_id}/variables             # 列表
+POST   /api/v1/workflow/meta/{meta_id}/variables             # 创建
+GET    /api/v1/workflow/meta/{meta_id}/variables/{id}        # 详情
+PUT    /api/v1/workflow/meta/{meta_id}/variables/{id}        # 更新
+DELETE /api/v1/workflow/meta/{meta_id}/variables/{id}        # 删除
+```
+
+### 8.8 涉及代码变更
+
+| 层级 | 变更 |
+|------|------|
+| `domain/variable/entity` | 新增 `VariableEntity`、`VariableScope`、`VariableType` |
+| `domain/variable/repository` | `VariableRepository` trait |
+| `domain/variable/service` | `VariableService`（CRUD + AES 加解密 + `resolve_variables`） |
+| `infrastructure/mongodb/variable` | MongoDB 实现 |
+| `api/handler/variable` | Handler + 权限守卫 |
+| `api/router` | 路由挂载 |
+| `domain/plugin/manager` | 执行节点前调用 `resolve_variables` 合并上下文 |
+
+---
+
+## 9. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
 
 未来的扩展方案：
 1. **人工审批节点**：写一个 `ApprovalPlugin`，它连 Task Worker 都不需要找，`execute` 返回 `Pending` 后，直接等待外部 API 接口推入一个包含审批结果的 `NodeCallback` 事件到 Workflow 队列，就能顺滑将其唤醒。
 2. **延迟节点**：通过向 Apalis 推送定时消息，延时触发。
+3. **上下文重写插件**：基于 Rhai 脚本引擎，在节点之间插入一个纯计算节点，对工作流上下文做任意变换（字段提取、类型转换、数据聚合等），结果写回上下文供后续节点使用。

@@ -1,6 +1,7 @@
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::workflow::{TaskType, WorkflowInstanceStatus};
 use crate::shared::job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent};
+use crate::variable::service::VariableService;
 use crate::workflow::entity::{
     NodeExecutionStatus, WorkflowInstanceEntity, WorkflowNodeInstanceEntity,
 };
@@ -18,6 +19,7 @@ enum LoopAction {
 pub struct PluginManager {
     plugins: HashMap<TaskType, Box<dyn PluginInterface>>,
     workflow_instance_svc: Arc<WorkflowInstanceService>,
+    variable_svc: Option<VariableService>,
     dispatcher: Arc<dyn TaskDispatcher>,
 }
 
@@ -26,8 +28,14 @@ impl PluginManager {
         Self {
             plugins: HashMap::new(),
             workflow_instance_svc,
+            variable_svc: None,
             dispatcher,
         }
+    }
+
+    pub fn with_variable_service(mut self, svc: VariableService) -> Self {
+        self.variable_svc = Some(svc);
+        self
     }
 
     pub fn workflow_instance_svc(&self) -> &WorkflowInstanceService {
@@ -193,6 +201,19 @@ impl PluginManager {
         node_index: usize,
     ) -> anyhow::Result<LoopAction> {
         let mut node = instance.nodes[node_index].clone();
+
+        if let Some(ref var_svc) = self.variable_svc {
+            match var_svc.resolve_variables(
+                &instance.tenant_id,
+                &instance.workflow_meta_id,
+                &instance.context,
+                &node.context,
+            ).await {
+                Ok(merged) => node.context = merged,
+                Err(e) => println!("Warning: variable resolution failed: {}, using raw context", e),
+            }
+        }
+
         let result = self.execute_node_instance(&mut node, instance).await;
         instance.nodes[node_index] = node;
 

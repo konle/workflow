@@ -4,6 +4,7 @@ use apalis_redis::RedisStorage;
 use domain::plugin::manager::PluginManager;
 use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob};
 use domain::task::service::TaskInstanceService;
+use domain::variable::service::VariableService;
 use domain::workflow::service::{WorkflowDefinitionService, WorkflowInstanceService};
 use infrastructure::queue::consumer;
 use infrastructure::queue::dispatcher::ApalisDispatcher;
@@ -83,11 +84,13 @@ async fn handle_task_job(
 fn create_plugin_manager(
     workflow_definition_svc: WorkflowDefinitionService,
     workflow_instance_svc: Arc<WorkflowInstanceService>,
+    variable_svc: VariableService,
     task_storage: RedisStorage<ExecuteTaskJob>,
     workflow_storage: RedisStorage<ExecuteWorkflowJob>,
 ) -> Arc<PluginManager> {
     let dispatcher = Arc::new(ApalisDispatcher::new(task_storage, workflow_storage));
-    let mut manager = PluginManager::new(workflow_instance_svc.clone(), dispatcher);
+    let mut manager = PluginManager::new(workflow_instance_svc.clone(), dispatcher)
+        .with_variable_service(variable_svc);
     manager.register(Box::new(domain::plugin::plugins::http::HttpPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::parallel::ParallelPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::ifcondition::IfConditionPlugin::new()));
@@ -111,6 +114,8 @@ async fn main() {
 
     let mongo_url = std::env::var("MONGO_URL").unwrap_or_else(|_| "mongodb://127.0.0.1:27017".to_string());
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let encrypt_key = std::env::var("VARIABLE_ENCRYPT_KEY")
+        .unwrap_or_else(|_| "workflow-default-encrypt-key-change-me".to_string());
 
     let mongo_client = mongodb::Client::with_uri_str(&mongo_url).await.expect("failed to connect to MongoDB");
 
@@ -123,15 +128,20 @@ async fn main() {
         infrastructure::mongodb::workflow::workflow_repository_impl::WorkflowInstanceRepositoryImpl::new(mongo_client.clone())
     );
     let workflow_instance_svc = Arc::new(WorkflowInstanceService::new(workflow_repo));
-    
+
+    let variable_repo = Arc::new(
+        infrastructure::mongodb::variable::variable_repository_impl::VariableRepositoryImpl::new(mongo_client.clone())
+    );
+    let variable_svc = VariableService::new(variable_repo, encrypt_key);
+
     let task_repo = Arc::new(infrastructure::mongodb::task::task_repository_impl::TaskInstanceRepositoryImpl::new(mongo_client.clone()));
     let task_svc = Arc::new(TaskInstanceService::new(task_repo));
     let task_manager = create_task_manager(task_svc);
-    
+
     let wf_storage = consumer::create_workflow_storage(&redis_url).await;
     let task_storage = consumer::create_task_storage(&redis_url).await;
 
-    let plugin_manager = create_plugin_manager(workflow_definition_svc, workflow_instance_svc, task_storage.clone(), wf_storage.clone());
+    let plugin_manager = create_plugin_manager(workflow_definition_svc, workflow_instance_svc, variable_svc, task_storage.clone(), wf_storage.clone());
 
     let wf_worker = WorkerBuilder::new("workflow-worker")
         .data(plugin_manager.clone())
