@@ -1,4 +1,5 @@
 use crate::shared::form::Form;
+use crate::shared::job::WorkflowCallerContext;
 use crate::shared::workflow::{TaskType, WorkflowInstanceStatus};
 use crate::shared::workflow::WorkflowStatus;
 use crate::task::entity::{TaskTemplate, TaskInstanceEntity};
@@ -54,6 +55,8 @@ pub struct WorkflowInstanceEntity {
     pub locked_by: Option<String>,
     pub locked_duration: Option<u64>, // milliseconds
     pub locked_at: Option<DateTime<Utc>>,
+    pub parent_context: Option<WorkflowCallerContext>,
+    pub depth: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

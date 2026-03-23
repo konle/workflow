@@ -2,6 +2,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
+use crate::shared::job::WorkflowCallerContext;
 use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
 use crate::task::entity::TaskInstanceEntity;
 use crate::workflow::entity::{
@@ -68,6 +69,8 @@ impl WorkflowInstanceService {
         &self,
         workflow_entity: &WorkflowEntity,
         context: JsonValue,
+        parent_context: Option<WorkflowCallerContext>,
+        depth: u32,
     ) -> Result<WorkflowInstanceEntity, RepositoryError> {
         let now = Utc::now();
         let instance_id = Uuid::new_v4().to_string();
@@ -124,6 +127,8 @@ impl WorkflowInstanceService {
             locked_by: None,
             locked_duration: None,
             locked_at: None,
+            parent_context,
+            depth,
         };
 
         self.repository.create_workflow_instance(&instance).await

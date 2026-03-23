@@ -163,6 +163,7 @@ pub enum TaskType {
     IfCondition,
     Parallel,
     ForkJoin,
+    SubWorkflow,
     Grpc,
     Approval,
 }

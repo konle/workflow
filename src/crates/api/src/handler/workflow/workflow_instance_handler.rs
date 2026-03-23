@@ -60,7 +60,7 @@ async fn create_instance(
         .await?;
 
     let instance = handler.instance_service
-        .create_instance(&workflow_entity, req.context)
+        .create_instance(&workflow_entity, req.context, None, 0)
         .await?;
 
     Ok(Json(Response::success(instance)))

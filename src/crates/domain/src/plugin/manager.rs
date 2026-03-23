@@ -1,6 +1,6 @@
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::workflow::{TaskType, WorkflowInstanceStatus};
-use crate::shared::job::TaskDispatcher;
+use crate::shared::job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent};
 use crate::workflow::entity::{
     NodeExecutionStatus, WorkflowInstanceEntity, WorkflowNodeInstanceEntity,
 };
@@ -92,6 +92,11 @@ impl PluginManager {
                 callback_result
             }
         };
+
+        // If this workflow reached a terminal state, notify parent (if sub-workflow)
+        if result.is_ok() {
+            let _ = self.notify_parent_if_needed(&job.workflow_instance_id).await;
+        }
 
         // Always attempt to release the lock when done
         let _ = self.workflow_instance_svc.release_lock(&job.workflow_instance_id, worker_id).await;
@@ -257,8 +262,49 @@ impl PluginManager {
         for job in exec_result.dispatch_jobs {
             self.dispatcher.dispatch_task(job).await?;
         }
+        for job in exec_result.dispatch_workflow_jobs {
+            self.dispatcher.dispatch_workflow(job).await?;
+        }
 
         Ok(action)
+    }
+
+    /// If this workflow has a parent (sub-workflow), dispatch a NodeCallback to the parent.
+    async fn notify_parent_if_needed(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
+        let instance = self.workflow_instance_svc
+            .get_workflow_instance(workflow_instance_id.to_string())
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        let is_terminal = matches!(
+            instance.status,
+            WorkflowInstanceStatus::Completed | WorkflowInstanceStatus::Failed
+        );
+
+        if !is_terminal {
+            return Ok(());
+        }
+
+        if let Some(parent_ctx) = &instance.parent_context {
+            let status = match instance.status {
+                WorkflowInstanceStatus::Completed => NodeExecutionStatus::Success,
+                _ => NodeExecutionStatus::Failed,
+            };
+            self.dispatcher.dispatch_workflow(ExecuteWorkflowJob {
+                workflow_instance_id: parent_ctx.workflow_instance_id.clone(),
+                tenant_id: "default".to_string(),
+                event: WorkflowEvent::NodeCallback {
+                    node_id: parent_ctx.node_id.clone(),
+                    child_task_id: instance.workflow_instance_id.clone(),
+                    status,
+                    output: Some(instance.context.clone()),
+                    error_message: None,
+                    input: None,
+                },
+            }).await?;
+        }
+
+        Ok(())
     }
 }
 

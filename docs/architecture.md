@@ -249,7 +249,82 @@ ForkJoin.execute()
 
 ---
 
-## 6. 总结与扩展
+## 6. 子工作流嵌套 (SubWorkflow Plugin)
+
+工作流之间没有高低之分，任何工作流都可以作为另一个工作流中的一个节点被调用。SubWorkflow 节点本质上与 Http、Parallel 处于同一层次——都是工作流图中的一个节点。区别仅在于：Http 投递任务给 Task Worker，而 SubWorkflow 投递的是**一个全新的工作流实例**给 Workflow Worker。
+
+### 6.1 模板定义
+
+```rust
+pub struct SubWorkflowTemplate {
+    pub workflow_meta_id: String,         // 引用哪个工作流
+    pub workflow_version: u32,            // 指定版本
+    pub input_mapping: Option<JsonValue>, // 传递给子工作流的上下文
+    pub output_path: Option<String>,      // 子工作流结果写回父节点上下文的路径
+    pub timeout: Option<u64>,             // 超时（秒）
+}
+```
+
+### 6.2 实体扩展
+
+`WorkflowInstanceEntity` 新增两个字段：
+
+```rust
+pub struct WorkflowInstanceEntity {
+    // ... 原有字段 ...
+    pub parent_context: Option<WorkflowCallerContext>, // 若自己是子工作流，记录父工作流信息
+    pub depth: u32,                                    // 嵌套深度，根工作流=0
+}
+```
+
+### 6.3 执行时序
+
+```mermaid
+sequenceDiagram
+    participant PWW as Parent Workflow Worker
+    participant RQ as Redis Queue
+    participant CWW as Child Workflow Worker
+    participant DB as MongoDB
+
+    Note over PWW, DB: 1. 父工作流命中 SubWorkflow 节点
+    PWW->>DB: 1. 加载子工作流模板 (WorkflowDefinitionService)
+    PWW->>DB: 2. 创建子 WorkflowInstance (Pending, depth=parent+1, parent_context 指向父)
+    PWW->>RQ: 3. 投递 ExecuteWorkflowJob(Start) 给子工作流
+    PWW->>DB: 4. 父节点状态 → Suspended
+
+    Note over RQ, DB: 2. 子工作流独立执行
+    RQ->>CWW: 5. 消费子工作流 Start 事件
+    CWW->>CWW: 6. 子工作流正常编排（Http/Parallel/ForkJoin/...）
+    CWW->>DB: 7. 子工作流执行完毕 → Completed
+
+    Note over CWW, PWW: 3. 子工作流完成 → 回调父工作流
+    CWW->>CWW: 8. 检测到 parent_context 非空
+    CWW->>RQ: 9. 投递 NodeCallback 给父工作流
+    RQ->>PWW: 10. 父 Workflow Worker 唤醒
+    PWW->>PWW: 11. handle_callback 接收子结果
+    PWW->>DB: 12. 父节点 Success/Failed，继续下一节点
+```
+
+### 6.4 父回调机制
+
+子工作流到达终态（Completed / Failed）后，`PluginManager::process_workflow_job` 在释放锁之前检查 `parent_context`：
+
+* 若 `parent_context` 非空 → 向父工作流投递 `NodeCallback` 事件（携带子工作流的上下文作为 output）
+* 若为空 → 根工作流，正常结束
+
+这与 Task Worker 完成后回调父工作流的机制**完全一致**，复用了同一套 `NodeCallback` 事件通道。
+
+### 6.5 防循环递归
+
+| 策略 | 说明 |
+|------|------|
+| 深度限制 | `depth` 字段每嵌套一层 +1，超过 `MAX_DEPTH`（默认 10）直接拒绝 |
+
+子工作流的 `handle_callback` 直接使用 `PluginInterface` trait 的默认实现——子工作流的完成状态和输出直接映射为父节点的状态。
+
+---
+
+## 7. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
 

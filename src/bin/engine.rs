@@ -4,7 +4,7 @@ use apalis_redis::RedisStorage;
 use domain::plugin::manager::PluginManager;
 use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob};
 use domain::task::service::TaskInstanceService;
-use domain::workflow::service::WorkflowInstanceService;
+use domain::workflow::service::{WorkflowDefinitionService, WorkflowInstanceService};
 use infrastructure::queue::consumer;
 use infrastructure::queue::dispatcher::ApalisDispatcher;
 
@@ -81,16 +81,21 @@ async fn handle_task_job(
 }
 
 fn create_plugin_manager(
+    workflow_definition_svc: WorkflowDefinitionService,
     workflow_instance_svc: Arc<WorkflowInstanceService>,
     task_storage: RedisStorage<ExecuteTaskJob>,
     workflow_storage: RedisStorage<ExecuteWorkflowJob>,
 ) -> Arc<PluginManager> {
     let dispatcher = Arc::new(ApalisDispatcher::new(task_storage, workflow_storage));
-    let mut manager = PluginManager::new(workflow_instance_svc, dispatcher);
+    let mut manager = PluginManager::new(workflow_instance_svc.clone(), dispatcher);
     manager.register(Box::new(domain::plugin::plugins::http::HttpPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::parallel::ParallelPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::ifcondition::IfConditionPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::forkjoin::ForkJoinPlugin::new()));
+    manager.register(Box::new(domain::plugin::plugins::subworkflow::SubWorkflowPlugin::new(
+        workflow_definition_svc,
+        (*workflow_instance_svc).clone(),
+    )));
     Arc::new(manager)
 }
 
@@ -108,6 +113,12 @@ async fn main() {
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
     let mongo_client = mongodb::Client::with_uri_str(&mongo_url).await.expect("failed to connect to MongoDB");
+
+    let workflow_def_repo = Arc::new(
+        infrastructure::mongodb::workflow::workflow_repository_impl::WorkflowDefinitionRepositoryImpl::new(mongo_client.clone())
+    );
+    let workflow_definition_svc = WorkflowDefinitionService::new(workflow_def_repo);
+
     let workflow_repo = Arc::new(
         infrastructure::mongodb::workflow::workflow_repository_impl::WorkflowInstanceRepositoryImpl::new(mongo_client.clone())
     );
@@ -120,7 +131,7 @@ async fn main() {
     let wf_storage = consumer::create_workflow_storage(&redis_url).await;
     let task_storage = consumer::create_task_storage(&redis_url).await;
 
-    let plugin_manager = create_plugin_manager(workflow_instance_svc, task_storage.clone(), wf_storage.clone());
+    let plugin_manager = create_plugin_manager(workflow_definition_svc, workflow_instance_svc, task_storage.clone(), wf_storage.clone());
 
     let wf_worker = WorkerBuilder::new("workflow-worker")
         .data(plugin_manager.clone())

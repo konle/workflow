@@ -15,6 +15,7 @@ pub enum TaskTemplate {
     IfCondition(IfConditionTemplate),
     Parallel(ParallelTemplate),
     ForkJoin(ForkJoinTemplate),
+    SubWorkflow(SubWorkflowTemplate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +59,15 @@ pub struct ForkJoinTaskItem {
     pub task_key: String,
     pub name: String,
     pub task_template: TaskTemplate,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubWorkflowTemplate {
+    pub workflow_meta_id: String,
+    pub workflow_version: u32,
+    pub input_mapping: Option<JsonValue>,
+    pub output_path: Option<String>,
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
