@@ -1,0 +1,185 @@
+# 分布式工作流引擎架构设计文档
+
+本文档详细描述了本工作流引擎的架构设计、插件化系统、以及调度器与执行器之间的交互流转模型。
+
+## 1. 核心架构设计
+
+引擎采用了 **编排器 (Orchestrator)** 与 **执行器 (Executor)** 分离的微服务架构。通过分布式的消息队列（当前为 Apalis + Redis），将系统拆分为两类独立运行的 Worker 节点。
+
+### 1.1 Worker 角色划分
+
+1. **Workflow Worker (编排器)**
+   * **职责**：负责工作流有向图的拓扑迭代、状态机流转、执行上下文（Context）的维护与传递、插件控制流的决策。
+   * **行为**：它本身**不执行**任何诸如 HTTP 请求或脚本解析等重量级耗时操作。当执行到一个动作节点（如 HTTP 请求）时，它只负责生成一张任务执行工单，丢给队列，然后就挂起休眠，释放计算资源。
+
+2. **Task Worker (执行器)**
+   * **职责**：负责干脏活累活。从任务队列中抓取任务，调用具体的 `TaskExecutor`（如 `HttpTaskExecutor`）发起实际的网络请求、执行脚本等。
+   * **行为**：执行完成后，负责将结果（Output、Error等）打包成事件（Event），反向投递给工作流队列，通知对应的 Workflow Worker 醒来收工。
+
+### 1.2 架构交互图
+
+```mermaid
+sequenceDiagram
+    participant WW as Workflow Worker (Engine)
+    participant RQ as Redis Queue
+    participant TW as Task Worker (Executor)
+    participant DB as MongoDB
+
+    Note over WW, DB: 1. 节点执行阶段 (Scatter)
+    WW->>DB: 1. 读取 WorkflowInstance
+    WW->>WW: 2. Manager 调用 Plugin::execute (如 HttpPlugin)
+    WW->>RQ: 3. 发送 ExecuteTaskJob (包含 CallerContext)
+    WW->>DB: 4. 将 Node 置为 Suspended 并保存状态
+
+    Note over RQ, DB: 2. 任务消费与执行阶段
+    RQ->>TW: 5. 消费 ExecuteTaskJob
+    TW->>DB: 6. 获取 TaskInstanceEntity (包含请求参数)
+    TW->>TW: 7. TaskManager 路由到对应的 TaskExecutor 并执行网络请求
+    TW->>DB: 8. 更新 TaskInstanceEntity (落盘 Input/Output)
+    
+    Note over TW, WW: 3. 结果回调阶段 (Gather & Signal)
+    TW->>RQ: 9. 投递 ExecuteWorkflowJob (事件: NodeCallback)
+    RQ->>WW: 10. 唤醒 Workflow Worker
+    WW->>WW: 11. 路由给对应 Plugin 的 handle_callback 吸收执行结果
+    WW->>DB: 12. 更新 Node 状态并持久化，继续执行下一节点
+```
+
+---
+
+## 2. 插件化系统 (Plugin System)
+
+为了让系统拥有极强的扩展能力，我们将任务的抽象剥离成了两层接口：**编排插件接口 (`PluginInterface`)** 与 **执行器接口 (`TaskExecutor`)**。
+
+### 2.1 编排插件 (`PluginInterface`)
+
+该接口存在于 Workflow Worker 的上下文中。**它是工作流的路由大脑，而非干活的苦力。**
+主要用于实现：如何发射子任务、遇到子任务回调时如何合并状态、如何进行分支跳转（如 If 条件）等控制流逻辑。
+
+```rust
+#[async_trait]
+pub trait PluginInterface: Send + Sync {
+    // 【前置逻辑】当工作流运行到该节点时触发。
+    // 一般用于：解析配置、生成并向下分发 ExecuteTaskJob、或者针对控制流节点(IfCondition)直接返回跳到哪。
+    async fn execute(...) -> anyhow::Result<ExecutionResult>;
+
+    // 【后置回调逻辑】当远端的 Task Worker 汇报“任务已完成”时触发。
+    // 一般用于：普通节点直接拷贝结果并完结；并发节点(Parallel)做数据聚合和增量派发。
+    async fn handle_callback(...) -> anyhow::Result<ExecutionResult>;
+    
+    fn plugin_type(&self) -> TaskType;
+}
+```
+
+**代表实现**：
+* `HttpPlugin`：`execute` 里构造一条任务工单推到队列，直接返回 `Pending` 挂起。`handle_callback` 里直接接收结果，返回 `Success`。
+* `IfConditionPlugin`：不需要队列交互。`execute` 里直接运行表达式库，算出来 `true` 还是 `false`，当即返回 `Success(JumpTo(TargetNode))` 告知工作流下一跳转去哪里。
+* `ParallelPlugin`：并发大杀器，接下来详述。
+
+### 2.2 任务执行器 (`TaskExecutor`)
+
+该接口存在于 Task Worker 的上下文中。它的职责极其单一：拿到一段静态的输入参数，把它跑完，返回一段静态的输出结果。
+
+```rust
+#[async_trait]
+pub trait TaskExecutor: Send + Sync {
+    async fn execute_task(&self, task_instance: &TaskInstanceEntity) -> anyhow::Result<TaskExecutionResult>;
+    fn task_type(&self) -> TaskType;
+}
+```
+
+---
+
+## 3. 并发容器 (Parallel Plugin) 深度剖析
+
+`Parallel` 并不是一个普通的“执行某段代码”的节点，它是一个 **Scatter-Gather (分散-聚合)** 模式的微型调度器本身。
+由于它可能需要遍历处理 10 万条数据的数组，因此**坚决不能**在一次 `execute` 里把 10 万条队列任务全部发出，这会瞬间造成内存 OOM 和 Redis 拥堵。
+
+因此，Parallel 借助了我们的 `NodeCallback` 内部事件机制，实现了一个非常精妙的状态机。
+
+### 3.1 状态机存储
+
+Parallel 借用了它自身的 `TaskInstanceEntity.output` 来充当状态机的内存条，并利用 MongoDB 作为持久化存储（即便引擎宕机重启，进度也能从 DB 恢复）。
+```json
+{
+  "total_items": 1000,
+  "dispatched_count": 10,
+  "success_count": 0,
+  "failed_count": 0
+}
+```
+
+### 3.2 增量控制流 (Scatter & Gather)
+
+1. **首次执行 (Scatter 播种)**
+   在 `ParallelPlugin::execute` 中，只解析目标数组大小（如 1000）。并且**仅仅**根据设定的 `concurrency` 阈值（如 10），生成**前 10 个** `ExecuteTaskJob` 扔进任务队列，并记录 `dispatched_count = 10`。
+   > **关键点**：这发出去的 10 个 Job 中，它的 `caller_context` 里携带了 `parent_task_instance_id` (指向这个 Parallel 的 ID)，以及自己代表的是数组里的第 `item_index` 个元素。
+
+2. **异步回调与增量补货 (Gather 收获)**
+   随着 Task Worker 并发执行这 10 个任务，会有捷足先登者完成并向 Workflow Worker 发射 `NodeCallback` 事件。
+   事件流转进入 `ParallelPlugin::handle_callback`，在此进行如下决断：
+   
+   * **状态聚合**：根据子任务的成败，对 `success_count` 或 `failed_count` 进行加一。
+   * **失败熔断**：检测 `failed_count > max_failures`。若超过容忍度，整个 Parallel 立即短路失败，抛弃未执行的任务。
+   * **完成检测**：若 `success_count + failed_count == total_items`，全员收工，向引擎返回 `Success` 推动主流程前行。
+   * **并发补货**：如果既未熔断也未完成，则根据并发模式开始派发新任务：
+     * **Rolling (滚动模式)**：犹如滑动窗口，走了一个补一个，立即派发第 `dispatched_count` 号任务给队列，保证全速满负荷运转。
+     * **Batch (批量模式)**：按兵不动，直到前 10 个任务全部死活出结果了，才一次性把后 10 个任务发出。
+
+通过这种“任务唤醒自己”的设计（Event-Driven Callback），系统不仅做到了完美解耦，而且拥有了抵抗海量数据冲击的弹性能力。
+
+---
+
+## 4. 分布式锁与数据一致性 (CAS)
+
+在分布式环境中，同一个工作流实例可能因为并发的回调（如 Parallel 节点的多个子任务同时完成）被多个 Workflow Worker 同时唤醒。为了防止“更新丢失（Lost Update）”和“数据撕裂”，引擎在 `WorkflowInstanceEntity` 中设计了乐观锁与租约机制：
+
+```rust
+pub struct WorkflowInstanceEntity {
+    // ...
+    pub epoch: u64, // 乐观锁版本号
+    pub locked_by: Option<String>, // 当前持有该工作流锁的 Worker ID
+    pub locked_duration: Option<std::time::Duration>, // 锁的过期时间（租约）
+}
+```
+
+### 4.1 字段设计与租约 (Lease) 机制
+
+* **`epoch` (乐观锁版本号)**：每次对 `WorkflowInstanceEntity` 的成功修改并持久化到 MongoDB 时，`epoch` 都会原子性加 1。任何 Worker 在更新时都必须携带自己读取到的 `epoch` 进行 CAS（Compare-And-Swap）操作。若数据库中实际 `epoch` 不匹配，说明数据已被其他 Worker 修改，当前更新操作被拒绝并触发重试。
+* **`locked_by` 和 `locked_duration` (悲观租约)**：为了防止多个 Workflow Worker 频繁争抢同一个工作流实例导致的 CAS 冲突风暴（尤其在 Parallel 密集回调时），引擎引入了“租约”概念。当一个 Worker 认领了工作流事件，它会设置 `locked_by = "self_worker_id"` 并给予一定的锁定时长（如 10 秒）。
+  * 在租约期间内，其他 Worker 哪怕收到了唤醒该工作流的事件，也需要让步或等待。
+  * 如果持有锁的 Worker 崩溃宕机，租约（`locked_duration`）到期后，“扫地僧”机制或其他 Worker 即可重新抢占该实例，保证不会产生永远卡死在 Running 状态的孤儿任务。
+
+### 4.2 并发容器 (Parallel) 回调的 CAS 演进过程
+
+在 Parallel 节点运行中，假设有 100 个 HTTP 子任务被并发扔到 Task Worker 执行。随着任务快速完成，它们会密集地向 Workflow Worker 推送 `NodeCallback` 唤醒事件。
+
+在这个场景下，数据的流转与 `epoch` 的变化如下：
+
+1. **并发唤醒冲突**：子任务 A 和子任务 B 几乎同时完成，向队列中推入了两个 `NodeCallback` 事件。
+2. **锁争抢阶段**：
+   * Worker 1 消费到 A 的事件，Worker 2 消费到 B 的事件。
+   * 它们同时去 MongoDB 读取 `WorkflowInstance`（当前 `epoch = 5`，无锁）。
+   * Worker 1 和 Worker 2 尝试通过 CAS (条件 `epoch == 5` 且未被锁定) 抢占这把锁并更新。
+   * MongoDB 的原子性保证了只有一个能赢，假设 Worker 1 赢了，此时 MongoDB 里 `locked_by = "Worker-1"`, `epoch` 变为 `6`。
+3. **退让与事件不丢失 (Retry机制)**：
+   * Worker 2 更新失败（受制于 CAS 检查 `epoch == 5` 失败，或发现被锁定），它会抛出 `OptimisticLockError` 或者 `LeaseLockedError`。
+   * **如何确保事件不丢失**：因为底层的任务队列（Apalis/Redis）支持 **ACK/NACK 机制**。Worker 2 在处理该 `NodeCallback` 事件时一旦遇到数据库层面的乐观锁失败报错，它**不会向队列发送 ACK**。相反，它会向队列发送一个 NACK（或者让事件超时），这导致该 `NodeCallback` 事件会重新回到队列中（或进入重试死信队列），并在短暂的延迟后被 Worker 2 或其他 Worker 重新消费。
+4. **安全处理状态**：
+   * Worker 1 在租约保护下，安全地进入 `ParallelPlugin::handle_callback`，将状态机中的 `success_count` +1。
+   * 处理完毕后，Worker 1 执行 Save 释放锁，此时 CAS 更新条件为 `epoch == 6`，更新成功后释放 `locked_by`，`epoch` 变为 `7`。
+5. **后续唤醒**：
+   * Worker 2 的重试机制再次触发，重新从 MongoDB 加载最新的状态（此时 `epoch = 7`，`success_count` 已经被加过 1 了）。
+   * Worker 2 抢占成功（`epoch` 变 8），处理子任务 B 的回调，再次把 `success_count` +1，完成后释放，`epoch` 变 9。
+
+**结论**：在密集回调的 Gather 阶段，虽然大量的子任务完成事件如洪水般涌向 Workflow Worker，但依靠 `epoch` (CAS乐观锁) 保证了 `success_count` 等共享数据绝对不会被并发覆盖；同时依靠 `locked_by` (租约) 减缓了冲突摩擦，保障了系统在极致并发下的数据强一致性。
+
+---
+
+## 5. 总结与扩展
+
+当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
+
+未来的扩展方案：
+1. **人工审批节点**：写一个 `ApprovalPlugin`，它连 Task Worker 都不需要找，`execute` 返回 `Pending` 后，直接等待外部 API 接口推入一个包含审批结果的 `NodeCallback` 事件到 Workflow 队列，就能顺滑将其唤醒。
+2. **延迟节点**：通过向 Apalis 推送定时消息，延时触发。
+3. **版本控制与安全防撕裂**：在 `workflow_svc.save_workflow_instance` 和并发更新时，可以结合 MongoDB 的 CAS (Compare And Swap) 来避免多个 Callback 同时更新 `success_count` 造成的数据覆写问题。

@@ -4,7 +4,7 @@ use apalis_redis::RedisStorage;
 use domain::plugin::manager::PluginManager;
 use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob, TaskDispatcher};
 use domain::task::service::TaskInstanceService;
-use domain::workflow::service::WorkflowService;
+use domain::workflow::service::WorkflowInstanceService;
 use infrastructure::queue::consumer;
 use async_trait::async_trait;
 struct ApalisDispatcher {
@@ -100,7 +100,7 @@ async fn handle_task_job(
 }
 
 fn create_plugin_manager(
-    workflow_svc: Arc<WorkflowService>,
+    workflow_instance_svc: Arc<WorkflowInstanceService>,
     task_storage: RedisStorage<ExecuteTaskJob>,
     workflow_storage: RedisStorage<ExecuteWorkflowJob>,
 ) -> Arc<PluginManager> {
@@ -108,7 +108,7 @@ fn create_plugin_manager(
         task_storage,
         workflow_storage,
     });
-    let mut manager = PluginManager::new(workflow_svc, dispatcher);
+    let mut manager = PluginManager::new(workflow_instance_svc, dispatcher);
     manager.register(Box::new(domain::plugin::plugins::http::HttpPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::parallel::ParallelPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::ifcondition::IfConditionPlugin::new()));
@@ -130,9 +130,9 @@ async fn main() {
 
     let mongo_client = mongodb::Client::with_uri_str(&mongo_url).await.expect("failed to connect to MongoDB");
     let workflow_repo = Arc::new(
-        infrastructure::mongodb::workflow::workflow_repository_impl::WorkflowRepositoryImpl::new(mongo_client.clone())
+        infrastructure::mongodb::workflow::workflow_repository_impl::WorkflowInstanceRepositoryImpl::new(mongo_client.clone())
     );
-    let workflow_svc = Arc::new(WorkflowService::new(workflow_repo));
+    let workflow_instance_svc = Arc::new(WorkflowInstanceService::new(workflow_repo));
     
     let task_repo = Arc::new(infrastructure::mongodb::task::task_repository_impl::TaskInstanceRepositoryImpl::new(mongo_client.clone()));
     let task_svc = Arc::new(TaskInstanceService::new(task_repo));
@@ -141,7 +141,7 @@ async fn main() {
     let wf_storage = consumer::create_workflow_storage(&redis_url).await;
     let task_storage = consumer::create_task_storage(&redis_url).await;
 
-    let plugin_manager = create_plugin_manager(workflow_svc, task_storage.clone(), wf_storage.clone());
+    let plugin_manager = create_plugin_manager(workflow_instance_svc, task_storage.clone(), wf_storage.clone());
 
     let wf_worker = WorkerBuilder::new("workflow-worker")
         .data(plugin_manager.clone())

@@ -2,35 +2,85 @@ use async_trait::async_trait;
 use mongodb::{Client, Database, Collection};
 use mongodb::bson::doc;
 use domain::shared::workflow::WorkflowInstanceStatus;
-use domain::workflow::entity::{WorkflowEntity, WorkflowInstanceEntity};
-use domain::workflow::repository::{WorkflowEntityRepository, RepositoryError};
+use domain::workflow::entity::{WorkflowEntity, WorkflowInstanceEntity, WorkflowMetaEntity};
+use domain::workflow::repository::{WorkflowDefinitionRepository, WorkflowInstanceRepository, RepositoryError};
 
-pub struct WorkflowRepositoryImpl {
+pub struct WorkflowDefinitionRepositoryImpl {
     pub client: Client,
     pub database: Database,
     pub collection: Collection<WorkflowEntity>,
-    pub workflow_instance_collection: Collection<WorkflowInstanceEntity>,
+    pub workflow_meta_collection: Collection<WorkflowMetaEntity>,
 }
 
-impl WorkflowRepositoryImpl {
+impl WorkflowDefinitionRepositoryImpl {
     pub fn new(client: Client) -> Self {
         let database = client.database("workflow");
         let collection = database.collection("workflow_entities");
-        let workflow_instance_collection = database.collection("workflow_instances");
-        Self { client, database, collection, workflow_instance_collection }
+        let workflow_meta_collection = database.collection("workflow_meta_entities");
+        Self { client, database, collection, workflow_meta_collection }
     }
 }
 
 #[async_trait]
-impl WorkflowEntityRepository for WorkflowRepositoryImpl {
-    async fn get_workflow_entity(&self, id: String) -> Result<WorkflowEntity, RepositoryError> {
+impl WorkflowDefinitionRepository for WorkflowDefinitionRepositoryImpl {
+    async fn get_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<WorkflowEntity, RepositoryError> {
         let workflow_entity = self.collection
-            .find_one(doc! {"_id": &id})
+            .find_one(doc! {"workflow_meta_id": &workflow_meta_id, "version": &version})
             .await?
-            .ok_or_else(|| format!("workflow entity not found: {}", id))?;
+            .ok_or_else(|| format!("workflow entity not found: {} version: {}", workflow_meta_id, version))?;
         Ok(workflow_entity)
     }
 
+    async fn save_workflow_entity(&self, entity: &WorkflowEntity) -> Result<(), RepositoryError> {
+        self.collection.insert_one(entity).await?;
+        Ok(())
+    }
+
+    async fn delete_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<(), RepositoryError> {
+        self.collection.delete_one(doc! {"workflow_meta_id": &workflow_meta_id, "version": &version}).await?;
+        Ok(())
+    }
+
+    async fn get_workflow_meta_entity(&self, workflow_meta_id: String) -> Result<WorkflowMetaEntity, RepositoryError> {
+        let workflow_meta_entity = self.workflow_meta_collection
+            .find_one(doc! {"workflow_meta_id": &workflow_meta_id})
+            .await?
+            .ok_or_else(|| format!("workflow meta entity not found: {}", &workflow_meta_id))?;
+        Ok(workflow_meta_entity)
+    }
+
+    async fn save_workflow_meta_entity(&self, entity: &WorkflowMetaEntity) -> Result<(), RepositoryError> {
+        self.workflow_meta_collection.insert_one(entity).await?;
+        Ok(())
+    }
+
+    async fn delete_workflow_meta_entity(&self, workflow_meta_id: String) -> Result<(), RepositoryError> {
+        self.workflow_meta_collection.delete_one(doc! {"workflow_meta_id": &workflow_meta_id}).await?;
+        Ok(())
+    }
+
+    async fn create_workflow_meta_entity(&self, workflow_meta_entity: &WorkflowMetaEntity) -> Result<WorkflowMetaEntity, RepositoryError> {
+        self.workflow_meta_collection.insert_one(workflow_meta_entity).await?;
+        Ok(workflow_meta_entity.clone())
+    }
+}
+
+pub struct WorkflowInstanceRepositoryImpl {
+    pub client: Client,
+    pub database: Database,
+    pub workflow_instance_collection: Collection<WorkflowInstanceEntity>,
+}
+
+impl WorkflowInstanceRepositoryImpl {
+    pub fn new(client: Client) -> Self {
+        let database = client.database("workflow");
+        let workflow_instance_collection = database.collection("workflow_instances");
+        Self { client, database, workflow_instance_collection }
+    }
+}
+
+#[async_trait]
+impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
     async fn get_workflow_instance(&self, id: String) -> Result<WorkflowInstanceEntity, RepositoryError> {
         let workflow_instance = self.workflow_instance_collection
             .find_one(doc! {"workflow_instance_id": &id})

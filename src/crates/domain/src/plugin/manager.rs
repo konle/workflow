@@ -4,7 +4,7 @@ use crate::shared::job::TaskDispatcher;
 use crate::workflow::entity::{
     NodeExecutionStatus, WorkflowInstanceEntity, WorkflowNodeInstanceEntity,
 };
-use crate::workflow::service::WorkflowService;
+use crate::workflow::service::WorkflowInstanceService;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,21 +17,21 @@ enum LoopAction {
 
 pub struct PluginManager {
     plugins: HashMap<TaskType, Box<dyn PluginInterface>>,
-    workflow_svc: Arc<WorkflowService>,
+    workflow_instance_svc: Arc<WorkflowInstanceService>,
     dispatcher: Arc<dyn TaskDispatcher>,
 }
 
 impl PluginManager {
-    pub fn new(workflow_svc: Arc<WorkflowService>, dispatcher: Arc<dyn TaskDispatcher>) -> Self {
+    pub fn new(workflow_instance_svc: Arc<WorkflowInstanceService>, dispatcher: Arc<dyn TaskDispatcher>) -> Self {
         Self {
             plugins: HashMap::new(),
-            workflow_svc,
+            workflow_instance_svc,
             dispatcher,
         }
     }
 
-    pub fn workflow_svc(&self) -> &WorkflowService {
-        &self.workflow_svc
+    pub fn workflow_instance_svc(&self) -> &WorkflowInstanceService {
+        &self.workflow_instance_svc
     }
 
     pub fn dispatcher(&self) -> Arc<dyn TaskDispatcher> {
@@ -44,7 +44,7 @@ impl PluginManager {
     }
 
     pub async fn process_workflow_job(&self, job: crate::shared::job::ExecuteWorkflowJob, worker_id: &str) -> anyhow::Result<()> {
-        let mut instance = match self.workflow_svc.acquire_lock(&job.workflow_instance_id, worker_id, 10000).await {
+        let mut instance = match self.workflow_instance_svc.acquire_lock(&job.workflow_instance_id, worker_id, 10000).await {
             Ok(inst) => inst,
             Err(e) => {
                 println!("Failed to acquire lock for {}: {}, skipping or retrying later...", job.workflow_instance_id, e);
@@ -54,7 +54,7 @@ impl PluginManager {
 
         if !instance.is_pending() && !instance.is_running() {
             // Must release lock if we bail out early
-            let _ = self.workflow_svc.release_lock(&instance.workflow_instance_id, worker_id).await;
+            let _ = self.workflow_instance_svc.release_lock(&instance.workflow_instance_id, worker_id).await;
             return Ok(());
         }
 
@@ -94,7 +94,7 @@ impl PluginManager {
         };
 
         // Always attempt to release the lock when done
-        let _ = self.workflow_svc.release_lock(&job.workflow_instance_id, worker_id).await;
+        let _ = self.workflow_instance_svc.release_lock(&job.workflow_instance_id, worker_id).await;
 
         result
     }
@@ -103,7 +103,7 @@ impl PluginManager {
         &self,
         workflow_instance: &mut WorkflowInstanceEntity,
     ) -> anyhow::Result<()> {
-        self.workflow_svc
+        self.workflow_instance_svc
             .start_instance(&workflow_instance.workflow_instance_id)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -118,7 +118,7 @@ impl PluginManager {
 
         loop {
             let mut instance = self
-                .workflow_svc
+                .workflow_instance_svc
                 .get_workflow_instance(workflow_instance.workflow_instance_id.clone())
                 .await
                 .map_err(|e| anyhow::anyhow!(e))?;
@@ -142,13 +142,13 @@ impl PluginManager {
 
                     if let Some(next) = instance.nodes[node_index].next_node.clone() {
                         instance.current_node = next;
-                        self.workflow_svc
+                        self.workflow_instance_svc
                             .save_workflow_instance(&instance)
                             .await
                             .map_err(|e| anyhow::anyhow!(e))?;
                         continue;
                     } else {
-                        self.workflow_svc
+                        self.workflow_instance_svc
                             .complete_instance(&instance.workflow_instance_id)
                             .await
                             .map_err(|e| anyhow::anyhow!(e))?;
@@ -156,7 +156,7 @@ impl PluginManager {
                     }
                 }
                 NodeExecutionStatus::Failed => {
-                    self.workflow_svc
+                    self.workflow_instance_svc
                         .fail_instance(&instance.workflow_instance_id)
                         .await
                         .map_err(|e| anyhow::anyhow!(e))?;
@@ -167,7 +167,7 @@ impl PluginManager {
                 }
                 NodeExecutionStatus::Pending => {
                     instance.nodes[node_index].status = NodeExecutionStatus::Running;
-                    self.workflow_svc
+                    self.workflow_instance_svc
                         .save_workflow_instance(&instance)
                         .await
                         .map_err(|e| anyhow::anyhow!(e))?;
@@ -222,7 +222,7 @@ impl PluginManager {
                     instance.current_node = next;
                     LoopAction::Advance
                 } else {
-                    self.workflow_svc
+                    self.workflow_instance_svc
                         .complete_instance(&instance.workflow_instance_id)
                         .await
                         .map_err(|e| anyhow::anyhow!(e))?;
@@ -231,7 +231,7 @@ impl PluginManager {
                 }
             }
             NodeExecutionStatus::Failed => {
-                self.workflow_svc
+                self.workflow_instance_svc
                     .fail_instance(&instance.workflow_instance_id)
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -239,7 +239,7 @@ impl PluginManager {
                 LoopAction::Done
             }
             NodeExecutionStatus::Pending | NodeExecutionStatus::Suspended => {
-                self.workflow_svc
+                self.workflow_instance_svc
                     .suspend_instance(&instance.workflow_instance_id)
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -249,7 +249,7 @@ impl PluginManager {
             _ => LoopAction::Retry,
         };
 
-        self.workflow_svc
+        self.workflow_instance_svc
             .save_workflow_instance(instance)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;

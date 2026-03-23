@@ -2,12 +2,23 @@ use async_trait::async_trait;
 use std::error::Error;
 use crate::shared::workflow::WorkflowInstanceStatus;
 use crate::workflow::entity::{WorkflowEntity, WorkflowInstanceEntity};
-
+use crate::workflow::entity::WorkflowMetaEntity;
 pub type RepositoryError = Box<dyn Error + Send + Sync>;
 
 #[async_trait]
-pub trait WorkflowEntityRepository: Send + Sync {
-    async fn get_workflow_entity(&self, id: String) -> Result<WorkflowEntity, RepositoryError>;
+pub trait WorkflowDefinitionRepository: Send + Sync {
+    async fn get_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<WorkflowEntity, RepositoryError>;
+    async fn save_workflow_entity(&self, entity: &WorkflowEntity) -> Result<(), RepositoryError>;
+    async fn delete_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<(), RepositoryError>;
+    // 元数据表接口定义
+    async fn get_workflow_meta_entity(&self, workflow_meta_id: String) -> Result<WorkflowMetaEntity, RepositoryError>;
+    async fn save_workflow_meta_entity(&self, entity: &WorkflowMetaEntity) -> Result<(), RepositoryError>;
+    async fn delete_workflow_meta_entity(&self, workflow_meta_id: String) -> Result<(), RepositoryError>;
+    async fn create_workflow_meta_entity(&self, workflow_meta_entity: &WorkflowMetaEntity) -> Result<WorkflowMetaEntity, RepositoryError>;
+}
+
+#[async_trait]
+pub trait WorkflowInstanceRepository: Send + Sync {
     async fn get_workflow_instance(&self, id: String) -> Result<WorkflowInstanceEntity, RepositoryError>;
 
     /// CAS-style status update: only succeeds if the current status in DB matches `from_status`.

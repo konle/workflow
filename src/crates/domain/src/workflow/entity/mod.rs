@@ -8,22 +8,23 @@ use serde_json::Value as JsonValue;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowMetaEntity {
-    pub id: String,
+    pub workflow_meta_id: String, // 工作流模板ID workflow_meta_id 组成唯一性索引
+    pub tenant_id: String, // 租户ID tenant_id + workflow_meta_id 组成索引
     pub name: String,
-    pub description: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub deleted_at: Option<DateTime<Utc>>,
-    pub status: WorkflowStatus,
-    pub form: Vec<Form>,
+    pub description: String, // 工作流模板描述
+    pub created_at: DateTime<Utc>, // 创建时间
+    pub updated_at: DateTime<Utc>, // 更新时间
+    pub deleted_at: Option<DateTime<Utc>>, // 删除时间
+    pub status: WorkflowStatus, // 工作流模板状态
+    pub form: Vec<Form>, // 工作流模板表单
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowEntity {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
-    pub version: u32,
-    pub workflow_meta_id: String,
+    pub version: u32, // 工作流版本
+    pub workflow_meta_id: String, // 工作流模板ID + version组成唯一性索引
     pub status: WorkflowStatus,
     pub nodes: Vec<WorkflowNodeEntity>,
 }

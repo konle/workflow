@@ -1,14 +1,17 @@
 use axum::Router;
 use std::sync::Arc;
-use crate::handler::task::{TaskHandler, routes as task_routes};
-use crate::handler::workflow::routes as workflow_routes;
+use crate::handler::task::{TaskHandler, TaskInstanceHandler, routes as task_routes};
+use crate::handler::workflow::{WorkflowHandler, WorkflowInstanceHandler, routes as workflow_routes};
 
-pub fn create_router(task_handler: Arc<TaskHandler>) -> Router {
+pub fn create_router(
+    task_handler: Arc<TaskHandler>,
+    task_instance_handler: Arc<TaskInstanceHandler>,
+    workflow_handler: Arc<WorkflowHandler>,
+    workflow_instance_handler: Arc<WorkflowInstanceHandler>,
+) -> Router {
     let v1 = Router::new()
-        // 每个 handler 模块自行注册路由，等同于 Gin 的 group.Register(&group)
-        .nest("/task", task_routes(task_handler))
-        // .nest("/task_instance", task_instance_routes(task_instance_handler))
-        .nest("/workflow", workflow_routes());
+        .nest("/task", task_routes(task_handler, task_instance_handler))
+        .nest("/workflow", workflow_routes(workflow_handler, workflow_instance_handler));
 
     Router::new().nest("/api/v1", v1)
 }
