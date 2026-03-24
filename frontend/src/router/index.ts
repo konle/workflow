@@ -105,6 +105,16 @@ const routes: RouteRecordRaw[] = [
         name: 'VariableList',
         component: () => import('../views/variable/tenant-list.vue'),
       },
+      {
+        path: 'approvals',
+        name: 'ApprovalList',
+        component: () => import('../views/approval/list.vue'),
+      },
+      {
+        path: 'approvals/:id',
+        name: 'ApprovalDetail',
+        component: () => import('../views/approval/detail.vue'),
+      },
     ],
   },
   {

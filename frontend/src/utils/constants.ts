@@ -47,6 +47,18 @@ export const TENANT_STATUS_MAP: Record<string, { label: string; color: string }>
   Deleted: { label: '已删除', color: 'red' },
 }
 
+export const APPROVAL_STATUS_MAP: Record<string, { label: string; color: string }> = {
+  Pending: { label: '待审批', color: 'orange' },
+  Approved: { label: '已通过', color: 'green' },
+  Rejected: { label: '已驳回', color: 'red' },
+}
+
+export const APPROVAL_MODE_MAP: Record<string, { label: string; color: string }> = {
+  Any: { label: '抢单模式', color: 'arcoblue' },
+  All: { label: '会签模式', color: 'purple' },
+  Majority: { label: '投票模式', color: 'cyan' },
+}
+
 export const VARIABLE_TYPE_OPTIONS = [
   { label: 'String', value: 'String' },
   { label: 'Number', value: 'Number' },

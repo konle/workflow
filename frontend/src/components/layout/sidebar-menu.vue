@@ -28,6 +28,11 @@
       变量管理
     </a-menu-item>
 
+    <a-menu-item key="approvals">
+      <template #icon><icon-check-square /></template>
+      审批中心
+    </a-menu-item>
+
     <a-menu-item v-if="canManageUsers" key="users">
       <template #icon><icon-user-group /></template>
       用户管理
@@ -49,6 +54,7 @@ import {
   IconThunderbolt,
   IconBranch,
   IconLock,
+  IconCheckSquare,
   IconUserGroup,
   IconApps,
 } from '@arco-design/web-vue/es/icon'
@@ -64,6 +70,7 @@ const MENU_ROUTE_MAP: Record<string, string> = {
   workflows: '/workflows',
   'workflow-instances': '/workflows/instances',
   variables: '/variables',
+  approvals: '/approvals',
   users: '/users',
   tenants: '/tenants',
 }
@@ -75,6 +82,7 @@ const ROUTE_MENU_MAP: Record<string, string> = {
   '/workflows': 'workflows',
   '/workflows/instances': 'workflow-instances',
   '/variables': 'variables',
+  '/approvals': 'approvals',
   '/users': 'users',
   '/tenants': 'tenants',
 }

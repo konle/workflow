@@ -78,8 +78,53 @@
           </a-form-item>
         </template>
 
-        <template v-else-if="form.task_type === 'Grpc' || form.task_type === 'Approval'">
-          <a-alert type="info">{{ form.task_type }} 类型配置即将支持</a-alert>
+        <template v-else-if="form.task_type === 'Approval'">
+          <a-row :gutter="16">
+            <a-col :span="16">
+              <a-form-item label="审批标题" required>
+                <a-input v-model="approvalConfig.title" placeholder="审批标题，支持 {{变量}} 模板" />
+              </a-form-item>
+            </a-col>
+            <a-col :span="8">
+              <a-form-item label="审批模式" required>
+                <a-select v-model="approvalConfig.approval_mode">
+                  <a-option value="Any">抢单模式 (Any)</a-option>
+                  <a-option value="All">会签模式 (All)</a-option>
+                  <a-option value="Majority">投票模式 (Majority)</a-option>
+                </a-select>
+              </a-form-item>
+            </a-col>
+          </a-row>
+          <a-form-item label="审批说明">
+            <a-textarea v-model="approvalConfig.description" :auto-size="{ minRows: 2 }" placeholder="可选" />
+          </a-form-item>
+          <a-form-item label="审批人规则">
+            <div v-for="(rule, idx) in approvalConfig.approvers" :key="idx" style="display: flex; gap: 8px; margin-bottom: 8px">
+              <a-select v-model="rule.type" style="width: 160px">
+                <a-option value="User">指定用户</a-option>
+                <a-option value="Role">指定角色</a-option>
+                <a-option value="ContextVariable">上下文变量</a-option>
+              </a-select>
+              <a-input v-if="rule.type === 'User'" v-model="rule.value" placeholder="user_id" style="flex: 1" />
+              <a-select v-else-if="rule.type === 'Role'" v-model="rule.value" style="flex: 1">
+                <a-option value="TenantAdmin">TenantAdmin</a-option>
+                <a-option value="Developer">Developer</a-option>
+                <a-option value="Operator">Operator</a-option>
+              </a-select>
+              <a-input v-else v-model="rule.value" placeholder="变量名" style="flex: 1" />
+              <a-button status="danger" @click="approvalConfig.approvers.splice(idx, 1)">删除</a-button>
+            </div>
+            <a-button type="dashed" long @click="approvalConfig.approvers.push({ type: 'User', value: '' })">
+              + 添加审批人规则
+            </a-button>
+          </a-form-item>
+          <a-form-item label="超时 (秒)">
+            <a-input-number v-model="approvalConfig.timeout" :min="0" placeholder="不填则不超时" />
+          </a-form-item>
+        </template>
+
+        <template v-else-if="form.task_type === 'Grpc'">
+          <a-alert type="info">gRPC 类型配置即将支持</a-alert>
         </template>
 
         <a-form-item>
@@ -125,6 +170,14 @@ const httpConfig = reactive({
   success_condition: null as string | null,
 })
 
+const approvalConfig = reactive({
+  title: '',
+  description: '' as string,
+  approval_mode: 'Any' as string,
+  approvers: [] as { type: string; value: string }[],
+  timeout: null as number | null,
+})
+
 const headersJson = ref('{}')
 const bodyJson = ref('')
 
@@ -139,6 +192,22 @@ function buildTaskTemplate() {
         body: bodyField,
         form: null,
         success_condition: httpConfig.success_condition || null,
+      },
+    }
+  }
+  if (form.task_type === 'Approval') {
+    return {
+      Approval: {
+        name: form.name,
+        title: approvalConfig.title,
+        description: approvalConfig.description || null,
+        approvers: approvalConfig.approvers.map(r => {
+          if (r.type === 'User') return { User: r.value }
+          if (r.type === 'Role') return { Role: r.value }
+          return { ContextVariable: r.value }
+        }),
+        approval_mode: approvalConfig.approval_mode,
+        timeout: approvalConfig.timeout || null,
       },
     }
   }
@@ -180,6 +249,18 @@ onMounted(async () => {
         Object.assign(httpConfig, tpl)
         headersJson.value = JSON.stringify(tpl.headers || {}, null, 2)
         bodyJson.value = tpl.body ? (typeof tpl.body.value === 'string' ? tpl.body.value : JSON.stringify(tpl.body.value)) : ''
+      } else if (entity.task_type === 'Approval' && typeof entity.task_template === 'object' && 'Approval' in entity.task_template) {
+        const tpl = entity.task_template.Approval
+        approvalConfig.title = tpl.title
+        approvalConfig.description = tpl.description || ''
+        approvalConfig.approval_mode = tpl.approval_mode
+        approvalConfig.timeout = tpl.timeout
+        approvalConfig.approvers = tpl.approvers.map((r: any) => {
+          if (r.User !== undefined) return { type: 'User', value: r.User }
+          if (r.Role !== undefined) return { type: 'Role', value: r.Role }
+          if (r.ContextVariable !== undefined) return { type: 'ContextVariable', value: r.ContextVariable }
+          return { type: 'User', value: '' }
+        })
       }
     } catch {} finally { pageLoading.value = false }
   }

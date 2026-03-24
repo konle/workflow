@@ -69,6 +69,23 @@ export interface SubWorkflowTemplate {
   timeout: number | null
 }
 
+export type ApprovalMode = 'Any' | 'All' | 'Majority'
+
+export interface ApproverRule {
+  User?: string
+  Role?: string
+  ContextVariable?: string
+}
+
+export interface ApprovalTemplate {
+  name: string
+  title: string
+  description: string | null
+  approvers: ApproverRule[]
+  approval_mode: ApprovalMode
+  timeout: number | null
+}
+
 export type TaskTemplate =
   | { Http: TaskHttpTemplate }
   | { IfCondition: IfConditionTemplate }
@@ -76,8 +93,8 @@ export type TaskTemplate =
   | { Parallel: ParallelTemplate }
   | { ForkJoin: ForkJoinTemplate }
   | { SubWorkflow: SubWorkflowTemplate }
+  | { Approval: ApprovalTemplate }
   | 'Grpc'
-  | 'Approval'
 
 export interface TaskEntity {
   id: string

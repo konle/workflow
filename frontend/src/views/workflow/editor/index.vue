@@ -141,6 +141,28 @@
               </a-form-item>
             </template>
 
+            <template v-else-if="selectedNode.data.nodeType === 'Approval'">
+              <a-form-item label="审批标题">
+                <a-input v-model="selectedNode.data.config.title" placeholder="支持 {{变量}} 模板" />
+              </a-form-item>
+              <a-form-item label="审批说明">
+                <a-textarea v-model="selectedNode.data.config.description" :auto-size="{ minRows: 2 }" />
+              </a-form-item>
+              <a-form-item label="审批模式">
+                <a-select v-model="selectedNode.data.config.approval_mode">
+                  <a-option value="Any">抢单 (Any)</a-option>
+                  <a-option value="All">会签 (All)</a-option>
+                  <a-option value="Majority">投票 (Majority)</a-option>
+                </a-select>
+              </a-form-item>
+              <a-form-item label="审批人 (JSON)">
+                <a-textarea v-model="selectedNode.data.config.approversJson" :auto-size="{ minRows: 3 }" placeholder='[{"User":"uid"},{"Role":"TenantAdmin"}]' />
+              </a-form-item>
+              <a-form-item label="超时(秒)">
+                <a-input-number v-model="selectedNode.data.config.timeout" :min="0" placeholder="不填则不超时" />
+              </a-form-item>
+            </template>
+
             <template v-else-if="selectedNode.data.nodeType === 'SubWorkflow'">
               <a-form-item label="工作流 Meta ID">
                 <a-input v-model="selectedNode.data.config.workflow_meta_id" />
@@ -212,6 +234,7 @@ function getDefaultConfig(type: string): any {
     case 'ContextRewrite': return { name: '', script: '', merge_mode: 'Merge' }
     case 'Parallel': return { items_path: '', item_alias: 'item', concurrency: 10, mode: 'Rolling', max_failures: null, task_template: null }
     case 'ForkJoin': return { concurrency: 5, mode: 'Rolling', max_failures: null, tasksJson: '[]' }
+    case 'Approval': return { title: '', description: '', approval_mode: 'Any', approversJson: '[]', timeout: null }
     case 'SubWorkflow': return { workflow_meta_id: '', workflow_version: 1, inputMappingJson: '{}', timeout: null }
     default: return {}
   }
@@ -290,6 +313,21 @@ function buildWorkflowEntity(): any {
         config = { SubWorkflow: { workflow_meta_id: d.config.workflow_meta_id, workflow_version: d.config.workflow_version, input_mapping: inputMapping, output_path: null, timeout: d.config.timeout } }
         break
       }
+      case 'Approval': {
+        let approvers = []
+        try { approvers = JSON.parse(d.config.approversJson || '[]') } catch {}
+        config = {
+          Approval: {
+            name: d.label || '',
+            title: d.config.title || '',
+            description: d.config.description || null,
+            approvers,
+            approval_mode: d.config.approval_mode || 'Any',
+            timeout: d.config.timeout || null,
+          },
+        }
+        break
+      }
       default:
         config = d.nodeType
     }
@@ -349,6 +387,9 @@ function loadFromEntity(entity: any) {
     } else if (type === 'ForkJoin' && n.config?.ForkJoin) {
       const f = n.config.ForkJoin
       config = { concurrency: f.concurrency, mode: f.mode, max_failures: f.max_failures, tasksJson: JSON.stringify(f.tasks, null, 2) }
+    } else if (type === 'Approval' && n.config?.Approval) {
+      const a = n.config.Approval
+      config = { title: a.title, description: a.description || '', approval_mode: a.approval_mode, approversJson: JSON.stringify(a.approvers, null, 2), timeout: a.timeout }
     } else if (type === 'SubWorkflow' && n.config?.SubWorkflow) {
       const s = n.config.SubWorkflow
       config = { workflow_meta_id: s.workflow_meta_id, workflow_version: s.workflow_version, inputMappingJson: JSON.stringify(s.input_mapping, null, 2), timeout: s.timeout }

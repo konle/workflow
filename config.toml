@@ -1,0 +1,16 @@
+[server]
+port = 3000
+
+[database]
+mongo_url = "mongodb://127.0.0.1:27017"
+redis_url = "redis://127.0.0.1:6379"
+
+[security]
+variable_encrypt_key = "workflow-default-encrypt-key-change-me"
+
+[init]
+admin_username = "admin"
+admin_password = "admin123"
+admin_email = "admin@workflow.local"
+default_tenant_name = "default"
+default_tenant_description = "Default tenant"

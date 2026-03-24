@@ -37,7 +37,8 @@ frontend/
 │   │   ├── task-instance.ts
 │   │   ├── workflow.ts
 │   │   ├── workflow-instance.ts
-│   │   └── variable.ts
+│   │   ├── variable.ts
+│   │   └── approval.ts
 │   │
 │   ├── assets/                       # 静态资源
 │   │
@@ -78,7 +79,8 @@ frontend/
 │   │   ├── user.d.ts
 │   │   ├── task.d.ts
 │   │   ├── workflow.d.ts
-│   │   └── variable.d.ts
+│   │   ├── variable.d.ts
+│   │   └── approval.d.ts
 │   │
 │   ├── utils/
 │   │   ├── token.ts                 # JWT 存取
@@ -122,6 +124,10 @@ frontend/
 │   │   │   ├── tenant-list.vue      # 租户级变量管理
 │   │   │   └── meta-list.vue        # 工作流模板级变量管理（嵌入 Meta 详情）
 │   │   │
+│   │   ├── approval/                # 审批中心
+│   │   │   ├── list.vue             # 审批列表（我的待办 + 全部审批）
+│   │   │   └── detail.vue           # 审批详情 & 决策操作
+│   │   │
 │   │   └── error/
 │   │       ├── 403.vue
 │   │       └── 404.vue
@@ -163,6 +169,8 @@ frontend/
 | `/workflows/instances` | `workflow/instance/list.vue` | ReadOnly+ | 工作流实例列表 |
 | `/workflows/instances/:id` | `workflow/instance/detail.vue` | ReadOnly+ | 工作流实例详情 |
 | `/variables` | `variable/tenant-list.vue` | ReadOnly+ | 租户级变量管理 |
+| `/approvals` | `approval/list.vue` | 已登录 | 审批中心（我的待办 + 全部审批） |
+| `/approvals/:id` | `approval/detail.vue` | 已登录 | 审批详情 & 决策 |
 
 ### 3.2 路由守卫策略
 
@@ -317,6 +325,47 @@ type TaskTemplate =
   | { Parallel: ParallelTemplate }
   | { ForkJoin: ForkJoinTemplate }
   | { SubWorkflow: SubWorkflowTemplate }
+  | { Approval: ApprovalTemplate }
+
+// 审批模板
+type ApprovalMode = 'Any' | 'All' | 'Majority'
+type ApproverRule = { User: string } | { Role: string } | { ContextVariable: string }
+
+interface ApprovalTemplate {
+  name: string
+  title: string
+  description: string | null
+  approvers: ApproverRule[]
+  approval_mode: ApprovalMode
+  timeout: number | null
+}
+
+// 审批实例
+type ApprovalStatus = 'Pending' | 'Approved' | 'Rejected'
+type Decision = 'Approve' | 'Reject'
+
+interface ApprovalInstanceEntity {
+  id: string
+  tenant_id: string
+  workflow_instance_id: string
+  node_id: string
+  title: string
+  description: string | null
+  approval_mode: ApprovalMode
+  approvers: string[]
+  decisions: ApprovalDecision[]
+  status: ApprovalStatus
+  created_at: string
+  updated_at: string
+  expires_at: string | null
+}
+
+interface ApprovalDecision {
+  user_id: string
+  decision: Decision
+  comment: string | null
+  decided_at: string
+}
 
 // TaskInstanceEntity
 interface TaskInstance {
@@ -429,7 +478,7 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 |----------|------------|----------|
 | Http | `task-http-form.vue` | url, method (Select), headers (KV编辑器), body, retry_count, retry_delay, timeout, success_condition |
 | Grpc | `task-grpc-form.vue` | (预留) |
-| Approval | `task-approval-form.vue` | (预留) |
+| Approval | `task-approval-form.vue` | title, description, approval_mode (Any/All/Majority), approvers (动态规则列表: User/Role/ContextVariable), timeout |
 
 > 注意：`IfCondition`、`ContextRewrite`、`Parallel`、`ForkJoin`、`SubWorkflow` 是编排层节点类型，不作为独立原子任务模板暴露在此页面。它们只在**工作流可视化编排器**中作为节点类型使用。
 
@@ -562,6 +611,7 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 | **Parallel** | items_path、item_alias、子任务模板配置（内嵌原子任务表单）、concurrency、mode (Rolling / Batch)、max_failures |
 | **ForkJoin** | 子任务列表（可增删，每项含 task_key + name + 内嵌原子任务表单）、concurrency、mode、max_failures |
 | **SubWorkflow** | 工作流 Meta 选择器（下拉）、版本选择、input_mapping (JSON 编辑器)、output_path、timeout |
+| **Approval** | 审批标题 (支持 `{{变量}}` 模板)、审批说明、审批模式 (Any/All/Majority)、审批人规则 (JSON 编辑器)、超时 |
 | **通用字段** | node_id (只读)、context (JSON 编辑器) |
 
 #### 6.8.5 数据模型转换
@@ -691,6 +741,52 @@ Secret 类型变量的特殊处理：
 
 ---
 
+### 6.12 审批中心 (`/approvals`)
+
+#### 6.12.1 列表页
+
+双 Tab 布局：
+
+**Tab 1: 我的待办** — `GET /api/v1/approvals`（当前用户待审批列表）
+**Tab 2: 全部审批** — `GET /api/v1/approvals/all`（仅 TenantAdmin+ 可见）
+
+| 列 | 字段 | 说明 |
+|----|------|------|
+| 审批标题 | `title` | 可点击进入详情 |
+| 审批模式 | `approval_mode` | Any=抢单 / All=会签 / Majority=投票 |
+| 状态 | `status` | Pending(橙色) / Approved(绿色) / Rejected(红色) |
+| 进度 | `decisions.length / approvers.length` | 如 "1/3" |
+| 关联工作流 | `workflow_instance_id` | 可跳转到工作流实例详情 |
+| 创建时间 | `created_at` | |
+| 操作 | — | "去审批"按钮（仅 Pending 且在 approvers 中且未决策） |
+
+#### 6.12.2 详情页 (`/approvals/:id`)
+
+| 区域 | 内容 |
+|------|------|
+| 基础信息卡片 | 标题、描述、审批模式、状态、关联工作流实例、创建时间、过期时间 |
+| 审批人列表 | 所有审批人，每人旁标注已通过/已拒绝/待审批 |
+| 决策历史 | 时间线展示每个人的决策（决策结果、评论、时间） |
+| 操作区 | 通过/拒绝按钮 + 评论输入框（仅 Pending + 当前用户是审批人且未决策时显示） |
+
+#### 6.12.3 审批状态色彩
+
+| 审批状态 | 色彩 | Arco Tag |
+|----------|------|----------|
+| Pending | 橙色 | `orange` |
+| Approved | 绿色 | `green` |
+| Rejected | 红色 | `red` |
+
+#### 6.12.4 审批模式标签
+
+| 模式 | 标签 | 色彩 |
+|------|------|------|
+| Any | 抢单模式 | `arcoblue` |
+| All | 会签模式 | `purple` |
+| Majority | 投票模式 | `cyan` |
+
+---
+
 ## 7. 权限体系前端实现
 
 ### 7.1 角色信息来源
@@ -749,6 +845,7 @@ export function usePermission() {
   └─ 工作流管理              ← ReadOnly+
   └─ 工作流实例              ← ReadOnly+
 🔐 变量管理                  ← ReadOnly+
+📝 审批中心                  ← 已登录（所有角色）
 👥 用户管理                  ← UserManage (TenantAdmin+)
 🏢 租户管理                  ← SuperAdmin only
 ```
@@ -867,6 +964,12 @@ GET    /variables
 GET    /variables/{id}
 PUT    /variables/{id}
 DELETE /variables/{id}
+
+# 审批
+GET    /approvals                          # 我的待审批列表
+GET    /approvals/all                      # 全部审批 (TenantAdmin+)
+GET    /approvals/{id}                     # 审批详情
+POST   /approvals/{id}/decide              # 提交审批决策
 
 # 原子任务模板
 POST   /task

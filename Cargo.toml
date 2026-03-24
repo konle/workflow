@@ -25,3 +25,8 @@ apalis-redis = "0.7.4"
 mongodb = "3.4.1"
 async-trait = "0.1.89"
 anyhow = "1.0.102"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+bcrypt = "0.17"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
