@@ -1,0 +1,914 @@
+# 工作流引擎前端架构设计文档
+
+本文档基于后端 API 路由与架构文档，设计配套的前端系统。涵盖技术选型、路由规划、页面拆解、状态管理、权限体系、可视化编排器等核心模块。
+
+---
+
+## 1. 技术选型
+
+| 维度 | 选型 | 理由 |
+|------|------|------|
+| 框架 | **Vue 3** + Composition API | 响应式系统成熟，生态丰富，适合企业级中后台 |
+| 语言 | **TypeScript** | 与后端 Rust 的强类型理念一致，提前捕获前端类型错误 |
+| 构建 | **Vite** | 冷启动极快，原生 ESM，HMR 体验优于 Webpack |
+| UI 组件库 | **Arco Design Vue** | 字节跳动出品，组件丰富，主题定制能力强，表格/表单/树形组件质量高 |
+| 路由 | **Vue Router 4** | Vue 生态标配，支持路由守卫做权限拦截 |
+| 状态管理 | **Pinia** | 官方推荐，TypeScript 友好，轻量直觉 |
+| HTTP 客户端 | **Axios** | 拦截器机制成熟，统一处理 `code != 0` 的错误响应 |
+| 工作流画布 | **Vue Flow** (基于 ReactFlow 的 Vue 移植) | 专业的 DAG 可视化编辑库，节点/边/布局开箱即用 |
+| 代码编辑器 | **Monaco Editor** | 用于 Rhai 脚本（ContextRewrite / IfCondition）和 JSON 编辑 |
+| 图标 | **@arco-design/web-vue/es/icon** | 与 UI 库统一风格 |
+| 国际化 | **vue-i18n** | 预留多语言能力 |
+
+---
+
+## 2. 项目目录结构
+
+```
+frontend/
+├── public/
+├── src/
+│   ├── api/                          # API 请求层
+│   │   ├── request.ts                # Axios 实例 + 拦截器
+│   │   ├── auth.ts
+│   │   ├── tenant.ts
+│   │   ├── user.ts
+│   │   ├── task.ts
+│   │   ├── task-instance.ts
+│   │   ├── workflow.ts
+│   │   ├── workflow-instance.ts
+│   │   └── variable.ts
+│   │
+│   ├── assets/                       # 静态资源
+│   │
+│   ├── components/                   # 全局通用组件
+│   │   ├── layout/
+│   │   │   ├── app-layout.vue        # 主布局骨架
+│   │   │   ├── sidebar-menu.vue      # 侧边导航
+│   │   │   ├── header-bar.vue        # 顶栏（租户切换 + 用户菜单）
+│   │   │   └── breadcrumb.vue
+│   │   ├── permission/
+│   │   │   └── permission-guard.vue  # 权限指令/组件
+│   │   └── common/
+│   │       ├── status-tag.vue        # 状态标签（统一色彩映射）
+│   │       ├── confirm-action.vue    # 确认操作弹窗
+│   │       ├── json-viewer.vue       # JSON 只读展示
+│   │       └── empty-state.vue       # 空状态占位
+│   │
+│   ├── composables/                  # 可复用逻辑 (Hooks)
+│   │   ├── use-auth.ts              # 登录态 & Token
+│   │   ├── use-permission.ts        # 权限判断
+│   │   ├── use-tenant.ts            # 当前租户上下文
+│   │   ├── use-pagination.ts        # 分页逻辑
+│   │   └── use-polling.ts           # 实例状态轮询
+│   │
+│   ├── router/
+│   │   ├── index.ts                 # 路由定义
+│   │   └── guards.ts               # 全局前置守卫
+│   │
+│   ├── stores/                      # Pinia Stores
+│   │   ├── auth.ts
+│   │   ├── tenant.ts
+│   │   └── app.ts                   # 全局 UI 状态（侧边栏折叠等）
+│   │
+│   ├── types/                       # TypeScript 类型定义
+│   │   ├── api.d.ts                 # API 响应包装
+│   │   ├── auth.d.ts
+│   │   ├── tenant.d.ts
+│   │   ├── user.d.ts
+│   │   ├── task.d.ts
+│   │   ├── workflow.d.ts
+│   │   └── variable.d.ts
+│   │
+│   ├── utils/
+│   │   ├── token.ts                 # JWT 存取
+│   │   ├── constants.ts             # 枚举/常量映射
+│   │   └── format.ts               # 日期/状态格式化
+│   │
+│   ├── views/                       # 页面视图
+│   │   ├── auth/
+│   │   │   ├── login.vue
+│   │   │   └── register.vue
+│   │   │
+│   │   ├── dashboard/
+│   │   │   └── index.vue            # 仪表盘概览
+│   │   │
+│   │   ├── tenant/                  # SuperAdmin 专属
+│   │   │   ├── list.vue
+│   │   │   └── detail.vue
+│   │   │
+│   │   ├── user/                    # TenantAdmin+
+│   │   │   └── list.vue
+│   │   │
+│   │   ├── task/
+│   │   │   ├── template/
+│   │   │   │   ├── list.vue         # 原子任务模板列表
+│   │   │   │   └── editor.vue       # 原子任务模板编辑
+│   │   │   └── instance/
+│   │   │       ├── list.vue         # 任务实例列表
+│   │   │       └── detail.vue       # 任务实例详情
+│   │   │
+│   │   ├── workflow/
+│   │   │   ├── meta/
+│   │   │   │   ├── list.vue         # 工作流 Meta 列表
+│   │   │   │   └── detail.vue       # 工作流 Meta 详情（含版本管理）
+│   │   │   ├── editor/
+│   │   │   │   └── index.vue        # 可视化工作流编排器 (核心页面)
+│   │   │   └── instance/
+│   │   │       ├── list.vue         # 工作流实例列表
+│   │   │       └── detail.vue       # 工作流实例详情（含节点状态）
+│   │   │
+│   │   ├── variable/
+│   │   │   ├── tenant-list.vue      # 租户级变量管理
+│   │   │   └── meta-list.vue        # 工作流模板级变量管理（嵌入 Meta 详情）
+│   │   │
+│   │   └── error/
+│   │       ├── 403.vue
+│   │       └── 404.vue
+│   │
+│   ├── App.vue
+│   └── main.ts
+│
+├── index.html
+├── vite.config.ts
+├── tsconfig.json
+└── package.json
+```
+
+---
+
+## 3. 路由设计
+
+路由结构与后端 API 路由保持语义对齐，同时适配前端 SPA 导航习惯。
+
+### 3.1 路由表
+
+| 路径 | 页面 | 权限要求 | 说明 |
+|------|------|----------|------|
+| `/login` | `auth/login.vue` | 公开 | 登录页 |
+| `/register` | `auth/register.vue` | 公开 | 注册页 |
+| `/` | `dashboard/index.vue` | 已登录 | 仪表盘 |
+| `/tenants` | `tenant/list.vue` | SuperAdmin | 租户管理列表 |
+| `/tenants/:id` | `tenant/detail.vue` | SuperAdmin | 租户详情 |
+| `/users` | `user/list.vue` | UserManage | 用户管理 |
+| `/tasks` | `task/template/list.vue` | ReadOnly+ | 原子任务模板列表 |
+| `/tasks/create` | `task/template/editor.vue` | TemplateWrite | 创建任务模板 |
+| `/tasks/:id/edit` | `task/template/editor.vue` | TemplateWrite | 编辑任务模板 |
+| `/tasks/instances` | `task/instance/list.vue` | ReadOnly+ | 任务实例列表 |
+| `/tasks/instances/:id` | `task/instance/detail.vue` | ReadOnly+ | 任务实例详情 |
+| `/workflows` | `workflow/meta/list.vue` | ReadOnly+ | 工作流 Meta 列表 |
+| `/workflows/:metaId` | `workflow/meta/detail.vue` | ReadOnly+ | 工作流 Meta 详情 & 版本管理 |
+| `/workflows/:metaId/editor` | `workflow/editor/index.vue` | TemplateWrite | 可视化编排器（新建版本） |
+| `/workflows/:metaId/editor/:version` | `workflow/editor/index.vue` | TemplateWrite | 可视化编排器（编辑已有版本） |
+| `/workflows/instances` | `workflow/instance/list.vue` | ReadOnly+ | 工作流实例列表 |
+| `/workflows/instances/:id` | `workflow/instance/detail.vue` | ReadOnly+ | 工作流实例详情 |
+| `/variables` | `variable/tenant-list.vue` | ReadOnly+ | 租户级变量管理 |
+
+### 3.2 路由守卫策略
+
+```
+beforeEach(to, from):
+  1. to 是公开路由 (/login, /register) → 放行
+  2. Token 不存在或已过期 → 重定向 /login
+  3. 解析 JWT payload，写入 authStore (user_id, tenant_id, role, is_super_admin)
+  4. 匹配 to.meta.permission，调用 role.has_permission(perm) 判断
+  5. 无权限 → 重定向 /403
+```
+
+---
+
+## 4. API 请求层设计
+
+### 4.1 Axios 拦截器 (request.ts)
+
+```typescript
+// 请求拦截：注入 Authorization header
+instance.interceptors.request.use(config => {
+  const token = getToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
+// 响应拦截：统一错误处理
+instance.interceptors.response.use(
+  response => {
+    const { code, message, data } = response.data
+    if (code !== 0) {
+      Notification.error({ title: '请求失败', content: message })
+      return Promise.reject(new Error(message))
+    }
+    // 剥离 code，只返回 { message, data }
+    return { message, data }
+  },
+  error => {
+    if (error.response?.status === 401) {
+      // Token 失效，跳转登录
+      clearToken()
+      router.push('/login')
+    }
+    return Promise.reject(error)
+  }
+)
+```
+
+### 4.2 API 模块示例 (workflow.ts)
+
+```typescript
+export const workflowApi = {
+  // Meta CRUD
+  createMeta: (data: CreateWorkflowMetaReq) =>
+    request.post<WorkflowMeta>('/workflow/meta', data),
+  listMeta: () =>
+    request.get<WorkflowMeta[]>('/workflow/meta'),
+  getMeta: (metaId: string) =>
+    request.get<WorkflowMeta>(`/workflow/meta/${metaId}`),
+  updateMeta: (metaId: string, data: UpdateWorkflowMetaReq) =>
+    request.put(`/workflow/meta/${metaId}`, data),
+  deleteMeta: (metaId: string) =>
+    request.delete(`/workflow/meta/${metaId}`),
+
+  // Template (versioned)
+  saveTemplate: (metaId: string, data: WorkflowEntity) =>
+    request.post(`/workflow/meta/${metaId}/template`, data),
+  getTemplate: (metaId: string, version: number) =>
+    request.get<WorkflowEntity>(`/workflow/meta/${metaId}/template/${version}`),
+  deleteTemplate: (metaId: string, version: number) =>
+    request.delete(`/workflow/meta/${metaId}/template/${version}`),
+
+  // Instance
+  createInstance: (data: CreateWorkflowInstanceReq) =>
+    request.post<WorkflowInstance>('/workflow/instance', data),
+  listInstances: () =>
+    request.get<WorkflowInstance[]>('/workflow/instance'),
+  getInstance: (id: string) =>
+    request.get<WorkflowInstance>(`/workflow/instance/${id}`),
+  executeInstance: (id: string) =>
+    request.post<WorkflowInstance>(`/workflow/instance/${id}/execute`),
+  cancelInstance: (id: string) =>
+    request.post<WorkflowInstance>(`/workflow/instance/${id}/cancel`),
+  retryInstance: (id: string) =>
+    request.post<WorkflowInstance>(`/workflow/instance/${id}/retry`),
+  resumeInstance: (id: string) =>
+    request.post<WorkflowInstance>(`/workflow/instance/${id}/resume`),
+}
+```
+
+---
+
+## 5. TypeScript 类型映射
+
+前端 TypeScript 类型与后端 Rust 实体一一对应。
+
+### 5.1 枚举映射
+
+```typescript
+// 对应后端 shared/workflow.rs
+type WorkflowStatus = 'Draft' | 'Published' | 'Deleted' | 'Archived'
+type WorkflowInstanceStatus = 'Pending' | 'Running' | 'Await' | 'Completed' | 'Failed' | 'Canceled' | 'Suspended'
+type TaskStatus = 'Draft' | 'Published'
+type TaskInstanceStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Canceled'
+type TaskType = 'Http' | 'IfCondition' | 'ContextRewrite' | 'Parallel' | 'ForkJoin' | 'SubWorkflow' | 'Grpc' | 'Approval'
+type NodeExecutionStatus = 'Pending' | 'Running' | 'Success' | 'Failed' | 'Suspended' | 'Skipped'
+
+type TenantRole = 'TenantAdmin' | 'Developer' | 'Operator' | 'Viewer'
+type TenantStatus = 'Active' | 'Suspended' | 'Deleted'
+type VariableScope = 'Tenant' | 'WorkflowMeta'
+type VariableType = 'String' | 'Number' | 'Bool' | 'Json' | 'Secret'
+```
+
+### 5.2 实体类型
+
+```typescript
+// WorkflowMeta
+interface WorkflowMeta {
+  workflow_meta_id: string
+  tenant_id: string
+  name: string
+  description: string
+  status: WorkflowStatus
+  form: FormField[]
+  created_at: string
+  updated_at: string
+}
+
+// WorkflowEntity（版本化模板，即 DAG 定义）
+interface WorkflowEntity {
+  workflow_meta_id: string
+  version: number
+  status: WorkflowStatus
+  nodes: WorkflowNodeEntity[]
+  created_at: string
+  updated_at: string
+}
+
+interface WorkflowNodeEntity {
+  node_id: string
+  node_type: TaskType
+  config: TaskTemplate  // 联合类型，按 node_type 区分
+  context: JsonValue
+  next_node: string | null
+}
+
+// TaskTemplate 联合类型（tagged union，serde 默认按 key 区分）
+type TaskTemplate =
+  | { Http: TaskHttpTemplate }
+  | { IfCondition: IfConditionTemplate }
+  | { ContextRewrite: ContextRewriteTemplate }
+  | { Parallel: ParallelTemplate }
+  | { ForkJoin: ForkJoinTemplate }
+  | { SubWorkflow: SubWorkflowTemplate }
+
+// TaskInstanceEntity
+interface TaskInstance {
+  id: string
+  tenant_id: string
+  task_id: string
+  task_name: string
+  task_type: TaskType
+  task_template: TaskTemplate
+  task_status: TaskInstanceStatus
+  task_instance_id: string
+  input: JsonValue | null
+  output: JsonValue | null
+  error_message: string | null
+  execution_duration: number | null
+  created_at: string
+  updated_at: string
+}
+```
+
+---
+
+## 6. 页面详细设计
+
+### 6.1 登录页 (`/login`)
+
+| 区域 | 说明 |
+|------|------|
+| 表单 | 用户名、密码、租户选择（下拉或手动输入 tenant_id） |
+| 提交 | `POST /api/v1/auth/login` → 存 Token → 跳转 `/` |
+| 注册入口 | 链接跳转 `/register` |
+
+SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后可通过顶栏租户切换器切换到任意租户上下文。
+
+### 6.2 仪表盘 (`/`)
+
+全局概览页，按当前租户维度展示：
+
+| 卡片 | 数据来源 | 说明 |
+|------|----------|------|
+| 任务模板总数 | `GET /task` → count | 原子任务模板数量 |
+| 工作流模板总数 | `GET /workflow/meta` → count | 工作流 Meta 数量 |
+| 运行中实例数 | `GET /workflow/instance` → filter Running | 当前活跃实例 |
+| 最近失败实例 | `GET /workflow/instance` → filter Failed → top 5 | 快速定位问题 |
+
+> **备注**：仪表盘的聚合统计理想情况下应由后端提供专用的统计 API（如 `GET /api/v1/stats`），避免前端拉全量列表后在本地计数。当前后端暂无此接口，V1 版本可先用列表接口的 length 做近似展示，后续迭代补充。
+
+---
+
+### 6.3 租户管理 (`/tenants`) — SuperAdmin 专属
+
+**列表页**
+
+| 列 | 字段 | 说明 |
+|----|------|------|
+| 租户名称 | `name` | |
+| 状态 | `status` | Active / Suspended / Deleted，用色彩标签区分 |
+| 配额 | `max_workflows` / `max_instances` | |
+| 创建时间 | `created_at` | |
+| 操作 | — | 编辑 / 暂停 / 删除 |
+
+**详情/编辑** — 抽屉 (Drawer) 形式。
+
+---
+
+### 6.4 用户管理 (`/users`) — TenantAdmin+
+
+**列表页**
+
+| 列 | 字段 | 说明 |
+|----|------|------|
+| 用户ID | `user_id` | |
+| 角色 | `role` | TenantAdmin / Developer / Operator / Viewer |
+| 加入时间 | `created_at` | |
+| 操作 | — | 修改角色 / 移除 |
+
+**邀请用户** — 弹窗表单：输入 `user_id` + 选择 `role`，调用 `POST /users`。
+
+---
+
+### 6.5 原子任务模板 (`/tasks`)
+
+#### 6.5.1 列表页
+
+| 列 | 字段 | 说明 |
+|----|------|------|
+| 任务名称 | `name` | 可点击进入编辑 |
+| 类型 | `task_type` | 用图标+文字区分 Http / Grpc / Approval 等 |
+| 状态 | `status` | Draft / Published |
+| 描述 | `description` | 溢出截断 |
+| 更新时间 | `updated_at` | |
+| 操作 | — | 编辑 / 删除 / 创建实例 |
+
+#### 6.5.2 编辑页 (`/tasks/create`, `/tasks/:id/edit`)
+
+页面布局：上方为基础信息表单，下方为**任务类型专属配置区**。
+
+**基础信息**
+
+| 字段 | 控件 |
+|------|------|
+| name | Input |
+| description | Textarea |
+| task_type | Select（Http / Grpc / Approval） |
+| status | Radio（Draft / Published） |
+
+**任务类型配置区** — 根据 `task_type` 动态渲染不同的子表单组件：
+
+| TaskType | 子表单组件 | 核心字段 |
+|----------|------------|----------|
+| Http | `task-http-form.vue` | url, method (Select), headers (KV编辑器), body, retry_count, retry_delay, timeout, success_condition |
+| Grpc | `task-grpc-form.vue` | (预留) |
+| Approval | `task-approval-form.vue` | (预留) |
+
+> 注意：`IfCondition`、`ContextRewrite`、`Parallel`、`ForkJoin`、`SubWorkflow` 是编排层节点类型，不作为独立原子任务模板暴露在此页面。它们只在**工作流可视化编排器**中作为节点类型使用。
+
+---
+
+### 6.6 任务实例 (`/tasks/instances`)
+
+#### 6.6.1 列表页
+
+| 列 | 字段 | 说明 |
+|----|------|------|
+| 实例ID | `task_instance_id` | 可点击进入详情 |
+| 任务名称 | `task_name` | |
+| 类型 | `task_type` | |
+| 状态 | `task_status` | Pending / Running / Completed / Failed / Canceled |
+| 耗时 | `execution_duration` | 毫秒 → 可读格式 |
+| 创建时间 | `created_at` | |
+| 操作 | — | 执行 / 重试 / 取消（按状态机规则启禁用） |
+
+**操作按钮的状态机约束**：
+- 执行：仅 `Pending` 状态可用
+- 重试：仅 `Failed` 状态可用
+- 取消：仅 `Pending` / `Failed` 状态可用
+
+#### 6.6.2 详情页 (`/tasks/instances/:id`)
+
+| 区域 | 内容 |
+|------|------|
+| 基础信息卡片 | 实例ID、任务名、类型、状态、耗时、创建/更新时间 |
+| Input 区域 | JSON Viewer 展示 `input`（渲染后的实际请求） |
+| Output 区域 | JSON Viewer 展示 `output`（执行结果） |
+| Error 区域 | 仅在 `error_message` 非空时展示，红色告警卡片 |
+
+---
+
+### 6.7 工作流 Meta (`/workflows`)
+
+#### 6.7.1 列表页
+
+| 列 | 字段 | 说明 |
+|----|------|------|
+| 工作流名称 | `name` | 可点击进入详情 |
+| 状态 | `status` | Draft / Published |
+| 表单字段数 | `form.length` | 快速了解该工作流需要多少输入 |
+| 更新时间 | `updated_at` | |
+| 操作 | — | 查看详情 / 编辑 / 删除 / 创建版本 / 发起实例 |
+
+#### 6.7.2 详情页 (`/workflows/:metaId`)
+
+页面分为三个 Tab：
+
+**Tab 1: 基础信息**
+- 编辑 Meta 基础字段（name, description, status）
+- **表单设计器**：可视化编辑 `form[]` 字段，每个 FormField 包含 key、value（默认值）、type、description
+
+**Tab 2: 版本管理**
+- 列出该 Meta 下所有版本（`WorkflowEntity`）
+- 每个版本卡片展示：version 号、节点数量、状态、创建时间
+- 操作：查看/编辑（跳转编排器）、删除、基于此版本创建实例
+
+**Tab 3: 模板变量**
+- 嵌入 `variable/meta-list.vue`，管理该 Meta 的工作流模板级变量
+- 对应 API：`GET/POST/PUT/DELETE /workflow/meta/{meta_id}/variables`
+
+---
+
+### 6.8 可视化工作流编排器 (`/workflows/:metaId/editor`)
+
+这是系统最核心、最复杂的页面，用于以拖拽方式构建工作流的 DAG 图。
+
+#### 6.8.1 页面布局
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 顶栏: [← 返回] 工作流名称 v{version}    [保存] [发布]  │
+├────────┬────────────────────────────────┬───────────────┤
+│        │                                │               │
+│ 节点   │                                │  属性面板     │
+│ 面板   │       画布区域                  │  (右侧)      │
+│ (左侧) │       (Vue Flow)               │               │
+│        │                                │               │
+│ ─Http  │    [Start] → [Http] → [If]    │  选中节点的   │
+│ ─If    │                  ↓     ↓       │  配置表单     │
+│ ─Rewrite│            [Parallel] [End]   │               │
+│ ─Parallel│                              │               │
+│ ─ForkJoin│                              │               │
+│ ─SubWF │                                │               │
+│        │                                │               │
+├────────┴────────────────────────────────┴───────────────┤
+│ 底栏: 缩放控制 | 小地图 | 节点数统计                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### 6.8.2 节点面板 (左侧)
+
+可拖拽的节点类型列表，每种类型有独立图标和色彩标识：
+
+| 节点类型 | 图标色 | 描述 | 属于原子任务? |
+|----------|--------|------|:---:|
+| Http | 蓝色 | HTTP 请求 | ✅ |
+| Grpc | 紫色 | gRPC 调用 | ✅ |
+| Approval | 橙色 | 人工审批 | ✅ |
+| IfCondition | 黄色 | 条件分支 | ❌ (控制流) |
+| ContextRewrite | 青色 | 上下文重写 | ❌ (控制流) |
+| Parallel | 绿色 | 同构并发容器 | ❌ (容器) |
+| ForkJoin | 绿色深 | 异构并发容器 | ❌ (容器) |
+| SubWorkflow | 灰色 | 子工作流 | ❌ (编排) |
+
+从面板拖拽节点到画布，自动创建 `WorkflowNodeEntity`，生成唯一 `node_id`。
+
+#### 6.8.3 画布区域 (中央)
+
+基于 **Vue Flow** 实现：
+
+- **节点 (Node)**：自定义渲染组件 `workflow-node.vue`，展示节点名称、类型图标、执行状态（编辑态为灰色/在实例详情中按实际状态着色）
+- **边 (Edge)**：表示 `next_node` 连接关系，支持用户拖拽连线
+- **IfCondition 节点**：拥有两个输出端口（Then / Else），分别连向不同的下游节点
+- **容器节点 (Parallel / ForkJoin)**：渲染为可展开的分组框，内部子任务配置在属性面板中完成
+- **画布交互**：拖拽平移、滚轮缩放、框选多节点、Delete 键删除选中
+
+#### 6.8.4 属性面板 (右侧)
+
+点击画布中的节点，右侧面板动态渲染该节点类型对应的配置表单。
+
+| 节点类型 | 属性面板内容 |
+|----------|-------------|
+| **Http** | URL (支持 `{{变量}}` 模板语法)、Method、Headers (KV 编辑器)、Body、超时、重试次数、重试延迟、成功条件 |
+| **IfCondition** | 条件名称、Rhai 表达式 (Monaco Editor)、Then 节点 (Select)、Else 节点 (Select) |
+| **ContextRewrite** | 名称、Rhai 脚本 (Monaco Editor)、合并模式 (Merge / Replace) |
+| **Parallel** | items_path、item_alias、子任务模板配置（内嵌原子任务表单）、concurrency、mode (Rolling / Batch)、max_failures |
+| **ForkJoin** | 子任务列表（可增删，每项含 task_key + name + 内嵌原子任务表单）、concurrency、mode、max_failures |
+| **SubWorkflow** | 工作流 Meta 选择器（下拉）、版本选择、input_mapping (JSON 编辑器)、output_path、timeout |
+| **通用字段** | node_id (只读)、context (JSON 编辑器) |
+
+#### 6.8.5 数据模型转换
+
+**画布 → API**：保存时将 Vue Flow 的 nodes/edges 转换为后端 `WorkflowEntity` 格式：
+
+```
+Vue Flow nodes[] + edges[]
+    ↓ 转换
+WorkflowEntity {
+  workflow_meta_id,
+  version,
+  status,
+  nodes: [
+    {
+      node_id: "node_1",
+      node_type: "Http",
+      config: { Http: { url: "...", method: "Get", ... } },
+      context: {},
+      next_node: "node_2"
+    },
+    ...
+  ]
+}
+    ↓ 提交
+POST /api/v1/workflow/meta/{metaId}/template
+```
+
+**API → 画布**：加载时将 `WorkflowEntity.nodes[]` 转换为 Vue Flow 的 nodes/edges，利用自动布局算法（dagre）进行初始排列。
+
+#### 6.8.6 IfCondition 节点的边处理
+
+`IfCondition` 是唯一拥有分支出边的节点：
+- 模板中 `then_task` / `else_task` 存储目标 `node_id`
+- 画布中渲染为两个输出锚点（标注 "True" / "False"）
+- `next_node` 字段在 If 节点上保持为 `null`，分支目标由 `IfConditionTemplate.then_task` / `else_task` 承载
+
+---
+
+### 6.9 工作流实例 (`/workflows/instances`)
+
+#### 6.9.1 列表页
+
+| 列 | 字段 | 说明 |
+|----|------|------|
+| 实例ID | `workflow_instance_id` | 可点击进入详情 |
+| 工作流 Meta | `workflow_meta_id` | 关联的 Meta 名称 |
+| 版本 | `workflow_version` | |
+| 状态 | `status` | 带色彩标签 |
+| 当前节点 | `current_node` | 显示正在执行的节点 |
+| 创建时间 | `created_at` | |
+| 操作 | — | 执行 / 取消 / 重试 / 恢复 |
+
+**操作按钮状态机约束** (对应后端 `WorkflowInstanceStatus::can_transition_to`)：
+
+| 操作 | 可用状态 |
+|------|----------|
+| 执行 (execute) | Pending |
+| 取消 (cancel) | Failed, Suspended |
+| 重试 (retry) | Failed |
+| 恢复 (resume) | Suspended |
+
+#### 6.9.2 详情页 (`/workflows/instances/:id`)
+
+这是一个**只读的工作流执行视图**，复用编排器的画布组件，但处于只读模式。
+
+**页面布局**：与编排器类似的三栏布局，但左侧面板替换为"执行信息"面板。
+
+| 区域 | 内容 |
+|------|------|
+| 左侧面板 | 实例基础信息：状态、版本、创建时间、上下文 (JSON Viewer) |
+| 中央画布 | 只读 DAG 图，每个节点按 `NodeExecutionStatus` 实时着色 |
+| 右侧面板 | 点击节点后展示：节点状态、关联的 TaskInstance 详情、Input/Output/Error |
+
+**节点着色规则**：
+
+| NodeExecutionStatus | 节点颜色 | 边框样式 |
+|----|------|------|
+| Pending | 灰色 | 虚线 |
+| Running | 蓝色 + 呼吸动画 | 实线 |
+| Success | 绿色 | 实线 |
+| Failed | 红色 | 实线 |
+| Suspended | 橙色 | 虚线 |
+| Skipped | 灰色淡化 | 点线 |
+
+**自动轮询**：当实例处于 `Running` / `Await` / `Suspended` 等非终态时，前端以 5 秒间隔轮询 `GET /workflow/instance/{id}`，实时刷新节点状态。到达终态后停止轮询。
+
+---
+
+### 6.10 创建工作流实例 (弹窗)
+
+从工作流 Meta 详情页的版本卡片，或列表页的"发起实例"按钮触发。
+
+弹窗内容：
+1. 显示所选 `workflow_meta_id` 和 `version`
+2. **动态表单**：根据 `WorkflowMetaEntity.form[]` 动态渲染输入控件
+
+| FormField.type | 渲染控件 |
+|----------------|----------|
+| `string` | Input |
+| `number` | InputNumber |
+| `boolean` | Switch |
+| `json` | Monaco Editor (JSON mode) |
+
+3. 提交时将表单数据组装为 `context` JSON，调用 `POST /api/v1/workflow/instance`
+4. 成功后可选择"立即执行"（追加调用 `POST /api/v1/workflow/instance/{id}/execute`）或"仅创建"
+
+---
+
+### 6.11 变量管理 (`/variables`)
+
+#### 租户级变量
+
+| 列 | 字段 | 说明 |
+|----|------|------|
+| 变量名 | `key` | |
+| 类型 | `variable_type` | String / Number / Bool / Json / Secret |
+| 值 | `value` | Secret 类型显示为 `******` |
+| 描述 | `description` | |
+| 创建者 | `created_by` | |
+| 操作 | — | 编辑 / 删除 |
+
+Secret 类型变量的特殊处理：
+- 列表中 `value` 列显示掩码
+- 编辑时 `value` 输入框为 password 类型
+- 创建/编辑 Secret 变量的操作按钮仅对 TenantAdmin+ 角色可见
+
+---
+
+## 7. 权限体系前端实现
+
+### 7.1 角色信息来源
+
+JWT Token 中包含 `role` 和 `is_super_admin`，登录后解析并存入 `authStore`：
+
+```typescript
+interface AuthState {
+  token: string
+  userId: string
+  username: string
+  tenantId: string
+  role: TenantRole | 'SuperAdmin'
+  isSuperAdmin: boolean
+}
+```
+
+### 7.2 权限判断 composable
+
+```typescript
+// use-permission.ts
+export function usePermission() {
+  const auth = useAuthStore()
+
+  const hasPermission = (perm: Permission): boolean => {
+    if (auth.isSuperAdmin) return true
+    return roleHasPermission(auth.role, perm)
+  }
+
+  const canWrite = computed(() => hasPermission('TemplateWrite'))
+  const canExecute = computed(() => hasPermission('InstanceExecute'))
+  const canManageUsers = computed(() => hasPermission('UserManage'))
+  const isSuperAdmin = computed(() => auth.isSuperAdmin)
+
+  return { hasPermission, canWrite, canExecute, canManageUsers, isSuperAdmin }
+}
+```
+
+### 7.3 UI 层权限控制
+
+| 层级 | 实现方式 |
+|------|----------|
+| **路由层** | `router.beforeEach` 守卫，检查 `to.meta.permission`，无权限重定向 403 |
+| **菜单层** | `sidebar-menu.vue` 根据权限过滤菜单项（Viewer 看不到"用户管理"、"租户管理"） |
+| **按钮层** | `v-if="canWrite"` 控制"创建"/"编辑"/"删除"按钮的显隐 |
+| **表单层** | 只读角色进入编辑页时表单禁用 (`disabled`)，保存按钮隐藏 |
+
+### 7.4 侧边导航菜单结构
+
+```
+📊 仪表盘                    ← 所有角色
+📋 原子任务
+  └─ 任务模板                ← ReadOnly+
+  └─ 任务实例                ← ReadOnly+
+🔀 工作流
+  └─ 工作流管理              ← ReadOnly+
+  └─ 工作流实例              ← ReadOnly+
+🔐 变量管理                  ← ReadOnly+
+👥 用户管理                  ← UserManage (TenantAdmin+)
+🏢 租户管理                  ← SuperAdmin only
+```
+
+---
+
+## 8. SuperAdmin 租户切换机制
+
+SuperAdmin 登录后，顶栏右侧显示**租户切换器** (Select 组件)：
+
+1. 调用 `GET /api/v1/tenants` 拉取租户列表
+2. 选中租户后更新 `authStore.tenantId`
+3. 后续所有 API 请求自动携带新的 `tenant_id`（通过请求拦截器注入 `X-Tenant-Id` Header 或重新签发 Token）
+4. 切换后自动刷新当前页面数据
+
+普通用户不展示此组件，其 `tenantId` 在登录时即固定。
+
+---
+
+## 9. 全局状态管理 (Pinia Stores)
+
+| Store | 职责 | 持久化 |
+|-------|------|--------|
+| `authStore` | Token、用户信息、角色、当前 tenant_id | localStorage |
+| `tenantStore` | 租户列表缓存（SuperAdmin 用） | 否 |
+| `appStore` | 侧边栏折叠状态、主题模式等 UI 全局状态 | localStorage |
+
+> 业务数据（任务列表、工作流列表等）**不放入全局 Store**，而是在各页面组件内通过 `composable` + `ref` 管理，避免全局状态膨胀。仅当跨页面共享（如 authStore）时才使用 Pinia。
+
+---
+
+## 10. 状态标签色彩规范
+
+为保证全系统状态展示的视觉一致性，统一定义色彩映射：
+
+### 10.1 工作流实例状态
+
+| 状态 | 色彩 | Arco Tag 类型 |
+|------|------|--------------|
+| Pending | 灰色 | `default` |
+| Running | 蓝色 | `arcoblue` |
+| Await | 橙黄色 | `orangered` |
+| Completed | 绿色 | `green` |
+| Failed | 红色 | `red` |
+| Canceled | 灰色 | `default` |
+| Suspended | 橙色 | `orange` |
+
+### 10.2 任务实例状态
+
+沿用上表中相同状态名的色彩。
+
+### 10.3 模板状态
+
+| 状态 | 色彩 |
+|------|------|
+| Draft | 灰色 |
+| Published | 绿色 |
+
+---
+
+## 11. 错误处理策略
+
+| 场景 | 处理方式 |
+|------|----------|
+| API 返回 `code != 0` | 拦截器统一弹出 `Notification.error`，显示 `message` |
+| HTTP 401 | 清除 Token，重定向 `/login` |
+| HTTP 403 | 弹出"无权限"提示，不跳转（保留当前页面） |
+| HTTP 404 | 跳转 `/404` |
+| HTTP 5xx | 弹出"服务器错误"通知 |
+| 网络断开 | 弹出"网络异常"通知，提供"重试"按钮 |
+
+---
+
+## 12. 后续迭代方向
+
+| 优先级 | 方向 | 说明 |
+|:------:|------|------|
+| P0 | 仪表盘统计 API | 后端补充 `GET /api/v1/stats`，避免前端全量拉取计数 |
+| P0 | 分页与搜索 | 所有列表接口补充分页参数 (`page`, `page_size`) 和关键字搜索 |
+| P1 | WebSocket 实时推送 | 替代轮询，实例状态变更由后端主动推送 |
+| P1 | 工作流执行日志流 | 实时查看节点级执行日志 |
+| P2 | 编排器 Undo/Redo | 基于命令模式实现画布操作的撤销/重做 |
+| P2 | 工作流模板导入/导出 | JSON 格式的模板序列化，支持跨租户迁移 |
+| P2 | 暗色主题 | Arco Design 原生支持，需适配画布节点色彩 |
+
+---
+
+## 13. API 路由完整参照表
+
+以下为前端需要对接的全部后端 API 端点，统一前缀 `/api/v1`：
+
+```
+# ──── 公开接口 ────
+POST   /auth/login
+POST   /auth/register
+
+# ──── SuperAdmin 专属 ────
+POST   /tenants
+GET    /tenants
+GET    /tenants/{id}
+PUT    /tenants/{id}
+DELETE /tenants/{id}
+POST   /tenants/{id}/suspend
+
+# ──── 用户管理 (TenantAdmin+) ────
+POST   /users
+GET    /users
+PUT    /users/{user_id}
+DELETE /users/{user_id}
+
+# ──── 以下接口均自动携带 tenant_id 隔离 ────
+
+# 租户变量
+POST   /variables
+GET    /variables
+GET    /variables/{id}
+PUT    /variables/{id}
+DELETE /variables/{id}
+
+# 原子任务模板
+POST   /task
+GET    /task
+GET    /task/{id}
+PUT    /task/{id}
+DELETE /task/{id}
+
+# 任务实例
+POST   /task/instance
+GET    /task/instance
+GET    /task/instance/{id}
+PUT    /task/instance/{id}
+POST   /task/instance/{id}/execute
+POST   /task/instance/{id}/retry
+POST   /task/instance/{id}/cancel
+
+# 工作流 Meta
+POST   /workflow/meta
+GET    /workflow/meta
+GET    /workflow/meta/{workflow_meta_id}
+PUT    /workflow/meta/{workflow_meta_id}
+DELETE /workflow/meta/{workflow_meta_id}
+
+# 工作流版本模板
+POST   /workflow/meta/{workflow_meta_id}/template
+GET    /workflow/meta/{workflow_meta_id}/template/{version}
+DELETE /workflow/meta/{workflow_meta_id}/template/{version}
+
+# 工作流模板变量
+POST   /workflow/meta/{meta_id}/variables
+GET    /workflow/meta/{meta_id}/variables
+GET    /workflow/meta/{meta_id}/variables/{var_id}
+PUT    /workflow/meta/{meta_id}/variables/{var_id}
+DELETE /workflow/meta/{meta_id}/variables/{var_id}
+
+# 工作流实例
+POST   /workflow/instance
+GET    /workflow/instance
+GET    /workflow/instance/{id}
+POST   /workflow/instance/{id}/execute
+POST   /workflow/instance/{id}/cancel
+POST   /workflow/instance/{id}/retry
+POST   /workflow/instance/{id}/resume
+```

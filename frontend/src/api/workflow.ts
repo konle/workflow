@@ -1,0 +1,49 @@
+import request from './request'
+import type { WorkflowMetaEntity, WorkflowEntity, WorkflowInstanceEntity, CreateWorkflowInstanceRequest } from '../types/workflow'
+
+export const workflowApi = {
+  createMeta: (data: Partial<WorkflowMetaEntity>) =>
+    request.post<any, { data: WorkflowMetaEntity }>('/workflow/meta', data),
+
+  listMeta: () =>
+    request.get<any, { data: WorkflowMetaEntity[] }>('/workflow/meta'),
+
+  getMeta: (metaId: string) =>
+    request.get<any, { data: WorkflowMetaEntity }>(`/workflow/meta/${metaId}`),
+
+  updateMeta: (metaId: string, data: Partial<WorkflowMetaEntity>) =>
+    request.put<any, { data: void }>(`/workflow/meta/${metaId}`, data),
+
+  deleteMeta: (metaId: string) =>
+    request.delete<any, { data: void }>(`/workflow/meta/${metaId}`),
+
+  saveTemplate: (metaId: string, data: WorkflowEntity) =>
+    request.post<any, { data: void }>(`/workflow/meta/${metaId}/template`, data),
+
+  getTemplate: (metaId: string, version: number) =>
+    request.get<any, { data: WorkflowEntity }>(`/workflow/meta/${metaId}/template/${version}`),
+
+  deleteTemplate: (metaId: string, version: number) =>
+    request.delete<any, { data: void }>(`/workflow/meta/${metaId}/template/${version}`),
+
+  createInstance: (data: CreateWorkflowInstanceRequest) =>
+    request.post<any, { data: WorkflowInstanceEntity }>('/workflow/instance', data),
+
+  listInstances: () =>
+    request.get<any, { data: WorkflowInstanceEntity[] }>('/workflow/instance'),
+
+  getInstance: (id: string) =>
+    request.get<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}`),
+
+  executeInstance: (id: string) =>
+    request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/execute`),
+
+  cancelInstance: (id: string) =>
+    request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/cancel`),
+
+  retryInstance: (id: string) =>
+    request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/retry`),
+
+  resumeInstance: (id: string) =>
+    request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/resume`),
+}

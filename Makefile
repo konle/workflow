@@ -1,4 +1,4 @@
-.PHONY: dev dev-down run-api run-engine build up down logs clean check
+.PHONY: dev dev-down run-api run-engine run-frontend build-frontend build up down logs clean check
 
 # ── Local Development ────────────────────────────────────────────
 # Start MongoDB + Redis containers for local dev
@@ -16,6 +16,18 @@ run-api:
 run-engine:
 	MONGO_URL=mongodb://127.0.0.1:27017 REDIS_URL=redis://127.0.0.1:6379 \
 	cargo run --bin engine
+
+# Run frontend dev server (Vite, auto-proxy /api to apiserver:3000)
+run-frontend:
+	cd frontend && npm run dev
+
+# Install frontend dependencies
+install-frontend:
+	cd frontend && npm install
+
+# Build frontend for production
+build-frontend:
+	cd frontend && npm run build
 
 # ── Full Deployment ──────────────────────────────────────────────
 build:
