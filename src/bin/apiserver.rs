@@ -4,6 +4,7 @@ use tokio::net::TcpListener;
 use infrastructure::mongodb::task::task_repository_impl::{TaskRepositoryImpl, TaskInstanceRepositoryImpl};
 use infrastructure::mongodb::tenant::tenant_repository_impl::TenantRepositoryImpl;
 use infrastructure::mongodb::user::user_repository_impl::{UserRepositoryImpl, UserTenantRoleRepositoryImpl};
+use infrastructure::mongodb::approval::approval_repository_impl::ApprovalRepositoryImpl;
 use infrastructure::mongodb::variable::variable_repository_impl::VariableRepositoryImpl;
 use infrastructure::mongodb::workflow::workflow_repository_impl::{WorkflowDefinitionRepositoryImpl, WorkflowInstanceRepositoryImpl};
 use infrastructure::queue::consumer;
@@ -12,9 +13,11 @@ use infrastructure::queue::dispatcher::ApalisDispatcher;
 use domain::task::service::{TaskService, TaskInstanceService};
 use domain::tenant::service::TenantService;
 use domain::user::service::UserService;
+use domain::approval::service::ApprovalService;
 use domain::variable::service::VariableService;
 use domain::workflow::service::{WorkflowDefinitionService, WorkflowInstanceService};
 
+use api::handler::approval::ApprovalHandler;
 use api::handler::auth::AuthHandler;
 use api::handler::task::{TaskHandler, TaskInstanceHandler};
 use api::handler::tenant::TenantHandler;
@@ -46,6 +49,7 @@ async fn main() {
     let tenant_repo = Arc::new(TenantRepositoryImpl::new(mongo_client.clone()));
     let user_repo = Arc::new(UserRepositoryImpl::new(mongo_client.clone()));
     let role_repo = Arc::new(UserTenantRoleRepositoryImpl::new(mongo_client.clone()));
+    let approval_repo = Arc::new(ApprovalRepositoryImpl::new(mongo_client.clone()));
     let variable_repo = Arc::new(VariableRepositoryImpl::new(mongo_client.clone()));
     let workflow_def_repo = Arc::new(WorkflowDefinitionRepositoryImpl::new(mongo_client.clone()));
     let workflow_inst_repo = Arc::new(WorkflowInstanceRepositoryImpl::new(mongo_client.clone()));
@@ -53,7 +57,8 @@ async fn main() {
     let task_service = TaskService::new(task_repo);
     let task_instance_service = TaskInstanceService::new(task_instance_repo);
     let tenant_service = TenantService::new(tenant_repo);
-    let user_service = UserService::new(user_repo, role_repo);
+    let user_service = UserService::new(user_repo, role_repo.clone());
+    let approval_service = ApprovalService::new(approval_repo, role_repo);
     let variable_service = VariableService::new(variable_repo, encrypt_key);
     let workflow_def_service = WorkflowDefinitionService::new(workflow_def_repo);
     let workflow_inst_service = WorkflowInstanceService::new(workflow_inst_repo);
@@ -61,6 +66,7 @@ async fn main() {
     let auth_handler = Arc::new(AuthHandler::new(user_service.clone()));
     let tenant_handler = Arc::new(TenantHandler::new(tenant_service));
     let user_handler = Arc::new(UserHandler::new(user_service));
+    let approval_handler = Arc::new(ApprovalHandler::new(approval_service, dispatcher.clone()));
     let variable_handler = Arc::new(VariableHandler::new(variable_service));
     let task_handler = Arc::new(TaskHandler::new(task_service));
     let task_instance_handler = Arc::new(TaskInstanceHandler::new(task_instance_service, dispatcher.clone()));
@@ -76,6 +82,7 @@ async fn main() {
         tenant_handler,
         user_handler,
         variable_handler,
+        approval_handler,
         task_handler,
         task_instance_handler,
         workflow_handler,

@@ -619,10 +619,125 @@ ContextRewrite 与 IfCondition 共用 Rhai 引擎，提取为 `plugin/rhai_engin
 
 ---
 
-## 10. 总结与扩展
+## 10. 审批插件 (Approval Plugin)
+
+### 10.1 定位
+
+审批节点是一个**纯 API 驱动的挂起节点**，不需要 Task Worker。工作流命中审批节点后挂起，等待人工通过 API 提交审批决策，决策完成后通过 `NodeCallback` 唤醒工作流。
+
+### 10.2 模板定义
+
+```rust
+pub struct ApprovalTemplate {
+    pub name: String,
+    pub title: String,                       // 审批标题
+    pub description: Option<String>,         // 审批说明
+    pub approvers: Vec<ApproverRule>,        // 审批人规则
+    pub approval_mode: ApprovalMode,         // Any / All / Majority
+    pub timeout: Option<u64>,                // 超时秒数，None=不超时
+}
+
+pub enum ApproverRule {
+    User(String),                            // 指定 user_id
+    Role(TenantRole),                        // 指定角色
+    ContextVariable(String),                 // 从上下文动态解析
+}
+
+pub enum ApprovalMode {
+    Any,       // 任一审批人通过/拒绝即生效（抢单模式）
+    All,       // 全部通过才通过，任一拒绝即驳回（会签模式）
+    Majority,  // 多数通过即生效（投票模式）
+}
+```
+
+### 10.3 审批实例实体
+
+独立持久化，支持 "我的待办" 等列表查询场景。
+
+```rust
+pub struct ApprovalInstanceEntity {
+    pub id: String,
+    pub tenant_id: String,
+    pub workflow_instance_id: String,
+    pub node_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub approval_mode: ApprovalMode,
+    pub approvers: Vec<String>,              // 解析后的 user_id 列表
+    pub decisions: Vec<ApprovalDecision>,
+    pub status: ApprovalStatus,              // Pending / Approved / Rejected
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+pub struct ApprovalDecision {
+    pub user_id: String,
+    pub decision: Decision,                  // Approve / Reject
+    pub comment: Option<String>,
+    pub decided_at: DateTime<Utc>,
+}
+```
+
+### 10.4 执行时序
+
+```mermaid
+sequenceDiagram
+    participant WW as Workflow Worker
+    participant DB as MongoDB
+    participant API as API Server
+    participant User as 审批人
+    participant RQ as Redis Queue
+
+    Note over WW, DB: 1. 工作流命中审批节点
+    WW->>DB: 创建 ApprovalInstance (status=Pending)
+    WW->>DB: Node 状态 → Suspended
+    WW->>WW: 释放锁，退出
+
+    Note over User, API: 2. 人工审批
+    User->>API: GET /approvals (查看待办)
+    User->>API: POST /approvals/{id}/decide {Approve/Reject}
+    API->>DB: 记录 ApprovalDecision
+    API->>API: 判定模式条件 (Any/All/Majority)
+
+    Note over API, WW: 3. 达成最终结果
+    API->>DB: 更新 ApprovalInstance.status
+    API->>RQ: 投递 NodeCallback 事件
+    RQ->>WW: 唤醒 Workflow Worker
+    WW->>WW: handle_callback → Approved=Success / Rejected=Failed
+    WW->>DB: 更新节点状态，继续执行
+```
+
+### 10.5 审批模式判定逻辑
+
+| 模式 | 通过条件 | 驳回条件 |
+|------|----------|----------|
+| `Any` | 第一个 Approve | 第一个 Reject |
+| `All` | 全部 Approve | 任一 Reject |
+| `Majority` | Approve 数 > 总数/2 | Reject 数 > 总数/2 |
+
+### 10.6 API 路由
+
+```
+GET    /api/v1/approvals                     # 我的待审批列表
+GET    /api/v1/approvals/{id}                # 审批详情
+POST   /api/v1/approvals/{id}/decide         # 提交决策
+```
+
+### 10.7 权限
+
+| 操作 | 限制 |
+|------|------|
+| 查看待审批 | 任何已认证用户（按 approvers 过滤） |
+| 提交决策 | 必须在 approvers 列表内，且 Viewer 角色除外 |
+| 查看所有审批 | TenantAdmin+ |
+
+---
+
+## 11. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
 
 未来的扩展方案：
-1. **人工审批节点**：写一个 `ApprovalPlugin`，它连 Task Worker 都不需要找，`execute` 返回 `Pending` 后，直接等待外部 API 接口推入一个包含审批结果的 `NodeCallback` 事件到 Workflow 队列，就能顺滑将其唤醒。
-2. **延迟节点**：通过向 Apalis 推送定时消息，延时触发。
+1. **延迟节点**：通过向 Apalis 推送定时消息，延时触发。
+2. **审批超时**：定时扫描 `expires_at` 过期的审批实例，自动标记 Expired 并回调工作流。

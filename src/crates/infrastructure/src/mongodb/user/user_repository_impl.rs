@@ -98,4 +98,10 @@ impl UserTenantRoleRepository for UserTenantRoleRepositoryImpl {
             .await?;
         Ok(())
     }
+
+    async fn list_users_by_role(&self, tenant_id: &str, role: &str) -> Result<Vec<UserTenantRole>, RepositoryError> {
+        use futures::TryStreamExt;
+        let cursor = self.collection.find(doc! { "tenant_id": tenant_id, "role": role }).await?;
+        Ok(cursor.try_collect().await?)
+    }
 }

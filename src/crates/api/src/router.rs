@@ -1,5 +1,6 @@
 use axum::{middleware, Router};
 use std::sync::Arc;
+use crate::handler::approval::{ApprovalHandler, routes as approval_routes};
 use crate::handler::auth::{AuthHandler, routes as auth_routes};
 use crate::handler::task::{TaskHandler, TaskInstanceHandler, routes as task_routes};
 use crate::handler::tenant::{TenantHandler, routes as tenant_routes};
@@ -16,6 +17,7 @@ pub fn create_router(
     tenant_handler: Arc<TenantHandler>,
     user_handler: Arc<UserHandler>,
     variable_handler: Arc<VariableHandler>,
+    approval_handler: Arc<ApprovalHandler>,
     task_handler: Arc<TaskHandler>,
     task_instance_handler: Arc<TaskInstanceHandler>,
     workflow_handler: Arc<WorkflowHandler>,
@@ -34,6 +36,7 @@ pub fn create_router(
         .nest("/tenants", tenant_mgmt)
         .nest("/users", user_mgmt)
         .nest("/variables", tenant_variable_routes(variable_handler.clone()))
+        .nest("/approvals", approval_routes(approval_handler))
         .nest("/task", task_routes(task_handler, task_instance_handler))
         .nest("/workflow", workflow_routes(workflow_handler, workflow_instance_handler, variable_handler))
         .layer(middleware::from_fn(auth_middleware));

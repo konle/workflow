@@ -11,7 +11,7 @@ use std::fmt::{self, Display};
 pub enum TaskTemplate {
     Http(TaskHttpTemplate),
     Grpc,
-    Approval,
+    Approval(ApprovalTemplate),
     IfCondition(IfConditionTemplate),
     ContextRewrite(ContextRewriteTemplate),
     Parallel(ParallelTemplate),
@@ -108,6 +108,35 @@ pub struct ContextRewriteTemplate {
 
 fn default_merge_mode() -> MergeMode {
     MergeMode::Merge
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApprovalTemplate {
+    pub name: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub approvers: Vec<ApproverRule>,
+    #[serde(default = "default_approval_mode")]
+    pub approval_mode: ApprovalMode,
+    pub timeout: Option<u64>,
+}
+
+fn default_approval_mode() -> ApprovalMode {
+    ApprovalMode::Any
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ApproverRule {
+    User(String),
+    Role(String),
+    ContextVariable(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApprovalMode {
+    Any,
+    All,
+    Majority,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

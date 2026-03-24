@@ -4,6 +4,7 @@ use apalis_redis::RedisStorage;
 use domain::plugin::manager::PluginManager;
 use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob};
 use domain::task::service::TaskInstanceService;
+use domain::approval::service::ApprovalService;
 use domain::variable::service::VariableService;
 use domain::workflow::service::{WorkflowDefinitionService, WorkflowInstanceService};
 use infrastructure::queue::consumer;
@@ -85,6 +86,7 @@ fn create_plugin_manager(
     workflow_definition_svc: WorkflowDefinitionService,
     workflow_instance_svc: Arc<WorkflowInstanceService>,
     variable_svc: VariableService,
+    approval_svc: ApprovalService,
     task_storage: RedisStorage<ExecuteTaskJob>,
     workflow_storage: RedisStorage<ExecuteWorkflowJob>,
 ) -> Arc<PluginManager> {
@@ -96,6 +98,7 @@ fn create_plugin_manager(
     manager.register(Box::new(domain::plugin::plugins::ifcondition::IfConditionPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::contextrewrite::ContextRewritePlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::forkjoin::ForkJoinPlugin::new()));
+    manager.register(Box::new(domain::plugin::plugins::approval::ApprovalPlugin::new(approval_svc)));
     manager.register(Box::new(domain::plugin::plugins::subworkflow::SubWorkflowPlugin::new(
         workflow_definition_svc,
         (*workflow_instance_svc).clone(),
@@ -135,6 +138,14 @@ async fn main() {
     );
     let variable_svc = VariableService::new(variable_repo, encrypt_key);
 
+    let role_repo = Arc::new(
+        infrastructure::mongodb::user::user_repository_impl::UserTenantRoleRepositoryImpl::new(mongo_client.clone())
+    );
+    let approval_repo = Arc::new(
+        infrastructure::mongodb::approval::approval_repository_impl::ApprovalRepositoryImpl::new(mongo_client.clone())
+    );
+    let approval_svc = ApprovalService::new(approval_repo, role_repo);
+
     let task_repo = Arc::new(infrastructure::mongodb::task::task_repository_impl::TaskInstanceRepositoryImpl::new(mongo_client.clone()));
     let task_svc = Arc::new(TaskInstanceService::new(task_repo));
     let task_manager = create_task_manager(task_svc);
@@ -142,7 +153,7 @@ async fn main() {
     let wf_storage = consumer::create_workflow_storage(&redis_url).await;
     let task_storage = consumer::create_task_storage(&redis_url).await;
 
-    let plugin_manager = create_plugin_manager(workflow_definition_svc, workflow_instance_svc, variable_svc, task_storage.clone(), wf_storage.clone());
+    let plugin_manager = create_plugin_manager(workflow_definition_svc, workflow_instance_svc, variable_svc, approval_svc, task_storage.clone(), wf_storage.clone());
 
     let wf_worker = WorkerBuilder::new("workflow-worker")
         .data(plugin_manager.clone())
