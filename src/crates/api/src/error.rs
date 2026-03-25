@@ -48,6 +48,11 @@ impl IntoResponse for ApiError {
 
 impl From<Box<dyn std::error::Error + Send + Sync>> for ApiError {
     fn from(e: Box<dyn std::error::Error + Send + Sync>) -> Self {
-        ApiError::internal(e.to_string())
+        let msg = e.to_string();
+        if msg.contains("not found") {
+            ApiError::not_found(msg)
+        } else {
+            ApiError::internal(msg)
+        }
     }
 }

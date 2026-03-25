@@ -23,6 +23,9 @@ export const workflowApi = {
   saveTemplate: (metaId: string, data: WorkflowEntity) =>
     request.post<any, { data: void }>(`/workflow/meta/${metaId}/template`, data),
 
+  listTemplates: (metaId: string) =>
+    request.get<any, { data: WorkflowEntity[] }>(`/workflow/meta/${metaId}/template`),
+
   getTemplate: (metaId: string, version: number) =>
     request.get<any, { data: WorkflowEntity }>(`/workflow/meta/${metaId}/template/${version}`),
 

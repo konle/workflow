@@ -32,6 +32,14 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionRepositoryImpl {
         Ok(workflow_entity)
     }
 
+    async fn list_workflow_entities(&self, workflow_meta_id: &str) -> Result<Vec<WorkflowEntity>, RepositoryError> {
+        let cursor = self.collection
+            .find(doc! {"workflow_meta_id": workflow_meta_id})
+            .await?;
+        let results: Vec<WorkflowEntity> = cursor.try_collect().await?;
+        Ok(results)
+    }
+
     async fn save_workflow_entity(&self, entity: &WorkflowEntity) -> Result<(), RepositoryError> {
         self.collection.insert_one(entity).await?;
         Ok(())

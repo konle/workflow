@@ -29,6 +29,10 @@ impl WorkflowDefinitionService {
         self.repository.get_workflow_entity(workflow_meta_id, version).await
     }
 
+    pub async fn list_workflow_entities(&self, workflow_meta_id: &str) -> Result<Vec<WorkflowEntity>, RepositoryError> {
+        self.repository.list_workflow_entities(workflow_meta_id).await
+    }
+
     pub async fn save_workflow_entity(&self, entity: &WorkflowEntity) -> Result<(), RepositoryError> {
         self.repository.save_workflow_entity(entity).await
     }

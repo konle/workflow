@@ -2,7 +2,7 @@
   <div>
     <a-page-header :title="meta?.name || '工作流详情'" @back="$router.push('/workflows')" />
 
-    <a-tabs default-active-key="info">
+    <a-tabs default-active-key="info" @change="handleTabChange">
       <a-tab-pane key="info" title="基础信息">
         <a-card :loading="loading">
           <a-form v-if="meta" :model="meta" layout="vertical">
@@ -185,15 +185,19 @@ async function fetchMeta() {
 
 async function fetchVersions() {
   versionsLoading.value = true
-  const found: WorkflowEntity[] = []
-  for (let v = 1; v <= 20; v++) {
-    try {
-      const res = await workflowApi.getTemplate(metaId, v)
-      found.push(res.data)
-    } catch { break }
+  try {
+    const res = await workflowApi.listTemplates(metaId)
+    versions.value = res.data
+  } catch {} finally { versionsLoading.value = false }
+}
+
+const versionsLoaded = ref(false)
+
+function handleTabChange(key: string) {
+  if (key === 'versions' && !versionsLoaded.value) {
+    versionsLoaded.value = true
+    fetchVersions()
   }
-  versions.value = found
-  versionsLoading.value = false
 }
 
 async function handleSaveMeta() {
@@ -253,7 +257,7 @@ async function handleLaunch() {
   } catch {} finally { launching.value = false }
 }
 
-onMounted(() => { fetchMeta(); fetchVersions() })
+onMounted(() => { fetchMeta() })
 </script>
 
 <style scoped>
