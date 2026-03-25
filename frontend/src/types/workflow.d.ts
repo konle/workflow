@@ -87,6 +87,20 @@ export interface WorkflowInstanceEntity {
   depth: number
 }
 
+export interface CreateWorkflowMetaRequest {
+  name: string
+  description: string
+  status: WorkflowStatus
+  form?: FormField[]
+}
+
+export interface UpdateWorkflowMetaRequest {
+  name: string
+  description: string
+  status: WorkflowStatus
+  form?: FormField[]
+}
+
 export interface CreateWorkflowInstanceRequest {
   workflow_meta_id: string
   version: number

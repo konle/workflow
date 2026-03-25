@@ -163,7 +163,8 @@ frontend/
 | `/tasks/instances` | `task/instance/list.vue` | ReadOnly+ | 任务实例列表 |
 | `/tasks/instances/:id` | `task/instance/detail.vue` | ReadOnly+ | 任务实例详情 |
 | `/workflows` | `workflow/meta/list.vue` | ReadOnly+ | 工作流 Meta 列表 |
-| `/workflows/:metaId` | `workflow/meta/detail.vue` | ReadOnly+ | 工作流 Meta 详情 & 版本管理 |
+| `/workflows/create` | `workflow/meta/editor.vue` | TemplateWrite | 创建工作流（含表单定义） |
+| `/workflows/:metaId` | `workflow/meta/detail.vue` | ReadOnly+ | 工作流 Meta 详情 & 版本管理 & 表单编辑 |
 | `/workflows/:metaId/editor` | `workflow/editor/index.vue` | TemplateWrite | 可视化编排器（新建版本） |
 | `/workflows/:metaId/editor/:version` | `workflow/editor/index.vue` | TemplateWrite | 可视化编排器（编辑已有版本） |
 | `/workflows/instances` | `workflow/instance/list.vue` | ReadOnly+ | 工作流实例列表 |
@@ -224,13 +225,13 @@ instance.interceptors.response.use(
 ```typescript
 export const workflowApi = {
   // Meta CRUD
-  createMeta: (data: CreateWorkflowMetaReq) =>
+  createMeta: (data: CreateWorkflowMetaRequest) =>
     request.post<WorkflowMeta>('/workflow/meta', data),
   listMeta: () =>
     request.get<WorkflowMeta[]>('/workflow/meta'),
   getMeta: (metaId: string) =>
     request.get<WorkflowMeta>(`/workflow/meta/${metaId}`),
-  updateMeta: (metaId: string, data: UpdateWorkflowMetaReq) =>
+  updateMeta: (metaId: string, data: UpdateWorkflowMetaRequest) =>
     request.put(`/workflow/meta/${metaId}`, data),
   deleteMeta: (metaId: string) =>
     request.delete(`/workflow/meta/${metaId}`),
@@ -324,6 +325,20 @@ interface WorkflowMeta {
   form: FormField[]
   created_at: string
   updated_at: string
+}
+
+// 创建/更新 WorkflowMeta 请求（与后端 DTO 对齐，不含 id/tenant_id/时间戳）
+interface CreateWorkflowMetaRequest {
+  name: string
+  description: string
+  status: WorkflowStatus
+  form?: FormField[]
+}
+interface UpdateWorkflowMetaRequest {
+  name: string
+  description: string
+  status: WorkflowStatus
+  form?: FormField[]
 }
 
 // WorkflowEntity（版本化模板，即 DAG 定义）
@@ -561,20 +576,31 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 | 状态 | `status` | Draft / Published |
 | 表单字段数 | `form.length` | 快速了解该工作流需要多少输入 |
 | 更新时间 | `updated_at` | |
-| 操作 | — | 查看详情 / 编辑 / 删除 / 创建版本 / 发起实例 |
+| 操作 | — | 查看详情 / 新建版本 / 删除 |
 
-#### 6.7.2 详情页 (`/workflows/:metaId`)
+"创建工作流"按钮跳转至独立的创建页面 `/workflows/create`（`workflow/meta/editor.vue`）。
+
+#### 6.7.2 创建页面 (`/workflows/create`)
+
+独立的全页面编辑器，包含：
+- 基础字段：name、description、status
+- **工作流表单定义**：与任务模板 `editor.vue` 共享相同的 form-list 布局，每行包含 key、默认值（根据 type 渲染对应输入控件）、type（String/Number/Bool/Json）、description、删除按钮
+- 表单定义在所有版本间共享，属于 `WorkflowMetaEntity.form`
+
+#### 6.7.3 详情页 (`/workflows/:metaId`)
 
 页面分为三个 Tab：
 
 **Tab 1: 基础信息**
 - 编辑 Meta 基础字段（name, description, status）
-- **表单设计器**：可视化编辑 `form[]` 字段，每个 FormField 包含 key、value（默认值）、type（FormValueType 枚举）、description
+- **工作流表单定义**：与创建页面相同的 form-list 编辑器，可查看和编辑 `form[]` 字段
+- 保存时仅提交 `{ name, description, status, form }` 字段（对应后端 `UpdateWorkflowMetaRequest`）
 
 **Tab 2: 版本管理**
 - 列出该 Meta 下所有版本（`WorkflowEntity`）
 - 每个版本卡片展示：version 号、节点数量、状态、创建时间
 - 操作：查看/编辑（跳转编排器）、删除、基于此版本创建实例
+- "发起实例"弹窗根据 `meta.form` 动态渲染用户输入表单
 
 **Tab 3: 模板变量**
 - 嵌入 `variable/meta-list.vue`，管理该 Meta 的工作流模板级变量

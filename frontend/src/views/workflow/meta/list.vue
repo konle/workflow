@@ -2,7 +2,7 @@
   <div>
     <a-card title="工作流管理">
       <template #extra>
-        <a-button v-if="canWrite" type="primary" @click="showCreate = true">创建工作流</a-button>
+        <a-button v-if="canWrite" type="primary" @click="$router.push('/workflows/create')">创建工作流</a-button>
       </template>
       <a-table :data="list" :columns="columns" :loading="loading" row-key="workflow_meta_id">
         <template #status="{ record }">
@@ -21,18 +21,11 @@
         </template>
       </a-table>
     </a-card>
-
-    <a-modal v-model:visible="showCreate" title="创建工作流" @ok="handleCreate" :ok-loading="saving">
-      <a-form :model="form" layout="vertical">
-        <a-form-item label="名称" required><a-input v-model="form.name" /></a-form-item>
-        <a-form-item label="描述"><a-textarea v-model="form.description" /></a-form-item>
-      </a-form>
-    </a-modal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { workflowApi } from '../../../api/workflow'
 import { usePermission } from '../../../composables/use-permission'
 import { TEMPLATE_STATUS_MAP } from '../../../utils/constants'
@@ -44,9 +37,6 @@ import type { WorkflowMetaEntity } from '../../../types/workflow'
 const { canWrite } = usePermission()
 const list = ref<WorkflowMetaEntity[]>([])
 const loading = ref(false)
-const showCreate = ref(false)
-const saving = ref(false)
-const form = reactive({ name: '', description: '' })
 
 const columns = [
   { title: '名称', dataIndex: 'name' },
@@ -62,17 +52,6 @@ async function fetchList() {
     const res = await workflowApi.listMeta()
     list.value = res.data
   } catch {} finally { loading.value = false }
-}
-
-async function handleCreate() {
-  saving.value = true
-  try {
-    await workflowApi.createMeta({ name: form.name, description: form.description, status: 'Draft' as any } as any)
-    Notification.success({ content: '创建成功' })
-    showCreate.value = false
-    form.name = ''; form.description = ''
-    fetchList()
-  } catch {} finally { saving.value = false }
 }
 
 async function handleDelete(id: string) {

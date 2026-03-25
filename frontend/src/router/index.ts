@@ -74,6 +74,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../views/workflow/meta/list.vue'),
       },
       {
+        path: 'workflows/create',
+        name: 'WorkflowMetaCreate',
+        component: () => import('../views/workflow/meta/editor.vue'),
+        meta: { permission: 'TemplateWrite' },
+      },
+      {
         path: 'workflows/:metaId',
         name: 'WorkflowMetaDetail',
         component: () => import('../views/workflow/meta/detail.vue'),

@@ -1,8 +1,11 @@
 import request from './request'
-import type { WorkflowMetaEntity, WorkflowEntity, WorkflowInstanceEntity, CreateWorkflowInstanceRequest } from '../types/workflow'
+import type {
+  WorkflowMetaEntity, WorkflowEntity, WorkflowInstanceEntity,
+  CreateWorkflowMetaRequest, UpdateWorkflowMetaRequest, CreateWorkflowInstanceRequest,
+} from '../types/workflow'
 
 export const workflowApi = {
-  createMeta: (data: Partial<WorkflowMetaEntity>) =>
+  createMeta: (data: CreateWorkflowMetaRequest) =>
     request.post<any, { data: WorkflowMetaEntity }>('/workflow/meta', data),
 
   listMeta: () =>
@@ -11,7 +14,7 @@ export const workflowApi = {
   getMeta: (metaId: string) =>
     request.get<any, { data: WorkflowMetaEntity }>(`/workflow/meta/${metaId}`),
 
-  updateMeta: (metaId: string, data: Partial<WorkflowMetaEntity>) =>
+  updateMeta: (metaId: string, data: UpdateWorkflowMetaRequest) =>
     request.put<any, { data: void }>(`/workflow/meta/${metaId}`, data),
 
   deleteMeta: (metaId: string) =>

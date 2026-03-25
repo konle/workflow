@@ -20,6 +20,37 @@
               </a-col>
             </a-row>
             <a-form-item label="描述"><a-textarea v-model="meta.description" :disabled="!canWrite" /></a-form-item>
+
+            <a-divider>工作流表单定义</a-divider>
+            <a-alert type="info" style="margin-bottom: 16px">
+              此处定义的字段将在发起工作流实例时展示给用户填写，值通过 <code>{<!-- -->{key}}</code> 在节点配置中引用。表单在所有版本间共享。
+            </a-alert>
+            <a-form-item label="表单字段">
+              <div class="form-list">
+                <div v-for="(f, idx) in formFields" :key="idx" class="form-row">
+                  <a-input v-model="f.key" placeholder="字段名 (key)" style="width: 160px" :disabled="!canWrite" />
+                  <a-input v-if="f.type === 'String'" v-model="f.value" placeholder="默认值 (可选)" style="flex: 1" :disabled="!canWrite" />
+                  <a-input-number v-else-if="f.type === 'Number'" v-model="f.value" placeholder="默认值" style="flex: 1" :disabled="!canWrite" />
+                  <a-select v-else-if="f.type === 'Bool'" v-model="f.value" style="flex: 1" placeholder="默认值" :disabled="!canWrite">
+                    <a-option :value="true">true</a-option>
+                    <a-option :value="false">false</a-option>
+                  </a-select>
+                  <a-textarea v-else v-model="f.value" placeholder="JSON 默认值" :auto-size="{ minRows: 1, maxRows: 3 }" style="flex: 1" :disabled="!canWrite" />
+                  <a-select v-model="f.type" style="width: 120px" :disabled="!canWrite">
+                    <a-option value="String">String</a-option>
+                    <a-option value="Number">Number</a-option>
+                    <a-option value="Bool">Bool</a-option>
+                    <a-option value="Json">Json</a-option>
+                  </a-select>
+                  <a-input v-model="f.description" placeholder="字段说明" style="width: 200px" :disabled="!canWrite" />
+                  <a-button v-if="canWrite" status="danger" @click="formFields.splice(idx, 1)">
+                    <template #icon><icon-delete /></template>
+                  </a-button>
+                </div>
+                <a-button v-if="canWrite" type="dashed" long @click="addFormField">+ 添加表单字段</a-button>
+              </div>
+            </a-form-item>
+
             <a-form-item v-if="canWrite">
               <a-button type="primary" @click="handleSaveMeta" :loading="savingMeta">保存</a-button>
             </a-form-item>
@@ -57,10 +88,10 @@
           <a-alert style="margin-bottom: 12px">版本: {{ launchVersion }}</a-alert>
           <a-form :model="launchForm" layout="vertical">
             <template v-for="field in (meta?.form || [])" :key="field.key">
-              <a-form-item :label="field.key">
-                <a-switch v-if="field.type === 'boolean'" v-model="launchCtx[field.key]" />
-                <a-input-number v-else-if="field.type === 'number'" v-model="launchCtx[field.key]" />
-                <a-textarea v-else-if="field.type === 'json'" v-model="launchCtx[field.key]" :auto-size="{ minRows: 2 }" />
+              <a-form-item :label="field.description || field.key">
+                <a-switch v-if="field.type === 'Bool'" v-model="launchCtx[field.key]" />
+                <a-input-number v-else-if="field.type === 'Number'" v-model="launchCtx[field.key]" />
+                <a-textarea v-else-if="field.type === 'Json'" v-model="launchCtx[field.key]" :auto-size="{ minRows: 2 }" />
                 <a-input v-else v-model="launchCtx[field.key]" />
               </a-form-item>
             </template>
@@ -86,8 +117,9 @@ import { workflowApi } from '../../../api/workflow'
 import { usePermission } from '../../../composables/use-permission'
 import { formatDate } from '../../../utils/format'
 import { Notification } from '@arco-design/web-vue'
+import { IconDelete } from '@arco-design/web-vue/es/icon'
 import MetaVariableList from '../../variable/meta-list.vue'
-import type { WorkflowMetaEntity, WorkflowEntity } from '../../../types/workflow'
+import type { WorkflowMetaEntity, WorkflowEntity, FormField } from '../../../types/workflow'
 
 const route = useRoute()
 const router = useRouter()
@@ -106,16 +138,52 @@ const launching = ref(false)
 const launchForm = reactive({ contextJson: '{}', autoExecute: true })
 const launchCtx = reactive<Record<string, any>>({})
 
+interface FormRow {
+  key: string
+  value: any
+  type: string
+  description: string
+}
+
+const formFields = reactive<FormRow[]>([])
+
+function addFormField() {
+  formFields.push({ key: '', value: '', type: 'String', description: '' })
+}
+
+function toFormFields(rows: FormRow[]): FormField[] {
+  return rows
+    .filter(r => r.key.trim() !== '')
+    .map(r => {
+      const field: FormField = { key: r.key, value: r.value, type: r.type }
+      if (r.description) field.description = r.description
+      return field
+    })
+}
+
+function loadFormFields(fields: FormField[] | undefined | null) {
+  formFields.splice(0, formFields.length)
+  if (!fields || !Array.isArray(fields)) return
+  for (const f of fields) {
+    formFields.push({
+      key: f.key,
+      value: f.value,
+      type: f.type || 'String',
+      description: f.description || '',
+    })
+  }
+}
+
 async function fetchMeta() {
   loading.value = true
   try {
     const res = await workflowApi.getMeta(metaId)
     meta.value = res.data
+    loadFormFields(res.data.form)
   } catch {} finally { loading.value = false }
 }
 
 async function fetchVersions() {
-  // The backend doesn't have a list-versions endpoint, so we try versions 1..20
   versionsLoading.value = true
   const found: WorkflowEntity[] = []
   for (let v = 1; v <= 20; v++) {
@@ -132,7 +200,12 @@ async function handleSaveMeta() {
   if (!meta.value) return
   savingMeta.value = true
   try {
-    await workflowApi.updateMeta(metaId, meta.value)
+    await workflowApi.updateMeta(metaId, {
+      name: meta.value.name,
+      description: meta.value.description,
+      status: meta.value.status,
+      form: toFormFields(formFields),
+    })
     Notification.success({ content: '保存成功' })
   } catch {} finally { savingMeta.value = false }
 }
@@ -182,3 +255,18 @@ async function handleLaunch() {
 
 onMounted(() => { fetchMeta(); fetchVersions() })
 </script>
+
+<style scoped>
+.form-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.form-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+</style>
