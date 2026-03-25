@@ -3,12 +3,33 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use domain::task::entity::TaskEntity;
+use chrono::Utc;
+use domain::shared::workflow::{TaskStatus, TaskType};
+use domain::task::entity::{TaskEntity, TaskTemplate};
 use domain::task::service::TaskService;
 use crate::error::ApiError;
 use crate::middleware::auth::AuthContext;
 use crate::response::response::Response;
+use serde::Deserialize;
 use std::sync::Arc;
+
+#[derive(Deserialize)]
+pub struct CreateTaskRequest {
+    pub name: String,
+    pub task_type: TaskType,
+    pub task_template: TaskTemplate,
+    pub description: String,
+    pub status: TaskStatus,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateTaskRequest {
+    pub name: String,
+    pub task_type: TaskType,
+    pub task_template: TaskTemplate,
+    pub description: String,
+    pub status: TaskStatus,
+}
 
 #[derive(Clone)]
 pub struct TaskHandler {
@@ -31,9 +52,21 @@ pub fn routes(handler: Arc<TaskHandler>) -> Router {
 async fn create_task(
     State(handler): State<Arc<TaskHandler>>,
     Extension(auth): Extension<AuthContext>,
-    Json(mut task): Json<TaskEntity>,
+    Json(req): Json<CreateTaskRequest>,
 ) -> Result<Json<Response<TaskEntity>>, ApiError> {
-    task.tenant_id = auth.tenant_id;
+    let now = Utc::now();
+    let task = TaskEntity::new(
+        String::new(),
+        auth.tenant_id,
+        req.name,
+        req.task_type,
+        req.task_template,
+        req.description,
+        req.status,
+        now,
+        now,
+        None,
+    );
     let result = handler.service.create_task_entity(task).await?;
     Ok(Json(Response::success(result)))
 }
@@ -59,10 +92,22 @@ async fn update_task(
     State(handler): State<Arc<TaskHandler>>,
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(mut task): Json<TaskEntity>,
+    Json(req): Json<UpdateTaskRequest>,
 ) -> Result<Json<Response<TaskEntity>>, ApiError> {
-    task.id = id;
-    task.tenant_id = auth.tenant_id;
+    let now = Utc::now();
+    let existing = handler.service.get_task_entity_scoped(&auth.tenant_id, &id).await?;
+    let task = TaskEntity::new(
+        id,
+        auth.tenant_id,
+        req.name,
+        req.task_type,
+        req.task_template,
+        req.description,
+        req.status,
+        existing.created_at,
+        now,
+        existing.deleted_at,
+    );
     let result = handler.service.update_task_entity(task).await?;
     Ok(Json(Response::success(result)))
 }
