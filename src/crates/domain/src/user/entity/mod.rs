@@ -69,7 +69,6 @@ pub struct UserEntity {
     pub user_id: String,
     pub username: String,
     pub email: String,
-    #[serde(skip_serializing)]
     pub password_hash: String,
     pub is_super_admin: bool,
     pub status: UserStatus,
