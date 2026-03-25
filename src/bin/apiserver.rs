@@ -154,8 +154,8 @@ async fn main() {
     let user_handler = Arc::new(UserHandler::new(user_service));
     let approval_handler = Arc::new(ApprovalHandler::new(approval_service, dispatcher.clone()));
     let variable_handler = Arc::new(VariableHandler::new(variable_service));
-    let task_handler = Arc::new(TaskHandler::new(task_service));
-    let task_instance_handler = Arc::new(TaskInstanceHandler::new(task_instance_service, dispatcher.clone()));
+    let task_handler = Arc::new(TaskHandler::new(task_service.clone()));
+    let task_instance_handler = Arc::new(TaskInstanceHandler::new(task_instance_service, task_service, dispatcher.clone()));
     let workflow_handler = Arc::new(WorkflowHandler::new(workflow_def_service.clone()));
     let workflow_instance_handler = Arc::new(WorkflowInstanceHandler::new(
         workflow_def_service,

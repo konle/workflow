@@ -1,7 +1,25 @@
-use crate::shared::workflow::TaskInstanceStatus;
-use crate::task::entity::{TaskEntity, TaskInstanceEntity};
+use chrono::Utc;
+use uuid::Uuid;
+use crate::shared::workflow::{TaskInstanceStatus, TaskStatus, TaskType};
+use crate::task::entity::{TaskEntity, TaskInstanceEntity, TaskTemplate};
 use crate::task::repository::{TaskEntityRepository, TaskInstanceEntityRepository, RepositoryError};
 use std::sync::Arc;
+
+pub struct CreateTaskCommand {
+    pub name: String,
+    pub task_type: TaskType,
+    pub task_template: TaskTemplate,
+    pub description: String,
+    pub status: TaskStatus,
+}
+
+pub struct UpdateTaskCommand {
+    pub name: String,
+    pub task_type: TaskType,
+    pub task_template: TaskTemplate,
+    pub description: String,
+    pub status: TaskStatus,
+}
 
 #[derive(Clone)]
 pub struct TaskService {
@@ -13,8 +31,48 @@ impl TaskService {
         Self { task_entity_repository }
     }
 
-    pub async fn create_task_entity(&self, task_entity: TaskEntity) -> Result<TaskEntity, RepositoryError> {
-        self.task_entity_repository.create_task_entity(task_entity).await
+    pub async fn create_task(
+        &self,
+        tenant_id: String,
+        cmd: CreateTaskCommand,
+    ) -> Result<TaskEntity, RepositoryError> {
+        let now = Utc::now();
+        let entity = TaskEntity::new(
+            Uuid::new_v4().to_string(),
+            tenant_id,
+            cmd.name,
+            cmd.task_type,
+            cmd.task_template,
+            cmd.description,
+            cmd.status,
+            now,
+            now,
+            None,
+        );
+        self.task_entity_repository.create_task_entity(entity).await
+    }
+
+    pub async fn update_task(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        cmd: UpdateTaskCommand,
+    ) -> Result<TaskEntity, RepositoryError> {
+        let existing = self.get_task_entity_scoped(tenant_id, id).await?;
+        let now = Utc::now();
+        let entity = TaskEntity::new(
+            id.to_string(),
+            tenant_id.to_string(),
+            cmd.name,
+            cmd.task_type,
+            cmd.task_template,
+            cmd.description,
+            cmd.status,
+            existing.created_at,
+            now,
+            existing.deleted_at,
+        );
+        self.task_entity_repository.update_task_entity(entity).await
     }
 
     pub async fn get_task_entity(&self, id: String) -> Result<TaskEntity, RepositoryError> {

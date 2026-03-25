@@ -3,31 +3,41 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::Utc;
 use tracing::{info, error};
+use uuid::Uuid;
 use domain::shared::job::{ExecuteTaskJob, TaskDispatcher};
+use domain::shared::workflow::TaskInstanceStatus;
 use domain::task::entity::TaskInstanceEntity;
-use domain::task::service::TaskInstanceService;
+use domain::task::service::{TaskService, TaskInstanceService};
 use crate::error::ApiError;
 use crate::middleware::auth::AuthContext;
 use crate::response::response::Response;
+use serde::Deserialize;
 use std::sync::Arc;
+
+#[derive(Deserialize)]
+pub struct CreateTaskInstanceRequest {
+    pub task_id: String,
+}
 
 #[derive(Clone)]
 pub struct TaskInstanceHandler {
     service: TaskInstanceService,
+    task_service: TaskService,
     dispatcher: Arc<dyn TaskDispatcher>,
 }
 
 impl TaskInstanceHandler {
-    pub fn new(service: TaskInstanceService, dispatcher: Arc<dyn TaskDispatcher>) -> Self {
-        Self { service, dispatcher }
+    pub fn new(service: TaskInstanceService, task_service: TaskService, dispatcher: Arc<dyn TaskDispatcher>) -> Self {
+        Self { service, task_service, dispatcher }
     }
 }
 
 pub fn routes(handler: Arc<TaskInstanceHandler>) -> Router {
     Router::new()
         .route("/", post(create_task_instance).get(list_task_instances))
-        .route("/{id}", get(get_task_instance).put(update_task_instance))
+        .route("/{id}", get(get_task_instance))
         .route("/{id}/execute", post(execute_task_instance))
         .route("/{id}/retry", post(retry_task_instance))
         .route("/{id}/cancel", post(cancel_task_instance))
@@ -37,9 +47,29 @@ pub fn routes(handler: Arc<TaskInstanceHandler>) -> Router {
 async fn create_task_instance(
     State(handler): State<Arc<TaskInstanceHandler>>,
     Extension(auth): Extension<AuthContext>,
-    Json(mut entity): Json<TaskInstanceEntity>,
+    Json(req): Json<CreateTaskInstanceRequest>,
 ) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
-    entity.tenant_id = auth.tenant_id;
+    let task = handler.task_service.get_task_entity_scoped(&auth.tenant_id, &req.task_id).await?;
+    let now = Utc::now();
+    let instance_id = Uuid::new_v4().to_string();
+    let entity = TaskInstanceEntity {
+        id: Uuid::new_v4().to_string(),
+        tenant_id: auth.tenant_id,
+        task_id: task.id.clone(),
+        task_name: task.name.clone(),
+        task_type: task.task_type.clone(),
+        task_template: task.task_template.clone(),
+        task_status: TaskInstanceStatus::Pending,
+        task_instance_id: instance_id,
+        created_at: now,
+        updated_at: now,
+        deleted_at: None,
+        input: None,
+        output: None,
+        error_message: None,
+        execution_duration: None,
+        caller_context: None,
+    };
     let result = handler.service.create_task_instance_entity(entity).await?;
     Ok(Json(Response::success(result)))
 }
@@ -58,18 +88,6 @@ async fn get_task_instance(
     Path(id): Path<String>,
 ) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
     let result = handler.service.get_task_instance_entity_scoped(&auth.tenant_id, &id).await?;
-    Ok(Json(Response::success(result)))
-}
-
-async fn update_task_instance(
-    State(handler): State<Arc<TaskInstanceHandler>>,
-    Extension(auth): Extension<AuthContext>,
-    Path(id): Path<String>,
-    Json(mut entity): Json<TaskInstanceEntity>,
-) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
-    entity.id = id;
-    entity.tenant_id = auth.tenant_id;
-    let result = handler.service.update_task_instance_entity(entity).await?;
     Ok(Json(Response::success(result)))
 }
 
