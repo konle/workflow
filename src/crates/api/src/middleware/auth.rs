@@ -7,6 +7,7 @@ use axum::{
 };
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use domain::user::entity::TenantRole;
 use crate::response::response::Response as ApiResponse;
 
@@ -60,6 +61,7 @@ pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, (
     let token = match auth_header {
         Some(t) => t,
         None => {
+            warn!(path = %req.uri().path(), "missing or invalid Authorization header");
             return Err((
                 StatusCode::UNAUTHORIZED,
                 Json(ApiResponse::error(401, "Missing or invalid Authorization header".to_string())),
@@ -69,7 +71,8 @@ pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, (
 
     let claims = match verify_token(token) {
         Ok(c) => c,
-        Err(_) => {
+        Err(e) => {
+            warn!(path = %req.uri().path(), error = %e, "invalid or expired token");
             return Err((
                 StatusCode::UNAUTHORIZED,
                 Json(ApiResponse::error(401, "Invalid or expired token".to_string())),

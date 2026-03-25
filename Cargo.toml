@@ -30,3 +30,5 @@ clap = { version = "4", features = ["derive"] }
 bcrypt = "0.17"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

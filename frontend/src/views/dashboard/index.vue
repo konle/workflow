@@ -13,12 +13,12 @@
       </a-col>
       <a-col :span="6">
         <a-card>
-          <a-statistic title="运行中实例" :value="stats.runningCount" value-style="color: #3491FA" />
+          <a-statistic title="运行中实例" :value="stats.runningCount" :value-style="{ color: '#3491FA' }" />
         </a-card>
       </a-col>
       <a-col :span="6">
         <a-card>
-          <a-statistic title="失败实例" :value="stats.failedCount" value-style="color: #F53F3F" />
+          <a-statistic title="失败实例" :value="stats.failedCount" :value-style="{ color: '#F53F3F' }" />
         </a-card>
       </a-col>
     </a-row>

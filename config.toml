@@ -5,6 +5,10 @@ port = 3000
 mongo_url = "mongodb://127.0.0.1:27017"
 redis_url = "redis://127.0.0.1:6379"
 
+[log]
+level = "info"
+format = "pretty"
+
 [security]
 variable_encrypt_key = "workflow-default-encrypt-key-change-me"
 

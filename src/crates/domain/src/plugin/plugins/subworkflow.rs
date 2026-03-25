@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use tracing::{info, error};
 
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::job::{ExecuteWorkflowJob, WorkflowCallerContext, WorkflowEvent};
@@ -33,11 +34,20 @@ impl PluginInterface for SubWorkflowPlugin {
     ) -> anyhow::Result<ExecutionResult> {
         let template = match &node_instance.task_instance.task_template {
             TaskTemplate::SubWorkflow(t) => t,
-            _ => return Err(anyhow::anyhow!("Invalid task template for SubWorkflowPlugin")),
+            other => {
+                error!(node_id = %node_instance.node_id, template = ?other, "invalid template for SubWorkflowPlugin");
+                return Err(anyhow::anyhow!("Invalid task template for SubWorkflowPlugin"));
+            }
         };
 
         let child_depth = workflow_instance.depth + 1;
         if child_depth > MAX_SUB_WORKFLOW_DEPTH {
+            error!(
+                workflow_instance_id = %workflow_instance.workflow_instance_id,
+                depth = child_depth,
+                max = MAX_SUB_WORKFLOW_DEPTH,
+                "sub-workflow nesting depth exceeded"
+            );
             return Err(anyhow::anyhow!(
                 "Sub-workflow nesting depth exceeded maximum ({}), possible circular reference",
                 MAX_SUB_WORKFLOW_DEPTH
@@ -47,7 +57,15 @@ impl PluginInterface for SubWorkflowPlugin {
         let workflow_entity = self.definition_svc
             .get_workflow_entity(template.workflow_meta_id.clone(), template.workflow_version)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to load sub-workflow template: {}", e))?;
+            .map_err(|e| {
+                error!(
+                    workflow_meta_id = %template.workflow_meta_id,
+                    version = template.workflow_version,
+                    error = %e,
+                    "failed to load sub-workflow template"
+                );
+                anyhow::anyhow!("Failed to load sub-workflow template: {}", e)
+            })?;
 
         let child_context = template.input_mapping
             .clone()
@@ -63,7 +81,21 @@ impl PluginInterface for SubWorkflowPlugin {
         let child_instance = self.instance_svc
             .create_instance(&workflow_instance.tenant_id, &workflow_entity, child_context, Some(parent_ctx), child_depth)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to create sub-workflow instance: {}", e))?;
+            .map_err(|e| {
+                error!(
+                    parent_workflow_id = %workflow_instance.workflow_instance_id,
+                    error = %e,
+                    "failed to create sub-workflow instance"
+                );
+                anyhow::anyhow!("Failed to create sub-workflow instance: {}", e)
+            })?;
+
+        info!(
+            parent_workflow_id = %workflow_instance.workflow_instance_id,
+            child_workflow_id = %child_instance.workflow_instance_id,
+            depth = child_depth,
+            "sub-workflow created"
+        );
 
         node_instance.task_instance.output = Some(serde_json::json!({
             "child_workflow_instance_id": child_instance.workflow_instance_id,

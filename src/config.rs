@@ -6,6 +6,7 @@ pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub security: SecurityConfig,
+    pub log: LogConfig,
     pub init: InitConfig,
 }
 
@@ -23,6 +24,12 @@ pub struct DatabaseConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct SecurityConfig {
     pub variable_encrypt_key: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LogConfig {
+    pub level: String,
+    pub format: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -54,6 +61,9 @@ impl AppConfig {
         }
         if let Ok(v) = std::env::var("VARIABLE_ENCRYPT_KEY") {
             config.security.variable_encrypt_key = v;
+        }
+        if let Ok(v) = std::env::var("LOG_LEVEL") {
+            config.log.level = v;
         }
 
         Ok(config)

@@ -14,3 +14,5 @@ tokio = { version = "1.49.0", features = ["full"] }
 jsonwebtoken = "9"
 bcrypt = "0.17"
 chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tower-http = { version = "0.6", features = ["trace"] }

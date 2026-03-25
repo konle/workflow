@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use rhai::Scope;
+use tracing::{debug, error};
 
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::plugin::rhai_engine;
@@ -25,7 +26,10 @@ impl PluginInterface for IfConditionPlugin {
     ) -> anyhow::Result<ExecutionResult> {
         let template = match &node_instance.task_instance.task_template {
             TaskTemplate::IfCondition(t) => t,
-            _ => return Err(anyhow::anyhow!("Invalid task template for IfConditionPlugin")),
+            other => {
+                error!(node_id = %node_instance.node_id, template = ?other, "invalid template for IfConditionPlugin");
+                return Err(anyhow::anyhow!("Invalid task template for IfConditionPlugin"));
+            }
         };
 
         let engine = rhai_engine::create_engine();
@@ -35,13 +39,30 @@ impl PluginInterface for IfConditionPlugin {
         rhai_engine::inject_context_flat(&mut scope, &node_instance.context);
 
         let result: bool = engine.eval_with_scope(&mut scope, &template.condition)
-            .map_err(|e| anyhow::anyhow!("Failed to evaluate IfCondition: {}", e))?;
+            .map_err(|e| {
+                error!(
+                    workflow_instance_id = %workflow_instance.workflow_instance_id,
+                    node_id = %node_instance.node_id,
+                    condition = %template.condition,
+                    error = %e,
+                    "failed to evaluate IfCondition"
+                );
+                anyhow::anyhow!("Failed to evaluate IfCondition: {}", e)
+            })?;
 
         let next_node = if result {
             template.then_task.clone()
         } else {
             template.else_task.clone()
         };
+
+        debug!(
+            node_id = %node_instance.node_id,
+            condition = %template.condition,
+            result = result,
+            next_node = ?next_node,
+            "IfCondition evaluated"
+        );
 
         Ok(ExecutionResult::success(next_node))
     }

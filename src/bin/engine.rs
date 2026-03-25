@@ -2,6 +2,7 @@ use std::sync::Arc;
 use apalis::prelude::*;
 use apalis_redis::RedisStorage;
 use clap::Parser;
+use tracing::{info, error};
 use domain::plugin::manager::PluginManager;
 use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob};
 use domain::task::service::TaskInstanceService;
@@ -13,13 +14,21 @@ use infrastructure::queue::dispatcher::ApalisDispatcher;
 use workflow::config::AppConfig;
 
 async fn handle_workflow_job(job: ExecuteWorkflowJob, manager: Data<Arc<PluginManager>>) -> Result<(), std::io::Error> {
-    println!("Executing workflow job: {} event: {:?}", job.workflow_instance_id, job.event);
-    
-    let worker_id = "workflow-worker-1"; // In a real cluster, this should be a unique ID like uuid
-    manager
-        .process_workflow_job(job, worker_id)
-        .await
-        .map_err(|e| std::io::Error::other(e))?;
+    info!(
+        workflow_instance_id = %job.workflow_instance_id,
+        event = ?job.event,
+        "processing workflow job"
+    );
+
+    let worker_id = "workflow-worker-1";
+    if let Err(e) = manager.process_workflow_job(job.clone(), worker_id).await {
+        error!(
+            workflow_instance_id = %job.workflow_instance_id,
+            error = %e,
+            "workflow job failed"
+        );
+        return Err(std::io::Error::other(e));
+    }
 
     Ok(())
 }
@@ -28,27 +37,35 @@ use domain::task::manager::TaskManager;
 use domain::task::executors::http::HttpTaskExecutor;
 
 async fn handle_task_job(
-    job: ExecuteTaskJob, 
+    job: ExecuteTaskJob,
     ctx: Data<(Arc<PluginManager>, Arc<TaskManager>)>
 ) -> Result<(), std::io::Error> {
     let manager = &ctx.0;
     let task_manager = &ctx.1;
-    println!("Executing task: {}", job.task_instance_id);
+    info!(task_instance_id = %job.task_instance_id, "processing task job");
 
-    // 1. 获取任务的 Config
     let mut task_instance_entity = task_manager
         .task_instance_svc()
         .get_task_instance_entity(job.task_instance_id.clone())
         .await
-        .map_err(|e| std::io::Error::other(e))?;
+        .map_err(|e| {
+            error!(task_instance_id = %job.task_instance_id, error = %e, "failed to load task instance");
+            std::io::Error::other(e)
+        })?;
 
-    // 2. 分发并执行任务
     let exec_result = task_manager
         .execute_task(&task_instance_entity)
         .await
-        .map_err(|e| std::io::Error::other(e))?;
+        .map_err(|e| {
+            error!(
+                task_instance_id = %job.task_instance_id,
+                task_type = ?task_instance_entity.task_type,
+                error = %e,
+                "task execution failed"
+            );
+            std::io::Error::other(e)
+        })?;
 
-    // 3. 更新 TaskInstance 本身状态
     task_instance_entity.task_status = match exec_result.status {
         domain::workflow::entity::NodeExecutionStatus::Success => domain::shared::workflow::TaskInstanceStatus::Completed,
         domain::workflow::entity::NodeExecutionStatus::Failed => domain::shared::workflow::TaskInstanceStatus::Failed,
@@ -57,20 +74,29 @@ async fn handle_task_job(
     task_instance_entity.output = exec_result.output.clone().map(|o| o.data);
     task_instance_entity.input = exec_result.input.clone();
     task_instance_entity.error_message = exec_result.error_message.clone();
-    
-    // 保存 task_instance_entity 
-    task_manager.task_instance_svc().update_task_instance_entity(task_instance_entity.clone()).await.map_err(|e| std::io::Error::other(e))?;
 
-    // 4. 回调处理
-    if let Some(ctx) = job.caller_context {
+    task_manager.task_instance_svc().update_task_instance_entity(task_instance_entity.clone())
+        .await
+        .map_err(|e| {
+            error!(task_instance_id = %job.task_instance_id, error = %e, "failed to save task instance");
+            std::io::Error::other(e)
+        })?;
+
+    info!(
+        task_instance_id = %job.task_instance_id,
+        status = ?task_instance_entity.task_status,
+        "task completed"
+    );
+
+    if let Some(caller) = job.caller_context {
         manager
             .dispatcher()
             .dispatch_workflow(ExecuteWorkflowJob {
-                workflow_instance_id: ctx.workflow_instance_id,
+                workflow_instance_id: caller.workflow_instance_id.clone(),
                 tenant_id: job.tenant_id,
                 event: domain::shared::job::WorkflowEvent::NodeCallback {
-                    node_id: ctx.node_id,
-                    child_task_id: job.task_instance_id,
+                    node_id: caller.node_id,
+                    child_task_id: job.task_instance_id.clone(),
                     status: exec_result.status,
                     output: exec_result.output.map(|o| o.data),
                     error_message: exec_result.error_message,
@@ -78,7 +104,15 @@ async fn handle_task_job(
                 },
             })
             .await
-            .map_err(|e| std::io::Error::other(e))?;
+            .map_err(|e| {
+                error!(
+                    task_instance_id = %job.task_instance_id,
+                    workflow_instance_id = %caller.workflow_instance_id,
+                    error = %e,
+                    "failed to dispatch workflow callback"
+                );
+                std::io::Error::other(e)
+            })?;
     }
 
     Ok(())
@@ -126,9 +160,17 @@ async fn main() {
     let cli = Cli::parse();
     let config = AppConfig::load(&cli.config).expect("failed to load config");
 
-    println!("Workflow engine starting...");
+    workflow::init_tracing(&config.log);
 
-    let mongo_client = mongodb::Client::with_uri_str(&config.database.mongo_url).await.expect("failed to connect to MongoDB");
+    info!(config = %cli.config, "engine starting");
+
+    let mongo_client = mongodb::Client::with_uri_str(&config.database.mongo_url)
+        .await
+        .unwrap_or_else(|e| {
+            error!(url = %config.database.mongo_url, error = %e, "failed to connect to MongoDB");
+            std::process::exit(1);
+        });
+    info!("connected to MongoDB");
 
     let workflow_def_repo = Arc::new(
         infrastructure::mongodb::workflow::workflow_repository_impl::WorkflowDefinitionRepositoryImpl::new(mongo_client.clone())
@@ -159,6 +201,7 @@ async fn main() {
 
     let wf_storage = consumer::create_workflow_storage(&config.database.redis_url).await;
     let task_storage = consumer::create_task_storage(&config.database.redis_url).await;
+    info!("connected to Redis");
 
     let plugin_manager = create_plugin_manager(workflow_definition_svc, workflow_instance_svc, variable_svc, approval_svc, task_storage.clone(), wf_storage.clone());
 
@@ -172,12 +215,14 @@ async fn main() {
         .backend(task_storage)
         .build_fn(handle_task_job);
 
-    println!("Workflow engine ready. Waiting for jobs...");
+    info!("engine ready, waiting for jobs");
 
     Monitor::new()
         .register(wf_worker)
         .register(task_worker)
         .run()
         .await
-        .expect("Monitor failed");
+        .unwrap_or_else(|e| {
+            error!(error = %e, "monitor failed");
+        });
 }

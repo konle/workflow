@@ -269,7 +269,7 @@ function buildWorkflowEntity(): any {
   for (const e of edges.value) {
     edgeMap.set(e.source, e.target)
   }
-  const workflowNodes = nodes.value.map(n => {
+  const workflowNodes: any[] = (nodes.value as any[]).map((n: any) => {
     const d = n.data as any
     let config: any
     switch (d.nodeType) {

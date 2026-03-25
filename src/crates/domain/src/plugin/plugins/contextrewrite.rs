@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use rhai::Scope;
+use tracing::{debug, error};
 
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::plugin::rhai_engine;
@@ -25,17 +26,37 @@ impl PluginInterface for ContextRewritePlugin {
     ) -> anyhow::Result<ExecutionResult> {
         let template = match &node_instance.task_instance.task_template {
             TaskTemplate::ContextRewrite(t) => t,
-            _ => return Err(anyhow::anyhow!("Invalid task template for ContextRewritePlugin")),
+            other => {
+                error!(node_id = %node_instance.node_id, template = ?other, "invalid template for ContextRewritePlugin");
+                return Err(anyhow::anyhow!("Invalid task template for ContextRewritePlugin"));
+            }
         };
 
         let engine = rhai_engine::create_engine();
-        let ast = rhai_engine::compile_script(&engine, &template.script)?;
+        let ast = rhai_engine::compile_script(&engine, &template.script)
+            .map_err(|e| {
+                error!(
+                    workflow_instance_id = %workflow_instance.workflow_instance_id,
+                    node_id = %node_instance.node_id,
+                    error = %e,
+                    "failed to compile ContextRewrite script"
+                );
+                e
+            })?;
 
         let mut scope = Scope::new();
         rhai_engine::inject_context(&mut scope, &node_instance.context);
 
         let result = engine.eval_ast_with_scope::<rhai::Dynamic>(&mut scope, &ast)
-            .map_err(|e| anyhow::anyhow!("ContextRewrite script error: {}", e))?;
+            .map_err(|e| {
+                error!(
+                    workflow_instance_id = %workflow_instance.workflow_instance_id,
+                    node_id = %node_instance.node_id,
+                    error = %e,
+                    "ContextRewrite script execution error"
+                );
+                anyhow::anyhow!("ContextRewrite script error: {}", e)
+            })?;
 
         let result_map = rhai_engine::rhai_map_to_json(result)?;
 
@@ -53,6 +74,12 @@ impl PluginInterface for ContextRewritePlugin {
                 workflow_instance.context = serde_json::Value::Object(result_map);
             }
         }
+
+        debug!(
+            node_id = %node_instance.node_id,
+            merge_mode = ?template.merge_mode,
+            "ContextRewrite applied"
+        );
 
         node_instance.task_instance.output = Some(serde_json::json!({
             "rewritten_keys": workflow_instance.context.as_object()

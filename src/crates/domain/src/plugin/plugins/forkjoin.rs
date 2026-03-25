@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
+use tracing::{debug, warn, error};
 
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::job::{ExecuteTaskJob, WorkflowCallerContext};
@@ -36,16 +37,28 @@ impl PluginInterface for ForkJoinPlugin {
     ) -> anyhow::Result<ExecutionResult> {
         let template = match &node_instance.task_instance.task_template {
             TaskTemplate::ForkJoin(t) => t,
-            _ => return Err(anyhow::anyhow!("Invalid task template for ForkJoinPlugin")),
+            other => {
+                error!(node_id = %node_instance.node_id, template = ?other, "invalid template for ForkJoinPlugin");
+                return Err(anyhow::anyhow!("Invalid task template for ForkJoinPlugin"));
+            }
         };
 
         if template.tasks.is_empty() {
+            debug!(node_id = %node_instance.node_id, "forkjoin: empty tasks, completing immediately");
             return Ok(ExecutionResult::success(None));
         }
 
         let total_tasks = template.tasks.len();
         let concurrency = template.concurrency as usize;
         let initial_dispatch = std::cmp::min(total_tasks, concurrency);
+
+        debug!(
+            node_id = %node_instance.node_id,
+            total_tasks = total_tasks,
+            concurrency = concurrency,
+            initial_dispatch = initial_dispatch,
+            "forkjoin: dispatching initial batch"
+        );
 
         let mut results_map = serde_json::Map::new();
         for item in &template.tasks {
@@ -99,7 +112,10 @@ impl PluginInterface for ForkJoinPlugin {
     ) -> anyhow::Result<ExecutionResult> {
         let template = match &node_instance.task_instance.task_template {
             TaskTemplate::ForkJoin(t) => t.clone(),
-            _ => return Err(anyhow::anyhow!("Invalid task template for ForkJoinPlugin")),
+            other => {
+                error!(node_id = %node_instance.node_id, template = ?other, "invalid template for ForkJoinPlugin callback");
+                return Err(anyhow::anyhow!("Invalid task template for ForkJoinPlugin"));
+            }
         };
 
         let mut state = node_instance
@@ -139,12 +155,24 @@ impl PluginInterface for ForkJoinPlugin {
         };
 
         let exec_result = if has_failed_threshold {
+            warn!(
+                node_id = %node_instance.node_id,
+                failed_count = failed_count,
+                max_failures = ?template.max_failures,
+                "forkjoin: max_failures threshold exceeded"
+            );
             node_instance.error_message = Some(format!(
                 "ForkJoin max_failures threshold exceeded ({} failed)",
                 failed_count
             ));
             ExecutionResult::failed()
         } else if success_count + failed_count == total_tasks {
+            debug!(
+                node_id = %node_instance.node_id,
+                success_count = success_count,
+                failed_count = failed_count,
+                "forkjoin: all tasks completed"
+            );
             ExecutionResult::success(None)
         } else {
             let mut indices_to_dispatch = Vec::new();

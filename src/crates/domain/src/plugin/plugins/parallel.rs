@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
+use tracing::{debug, warn, error};
 
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::workflow::TaskType;
@@ -27,12 +28,14 @@ impl PluginInterface for ParallelPlugin {
     ) -> anyhow::Result<ExecutionResult> {
         let template = match &node_instance.task_instance.task_template {
             TaskTemplate::Parallel(t) => t,
-            _ => return Err(anyhow::anyhow!("Invalid task template for ParallelPlugin")),
+            other => {
+                error!(node_id = %node_instance.node_id, template = ?other, "invalid template for ParallelPlugin");
+                return Err(anyhow::anyhow!("Invalid task template for ParallelPlugin"));
+            }
         };
 
         let items_path = &template.items_path;
         
-        // Basic json pointer lookup
         let pointer_path = if items_path.starts_with('/') {
             items_path.clone()
         } else {
@@ -44,10 +47,18 @@ impl PluginInterface for ParallelPlugin {
 
         let items = match items_val {
             Some(JsonValue::Array(arr)) => arr,
-            _ => return Err(anyhow::anyhow!("Items path '{}' did not resolve to a JSON array", items_path)),
+            _ => {
+                error!(
+                    node_id = %node_instance.node_id,
+                    items_path = %items_path,
+                    "items path did not resolve to a JSON array"
+                );
+                return Err(anyhow::anyhow!("Items path '{}' did not resolve to a JSON array", items_path));
+            }
         };
 
         if items.is_empty() {
+            debug!(node_id = %node_instance.node_id, "parallel: empty items, completing immediately");
             return Ok(ExecutionResult::success(None));
         }
 
@@ -55,7 +66,14 @@ impl PluginInterface for ParallelPlugin {
         let concurrency = template.concurrency as usize;
         let initial_dispatch_count = std::cmp::min(total_items, concurrency);
 
-        // Initialize state in parent task output
+        debug!(
+            node_id = %node_instance.node_id,
+            total_items = total_items,
+            concurrency = concurrency,
+            initial_dispatch = initial_dispatch_count,
+            "parallel: dispatching initial batch"
+        );
+
         let state = serde_json::json!({
             "total_items": total_items,
             "dispatched_count": initial_dispatch_count,
@@ -74,7 +92,6 @@ impl PluginInterface for ParallelPlugin {
             };
 
             let job = ExecuteTaskJob {
-                // Generate a unique task instance ID for the sub-task
                 task_instance_id: format!("{}-{}-{}", workflow_instance.workflow_instance_id, node_instance.node_id, index),
                 tenant_id: workflow_instance.tenant_id.clone(),
                 caller_context: Some(caller_context),
@@ -98,7 +115,10 @@ impl PluginInterface for ParallelPlugin {
     ) -> anyhow::Result<ExecutionResult> {
         let template = match &node_instance.task_instance.task_template {
             TaskTemplate::Parallel(t) => t,
-            _ => return Err(anyhow::anyhow!("Invalid task template for ParallelPlugin")),
+            other => {
+                error!(node_id = %node_instance.node_id, template = ?other, "invalid template for ParallelPlugin callback");
+                return Err(anyhow::anyhow!("Invalid task template for ParallelPlugin"));
+            }
         };
 
         let mut state = node_instance.task_instance.output.clone().unwrap_or(serde_json::json!({}));
@@ -123,12 +143,23 @@ impl PluginInterface for ParallelPlugin {
         };
 
         let exec_result = if has_failed_threshold {
+            warn!(
+                node_id = %node_instance.node_id,
+                failed_count = failed_count,
+                max_failures = ?max_failures,
+                "parallel: max_failures threshold exceeded"
+            );
             node_instance.error_message = Some(format!("Parallel max_failures threshold exceeded ({} failed)", failed_count));
             ExecutionResult::failed()
         } else if success_count + failed_count == total_items {
+            debug!(
+                node_id = %node_instance.node_id,
+                success_count = success_count,
+                failed_count = failed_count,
+                "parallel: all items completed"
+            );
             ExecutionResult::success(None)
         } else {
-            // 没执行完，派发新任务
             let mut jobs_to_dispatch = Vec::new();
             
             if mode == crate::task::entity::ParallelMode::Rolling {
@@ -164,7 +195,6 @@ impl PluginInterface for ParallelPlugin {
             ExecutionResult::async_dispatch_multiple(new_jobs)
         };
 
-        // 保存状态
         state["success_count"] = serde_json::json!(success_count);
         state["failed_count"] = serde_json::json!(failed_count);
         state["dispatched_count"] = serde_json::json!(dispatched_count);

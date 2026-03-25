@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use reqwest::Client;
 use serde_json::json;
+use tracing::{debug, warn, error};
 
 use crate::shared::workflow::TaskType;
 use crate::task::entity::{HttpMethod, TaskInstanceEntity, TaskTemplate};
@@ -28,7 +29,10 @@ impl TaskExecutor for HttpTaskExecutor {
     ) -> anyhow::Result<TaskExecutionResult> {
         let config = match &task_instance.task_template {
             TaskTemplate::Http(c) => c,
-            _ => return Err(anyhow::anyhow!("Expected Http config but got other")),
+            other => {
+                error!(task_instance_id = %task_instance.task_instance_id, template = ?other, "expected Http config");
+                return Err(anyhow::anyhow!("Expected Http config but got other"));
+            }
         };
 
         let input_data = json!({
@@ -79,6 +83,13 @@ impl TaskExecutor for HttpTaskExecutor {
                     let output = Some(NodeOutput { data: output_data });
 
                     if (200..300).contains(&status_code) {
+                        debug!(
+                            task_instance_id = %task_instance.task_instance_id,
+                            url = %config.url,
+                            status_code = status_code,
+                            duration_ms = duration,
+                            "HTTP request succeeded"
+                        );
                         return Ok(TaskExecutionResult {
                             status: NodeExecutionStatus::Success,
                             input: Some(input_data),
@@ -86,10 +97,24 @@ impl TaskExecutor for HttpTaskExecutor {
                             error_message: None,
                         });
                     } else {
+                        warn!(
+                            task_instance_id = %task_instance.task_instance_id,
+                            url = %config.url,
+                            status_code = status_code,
+                            attempt = attempt + 1,
+                            "HTTP request returned non-2xx status"
+                        );
                         last_error = Some(format!("HTTP {}: {}", status_code, resp_body));
                     }
                 }
                 Err(e) => {
+                    warn!(
+                        task_instance_id = %task_instance.task_instance_id,
+                        url = %config.url,
+                        attempt = attempt + 1,
+                        error = %e,
+                        "HTTP request failed"
+                    );
                     last_error = Some(e.to_string());
                 }
             }
@@ -103,6 +128,13 @@ impl TaskExecutor for HttpTaskExecutor {
         }
 
         let error_msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
+        error!(
+            task_instance_id = %task_instance.task_instance_id,
+            url = %config.url,
+            attempts = attempts,
+            error = %error_msg,
+            "HTTP task failed after all retries"
+        );
         
         Ok(TaskExecutionResult {
             status: NodeExecutionStatus::Failed,

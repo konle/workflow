@@ -3,6 +3,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use tracing::{info, error};
 use domain::shared::job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent};
 use domain::workflow::{
     entity::WorkflowInstanceEntity,
@@ -68,6 +69,12 @@ async fn create_instance(
         .create_instance(&auth.tenant_id, &workflow_entity, req.context, None, 0)
         .await?;
 
+    info!(
+        workflow_instance_id = %instance.workflow_instance_id,
+        tenant_id = %auth.tenant_id,
+        "workflow instance created"
+    );
+
     Ok(Json(Response::success(instance)))
 }
 
@@ -100,7 +107,12 @@ async fn execute_instance(
         workflow_instance_id: updated.workflow_instance_id.clone(),
         tenant_id: auth.tenant_id,
         event: WorkflowEvent::Start,
-    }).await.map_err(|e| ApiError::internal(e.to_string()))?;
+    }).await.map_err(|e| {
+        error!(workflow_instance_id = %id, error = %e, "failed to dispatch workflow execution");
+        ApiError::internal(e.to_string())
+    })?;
+
+    info!(workflow_instance_id = %id, "workflow execution dispatched");
 
     Ok(Json(Response::success(updated)))
 }
@@ -112,6 +124,7 @@ async fn cancel_instance(
 ) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
     handler.instance_service.get_workflow_instance_scoped(&auth.tenant_id, &id).await?;
     let result = handler.instance_service.cancel_instance(&id).await?;
+    info!(workflow_instance_id = %id, "workflow instance cancelled");
     Ok(Json(Response::success(result)))
 }
 
@@ -122,6 +135,7 @@ async fn retry_instance(
 ) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
     handler.instance_service.get_workflow_instance_scoped(&auth.tenant_id, &id).await?;
     let result = handler.instance_service.retry_instance(&id).await?;
+    info!(workflow_instance_id = %id, "workflow instance retried");
     Ok(Json(Response::success(result)))
 }
 
@@ -132,5 +146,6 @@ async fn resume_instance(
 ) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
     handler.instance_service.get_workflow_instance_scoped(&auth.tenant_id, &id).await?;
     let result = handler.instance_service.resume_instance(&id).await?;
+    info!(workflow_instance_id = %id, "workflow instance resumed");
     Ok(Json(Response::success(result)))
 }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::{info, error};
 use crate::shared::workflow::TaskType;
 use crate::task::interface::{TaskExecutionResult, TaskExecutor};
 use crate::task::entity::TaskInstanceEntity;
@@ -24,6 +25,7 @@ impl TaskManager {
 
     pub fn register(&mut self, executor: Box<dyn TaskExecutor>) {
         let task_type = executor.task_type();
+        info!(task_type = ?task_type, "registered task executor");
         self.executors.insert(task_type, executor);
     }
 
@@ -35,6 +37,11 @@ impl TaskManager {
             .executors
             .get(&task_instance.task_type)
             .ok_or_else(|| {
+                error!(
+                    task_type = ?task_instance.task_type,
+                    task_instance_id = %task_instance.task_instance_id,
+                    "no executor registered for task type"
+                );
                 anyhow::anyhow!(
                     "no task executor registered for task type: {:?}",
                     task_instance.task_type

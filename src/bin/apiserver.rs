@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use clap::Parser;
+use tracing::{info, error};
 
 use infrastructure::mongodb::task::task_repository_impl::{TaskRepositoryImpl, TaskInstanceRepositoryImpl};
 use infrastructure::mongodb::tenant::tenant_repository_impl::TenantRepositoryImpl;
@@ -47,10 +48,9 @@ async fn bootstrap(
 ) {
     let init = &config.init;
 
-    // 1. Create super admin user (skip if exists)
     let admin = match user_service.get_user_by_username(&init.admin_username).await {
         Ok(existing) => {
-            println!("[init] super admin '{}' already exists, skipping", init.admin_username);
+            info!(username = %init.admin_username, "super admin already exists, skipping");
             existing
         }
         Err(_) => {
@@ -65,15 +65,14 @@ async fn bootstrap(
                 )
                 .await
                 .expect("failed to create super admin user");
-            println!("[init] created super admin '{}'", init.admin_username);
+            info!(username = %init.admin_username, user_id = %user.user_id, "created super admin");
             user
         }
     };
 
-    // 2. Create default tenant (skip if exists)
     let tenant = match tenant_service.get_tenant(&init.default_tenant_name).await {
         Ok(existing) => {
-            println!("[init] tenant '{}' already exists, skipping", init.default_tenant_name);
+            info!(tenant = %init.default_tenant_name, "tenant already exists, skipping");
             existing
         }
         Err(_) => {
@@ -81,31 +80,26 @@ async fn bootstrap(
                 .create_tenant(init.default_tenant_name.clone(), init.default_tenant_description.clone())
                 .await
                 .expect("failed to create default tenant");
-            println!("[init] created tenant '{}' (id: {})", init.default_tenant_name, t.tenant_id);
+            info!(tenant = %init.default_tenant_name, tenant_id = %t.tenant_id, "created tenant");
             t
         }
     };
 
-    // 3. Assign TenantAdmin role on the default tenant (skip if exists)
     match user_service.get_role(&admin.user_id, &tenant.tenant_id).await {
         Ok(_) => {
-            println!("[init] admin already has role on tenant '{}', skipping", tenant.tenant_id);
+            info!(tenant_id = %tenant.tenant_id, "admin already has role, skipping");
         }
         Err(_) => {
             user_service
                 .assign_role(&admin.user_id, &tenant.tenant_id, &TenantRole::TenantAdmin)
                 .await
                 .expect("failed to assign admin role");
-            println!("[init] assigned TenantAdmin role to '{}' on tenant '{}'", init.admin_username, tenant.tenant_id);
+            info!(username = %init.admin_username, tenant_id = %tenant.tenant_id, "assigned TenantAdmin role");
         }
     }
 
-    println!("[init] bootstrap complete");
-    println!("[init] ────────────────────────────────────");
-    println!("[init]   username : {}", init.admin_username);
-    println!("[init]   password : {}", init.admin_password);
-    println!("[init]   tenant   : {} (id: {})", init.default_tenant_name, tenant.tenant_id);
-    println!("[init] ────────────────────────────────────");
+    info!("bootstrap complete ─ username: {}, tenant: {} (id: {})",
+        init.admin_username, init.default_tenant_name, tenant.tenant_id);
 }
 
 #[tokio::main]
@@ -113,14 +107,22 @@ async fn main() {
     let cli = Cli::parse();
     let config = AppConfig::load(&cli.config).expect("failed to load config");
 
-    println!("API server starting...");
+    workflow::init_tracing(&config.log);
+
+    info!(config = %cli.config, "apiserver starting");
 
     let mongo_client = mongodb::Client::with_uri_str(&config.database.mongo_url)
         .await
-        .expect("failed to connect to MongoDB");
+        .unwrap_or_else(|e| {
+            error!(url = %config.database.mongo_url, error = %e, "failed to connect to MongoDB");
+            std::process::exit(1);
+        });
+    info!("connected to MongoDB");
 
     let task_storage = consumer::create_task_storage(&config.database.redis_url).await;
     let workflow_storage = consumer::create_workflow_storage(&config.database.redis_url).await;
+    info!("connected to Redis");
+
     let dispatcher: Arc<dyn domain::shared::job::TaskDispatcher> =
         Arc::new(ApalisDispatcher::new(task_storage, workflow_storage));
 
@@ -176,8 +178,13 @@ async fn main() {
     let addr = format!("0.0.0.0:{}", config.server.port);
     let listener = TcpListener::bind(&addr)
         .await
-        .unwrap_or_else(|_| panic!("failed to bind to {}", addr));
+        .unwrap_or_else(|e| {
+            error!(addr = %addr, error = %e, "failed to bind");
+            std::process::exit(1);
+        });
 
-    println!("API server ready at {}", addr);
-    axum::serve(listener, app).await.expect("server error");
+    info!(addr = %addr, "apiserver ready");
+    axum::serve(listener, app).await.unwrap_or_else(|e| {
+        error!(error = %e, "server error");
+    });
 }

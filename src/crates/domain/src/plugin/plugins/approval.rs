@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use tracing::{info, error};
 
 use crate::approval::entity::ApprovalStatus;
 use crate::approval::service::ApprovalService;
@@ -29,7 +30,10 @@ impl PluginInterface for ApprovalPlugin {
     ) -> anyhow::Result<ExecutionResult> {
         let template = match &node_instance.task_instance.task_template {
             TaskTemplate::Approval(t) => t,
-            _ => return Err(anyhow::anyhow!("Invalid task template for ApprovalPlugin")),
+            other => {
+                error!(node_id = %node_instance.node_id, template = ?other, "invalid template for ApprovalPlugin");
+                return Err(anyhow::anyhow!("Invalid task template for ApprovalPlugin"));
+            }
         };
 
         let approval = self
@@ -42,7 +46,22 @@ impl PluginInterface for ApprovalPlugin {
                 &node_instance.context,
             )
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to create approval instance: {}", e))?;
+            .map_err(|e| {
+                error!(
+                    workflow_instance_id = %workflow_instance.workflow_instance_id,
+                    node_id = %node_instance.node_id,
+                    error = %e,
+                    "failed to create approval instance"
+                );
+                anyhow::anyhow!("Failed to create approval instance: {}", e)
+            })?;
+
+        info!(
+            approval_id = %approval.id,
+            workflow_instance_id = %workflow_instance.workflow_instance_id,
+            node_id = %node_instance.node_id,
+            "approval created, workflow suspended"
+        );
 
         node_instance.task_instance.output = Some(serde_json::json!({
             "approval_id": approval.id,

@@ -3,6 +3,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use tracing::{info, error};
 use domain::shared::job::{ExecuteTaskJob, TaskDispatcher};
 use domain::task::entity::TaskInstanceEntity;
 use domain::task::service::TaskInstanceService;
@@ -84,7 +85,12 @@ async fn execute_task_instance(
         task_instance_id: updated.task_instance_id.clone(),
         tenant_id: auth.tenant_id,
         caller_context: None,
-    }).await.map_err(|e| ApiError::internal(e.to_string()))?;
+    }).await.map_err(|e| {
+        error!(task_instance_id = %id, error = %e, "failed to dispatch task execution");
+        ApiError::internal(e.to_string())
+    })?;
+
+    info!(task_instance_id = %id, "task execution dispatched");
 
     Ok(Json(Response::success(updated)))
 }

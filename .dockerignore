@@ -1,7 +1,6 @@
 target/
 .git/
 docs/
-deploy/
 *.md
 .dockerignore
 .gitignore

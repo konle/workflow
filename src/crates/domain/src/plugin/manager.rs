@@ -9,6 +9,7 @@ use crate::workflow::service::WorkflowInstanceService;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::{info, warn, error, debug};
 
 enum LoopAction {
     Advance,
@@ -55,25 +56,41 @@ impl PluginManager {
         let mut instance = match self.workflow_instance_svc.acquire_lock(&job.workflow_instance_id, worker_id, 10000).await {
             Ok(inst) => inst,
             Err(e) => {
-                println!("Failed to acquire lock for {}: {}, skipping or retrying later...", job.workflow_instance_id, e);
-                return Ok(()); // Lock not acquired, event is effectively ignored or would be retried based on queue settings
+                warn!(
+                    workflow_instance_id = %job.workflow_instance_id,
+                    worker_id = %worker_id,
+                    error = %e,
+                    "failed to acquire lock, skipping"
+                );
+                return Ok(());
             }
         };
 
         if !instance.is_pending() && !instance.is_running() {
-            // Must release lock if we bail out early
+            debug!(
+                workflow_instance_id = %job.workflow_instance_id,
+                status = ?instance.status,
+                "instance not in actionable state, releasing lock"
+            );
             let _ = self.workflow_instance_svc.release_lock(&instance.workflow_instance_id, worker_id).await;
             return Ok(());
         }
 
         let result = match job.event {
             crate::shared::job::WorkflowEvent::Start => {
+                info!(workflow_instance_id = %job.workflow_instance_id, "starting workflow execution");
                 self.execute_workflow(&mut instance).await
             }
             crate::shared::job::WorkflowEvent::NodeCallback { node_id, child_task_id, status, output, error_message, input } => {
+                debug!(
+                    workflow_instance_id = %job.workflow_instance_id,
+                    node_id = %node_id,
+                    child_task_id = %child_task_id,
+                    callback_status = ?status,
+                    "processing node callback"
+                );
                 let mut callback_result = Ok(());
                 if let Some(node_index) = instance.nodes.iter().position(|n| n.node_id == node_id) {
-                    // Update current_node to ensure execute_workflow loop starts from here if it's not already
                     instance.current_node = node_id.clone();
                     
                     let mut node = instance.nodes[node_index].clone();
@@ -86,28 +103,44 @@ impl PluginManager {
                                         LoopAction::Advance | LoopAction::Retry => {
                                             callback_result = self.execute_workflow_loop(&mut instance).await;
                                         },
-                                        LoopAction::Done => {
-                                            // Completed or suspended, stop
-                                        }
+                                        LoopAction::Done => {}
                                     }
                                 }
                                 Err(e) => callback_result = Err(e),
                             }
                         }
-                        Err(e) => callback_result = Err(e),
+                        Err(e) => {
+                            error!(
+                                workflow_instance_id = %job.workflow_instance_id,
+                                node_id = %node_id,
+                                error = %e,
+                                "node callback handling failed"
+                            );
+                            callback_result = Err(e);
+                        }
                     }
                 }
                 callback_result
             }
         };
 
-        // If this workflow reached a terminal state, notify parent (if sub-workflow)
         if result.is_ok() {
-            let _ = self.notify_parent_if_needed(&job.workflow_instance_id).await;
+            if let Err(e) = self.notify_parent_if_needed(&job.workflow_instance_id).await {
+                warn!(
+                    workflow_instance_id = %job.workflow_instance_id,
+                    error = %e,
+                    "failed to notify parent workflow"
+                );
+            }
         }
 
-        // Always attempt to release the lock when done
-        let _ = self.workflow_instance_svc.release_lock(&job.workflow_instance_id, worker_id).await;
+        if let Err(e) = self.workflow_instance_svc.release_lock(&job.workflow_instance_id, worker_id).await {
+            warn!(
+                workflow_instance_id = %job.workflow_instance_id,
+                error = %e,
+                "failed to release lock"
+            );
+        }
 
         result
     }
@@ -145,14 +178,19 @@ impl PluginManager {
                 .nodes
                 .iter()
                 .position(|n| n.node_id == current_node_id)
-                .ok_or_else(|| anyhow::anyhow!("node not found: {}", current_node_id))?;
+                .ok_or_else(|| {
+                    error!(
+                        workflow_instance_id = %instance.workflow_instance_id,
+                        node_id = %current_node_id,
+                        "node not found in instance"
+                    );
+                    anyhow::anyhow!("node not found: {}", current_node_id)
+                })?;
 
             let node_status = instance.nodes[node_index].status.clone();
 
             match node_status {
                 NodeExecutionStatus::Success => {
-
-
                     if let Some(next) = instance.nodes[node_index].next_node.clone() {
                         instance.current_node = next;
                         self.workflow_instance_svc
@@ -161,6 +199,7 @@ impl PluginManager {
                             .map_err(|e| anyhow::anyhow!(e))?;
                         continue;
                     } else {
+                        info!(workflow_instance_id = %instance.workflow_instance_id, "workflow completed");
                         self.workflow_instance_svc
                             .complete_instance(&instance.workflow_instance_id)
                             .await
@@ -169,6 +208,11 @@ impl PluginManager {
                     }
                 }
                 NodeExecutionStatus::Failed => {
+                    error!(
+                        workflow_instance_id = %instance.workflow_instance_id,
+                        node_id = %current_node_id,
+                        "workflow failed at node"
+                    );
                     self.workflow_instance_svc
                         .fail_instance(&instance.workflow_instance_id)
                         .await
@@ -210,7 +254,12 @@ impl PluginManager {
                 &node.context,
             ).await {
                 Ok(merged) => node.context = merged,
-                Err(e) => println!("Warning: variable resolution failed: {}, using raw context", e),
+                Err(e) => warn!(
+                    workflow_instance_id = %instance.workflow_instance_id,
+                    node_id = %node.node_id,
+                    error = %e,
+                    "variable resolution failed, using raw context"
+                ),
             }
         }
 
@@ -220,6 +269,12 @@ impl PluginManager {
         let exec_result = match result {
             Ok(r) => r,
             Err(e) => {
+                error!(
+                    workflow_instance_id = %instance.workflow_instance_id,
+                    node_id = %instance.nodes[node_index].node_id,
+                    error = %e,
+                    "node execution failed"
+                );
                 instance.nodes[node_index].error_message = Some(e.to_string());
                 ExecutionResult::failed()
             }
@@ -237,13 +292,10 @@ impl PluginManager {
         instance.nodes[node_index].status = exec_result.status.clone();
         let action = match exec_result.status {
             NodeExecutionStatus::Success => {
-                // 如果插件动态指定了下一跳（If 节点算出来的），优先走跳转
                 if let Some(jump_to_node) = exec_result.jump_to_node {
                     instance.current_node = jump_to_node;
                     LoopAction::Advance
                 }
-
-
                 else if let Some(next) = instance.nodes[node_index].next_node.clone() {
                     instance.current_node = next;
                     LoopAction::Advance
@@ -281,16 +333,21 @@ impl PluginManager {
             .map_err(|e| anyhow::anyhow!(e))?;
 
         for job in exec_result.dispatch_jobs {
-            self.dispatcher.dispatch_task(job).await?;
+            if let Err(e) = self.dispatcher.dispatch_task(job.clone()).await {
+                error!(task_instance_id = %job.task_instance_id, error = %e, "failed to dispatch task");
+                return Err(e.into());
+            }
         }
         for job in exec_result.dispatch_workflow_jobs {
-            self.dispatcher.dispatch_workflow(job).await?;
+            if let Err(e) = self.dispatcher.dispatch_workflow(job.clone()).await {
+                error!(workflow_instance_id = %job.workflow_instance_id, error = %e, "failed to dispatch workflow");
+                return Err(e.into());
+            }
         }
 
         Ok(action)
     }
 
-    /// If this workflow has a parent (sub-workflow), dispatch a NodeCallback to the parent.
     async fn notify_parent_if_needed(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
         let instance = self.workflow_instance_svc
             .get_workflow_instance(workflow_instance_id.to_string())
@@ -311,6 +368,12 @@ impl PluginManager {
                 WorkflowInstanceStatus::Completed => NodeExecutionStatus::Success,
                 _ => NodeExecutionStatus::Failed,
             };
+            info!(
+                child_workflow_id = %workflow_instance_id,
+                parent_workflow_id = %parent_ctx.workflow_instance_id,
+                status = ?status,
+                "notifying parent workflow"
+            );
             self.dispatcher.dispatch_workflow(ExecuteWorkflowJob {
                 workflow_instance_id: parent_ctx.workflow_instance_id.clone(),
                 tenant_id: instance.tenant_id.clone(),
@@ -337,6 +400,11 @@ impl PluginExecutor for PluginManager {
         workflow_instance: &mut WorkflowInstanceEntity,
     ) -> anyhow::Result<ExecutionResult> {
         let plugin = self.plugins.get(&node_instance.node_type).ok_or_else(|| {
+            error!(
+                node_type = ?node_instance.node_type,
+                node_id = %node_instance.node_id,
+                "no plugin registered for node type"
+            );
             anyhow::anyhow!(
                 "no plugin registered for task type: {:?}",
                 node_instance.node_type
@@ -357,6 +425,11 @@ impl PluginExecutor for PluginManager {
         input: &Option<serde_json::Value>,
     ) -> anyhow::Result<ExecutionResult> {
         let plugin = self.plugins.get(&node_instance.node_type).ok_or_else(|| {
+            error!(
+                node_type = ?node_instance.node_type,
+                node_id = %node_instance.node_id,
+                "no plugin registered for callback"
+            );
             anyhow::anyhow!(
                 "no plugin registered for task type: {:?}",
                 node_instance.node_type

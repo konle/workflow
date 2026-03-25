@@ -1,4 +1,5 @@
 use axum::{http::StatusCode, response::IntoResponse, Json};
+use tracing::error;
 use crate::response::response::Response;
 
 pub struct ApiError {
@@ -8,9 +9,11 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn internal(message: impl ToString) -> Self {
+        let msg = message.to_string();
+        error!(status = 500, error = %msg, "internal server error");
         ApiError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: message.to_string(),
+            message: msg,
         }
     }
 
@@ -43,7 +46,6 @@ impl IntoResponse for ApiError {
     }
 }
 
-// 从 Box<dyn Error> 自动转换为 ApiError
 impl From<Box<dyn std::error::Error + Send + Sync>> for ApiError {
     fn from(e: Box<dyn std::error::Error + Send + Sync>) -> Self {
         ApiError::internal(e.to_string())

@@ -3,6 +3,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use tracing::{info, warn, error};
 use domain::approval::entity::{ApprovalInstanceEntity, Decision};
 use domain::approval::service::ApprovalService;
 use domain::plugin::plugins::approval::approval_status_to_node_status;
@@ -83,6 +84,13 @@ async fn decide_approval(
         .decide(&auth.tenant_id, &id, &auth.user_id, req.decision, req.comment)
         .await?;
 
+    info!(
+        approval_id = %id,
+        user_id = %auth.user_id,
+        status = ?approval.status,
+        "approval decision submitted"
+    );
+
     if approval.status != domain::approval::entity::ApprovalStatus::Pending {
         let node_status = approval_status_to_node_status(&approval.status);
         let output = serde_json::json!({
@@ -120,7 +128,15 @@ async fn decide_approval(
                 event,
             })
             .await
-            .map_err(|e| ApiError::internal(format!("Failed to dispatch callback: {}", e)))?;
+            .map_err(|e| {
+                error!(
+                    approval_id = %id,
+                    workflow_instance_id = %approval.workflow_instance_id,
+                    error = %e,
+                    "failed to dispatch approval callback"
+                );
+                ApiError::internal(format!("Failed to dispatch callback: {}", e))
+            })?;
     }
 
     Ok(Json(Response::success(approval)))
@@ -133,7 +149,10 @@ fn check_admin_permission(auth: &AuthContext) -> Result<(), ApiError> {
     }
     match &auth.role {
         Some(TenantRole::TenantAdmin) => Ok(()),
-        _ => Err(ApiError::forbidden("only TenantAdmin+ can view all approvals")),
+        _ => {
+            warn!(user_id = %auth.user_id, "forbidden: only TenantAdmin+ can view all approvals");
+            Err(ApiError::forbidden("only TenantAdmin+ can view all approvals"))
+        }
     }
 }
 
@@ -144,6 +163,7 @@ fn check_decide_permission(auth: &AuthContext) -> Result<(), ApiError> {
     }
     match &auth.role {
         Some(TenantRole::Viewer) | None => {
+            warn!(user_id = %auth.user_id, "forbidden: viewer cannot submit approval decisions");
             Err(ApiError::forbidden("Viewer cannot submit approval decisions"))
         }
         _ => Ok(()),
