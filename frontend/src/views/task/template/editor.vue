@@ -29,9 +29,11 @@
           </a-radio-group>
         </a-form-item>
 
-        <a-divider>任务配置</a-divider>
-
+        <!-- ==================== HTTP 配置 ==================== -->
         <template v-if="form.task_type === 'Http'">
+          <a-divider>请求配置</a-divider>
+
+          <!-- URL & Method -->
           <a-row :gutter="16">
             <a-col :span="16">
               <a-form-item label="URL" required>
@@ -50,12 +52,93 @@
               </a-form-item>
             </a-col>
           </a-row>
-          <a-form-item label="Headers (JSON)">
-            <a-textarea v-model="headersJson" :auto-size="{ minRows: 2 }" placeholder='{"Content-Type": "application/json"}' />
+
+          <!-- Headers -->
+          <a-form-item label="Headers">
+            <div class="form-list">
+              <div class="preset-tags">
+                <span class="preset-label">常用：</span>
+                <a-tag v-for="p in headerPresets" :key="p.key" color="arcoblue" class="preset-tag" @click="addPresetHeader(p)">
+                  {{ p.key }}
+                </a-tag>
+              </div>
+              <div v-for="(h, idx) in httpConfig.headers" :key="idx" class="form-row">
+                <a-auto-complete
+                  v-model="h.key"
+                  :data="headerSuggestions"
+                  placeholder="Header 名称"
+                  style="width: 200px"
+                  allow-clear
+                />
+                <a-input v-model="h.value" placeholder="值 (Variable 类型支持 {{变量}})" style="flex: 1" />
+                <a-select v-model="h.type" style="width: 120px">
+                  <a-option value="String">String</a-option>
+                  <a-option value="Variable">Variable</a-option>
+                </a-select>
+                <a-input v-model="h.description" placeholder="描述 (可选)" style="width: 160px" />
+                <a-button status="danger" @click="httpConfig.headers.splice(idx, 1)">
+                  <template #icon><icon-delete /></template>
+                </a-button>
+              </div>
+              <a-button type="dashed" long @click="addHeaderRow">+ 添加 Header</a-button>
+            </div>
           </a-form-item>
-          <a-form-item label="Body (JSON)">
-            <a-textarea v-model="bodyJson" :auto-size="{ minRows: 3 }" />
+
+          <!-- Body -->
+          <a-form-item label="Body (请求体字段)">
+            <div class="form-list">
+              <div v-for="(b, idx) in httpConfig.body" :key="idx" class="form-row">
+                <a-input v-model="b.key" placeholder="字段名" style="width: 160px" />
+                <a-input v-if="b.type === 'String' || b.type === 'Variable'" v-model="b.value" placeholder="值" style="flex: 1" />
+                <a-input-number v-else-if="b.type === 'Number'" v-model="b.value" placeholder="数值" style="flex: 1" />
+                <a-select v-else-if="b.type === 'Bool'" v-model="b.value" style="flex: 1">
+                  <a-option :value="true">true</a-option>
+                  <a-option :value="false">false</a-option>
+                </a-select>
+                <a-textarea v-else v-model="b.value" placeholder="JSON 值" :auto-size="{ minRows: 1, maxRows: 3 }" style="flex: 1" />
+                <a-select v-model="b.type" style="width: 120px">
+                  <a-option value="String">String</a-option>
+                  <a-option value="Number">Number</a-option>
+                  <a-option value="Bool">Bool</a-option>
+                  <a-option value="Json">Json</a-option>
+                  <a-option value="Variable">Variable</a-option>
+                </a-select>
+                <a-input v-model="b.description" placeholder="描述 (可选)" style="width: 160px" />
+                <a-button status="danger" @click="httpConfig.body.splice(idx, 1)">
+                  <template #icon><icon-delete /></template>
+                </a-button>
+              </div>
+              <a-button type="dashed" long @click="addBodyRow">+ 添加字段</a-button>
+            </div>
           </a-form-item>
+
+          <!-- 用户表单 -->
+          <a-divider>用户表单定义</a-divider>
+          <a-alert type="info" style="margin-bottom: 16px">
+            此处定义的字段将在工作流实例创建时展示给用户填写，值可通过 <code>{<!-- -->{key}}</code> 在 URL / Headers / Body 中引用。
+          </a-alert>
+          <a-form-item label="Form (用户输入字段)">
+            <div class="form-list">
+              <div v-for="(f, idx) in httpConfig.form" :key="idx" class="form-row">
+                <a-input v-model="f.key" placeholder="字段名 (key)" style="width: 160px" />
+                <a-input v-model="f.value" placeholder="默认值 (可选)" style="flex: 1" />
+                <a-select v-model="f.type" style="width: 120px">
+                  <a-option value="String">String</a-option>
+                  <a-option value="Number">Number</a-option>
+                  <a-option value="Bool">Bool</a-option>
+                  <a-option value="Json">Json</a-option>
+                </a-select>
+                <a-input v-model="f.description" placeholder="字段说明" style="width: 200px" />
+                <a-button status="danger" @click="httpConfig.form.splice(idx, 1)">
+                  <template #icon><icon-delete /></template>
+                </a-button>
+              </div>
+              <a-button type="dashed" long @click="addFormRow">+ 添加表单字段</a-button>
+            </div>
+          </a-form-item>
+
+          <!-- 运行参数 -->
+          <a-divider>运行参数</a-divider>
           <a-row :gutter="16">
             <a-col :span="8">
               <a-form-item label="超时 (秒)">
@@ -78,7 +161,9 @@
           </a-form-item>
         </template>
 
+        <!-- ==================== 审批配置 ==================== -->
         <template v-else-if="form.task_type === 'Approval'">
+          <a-divider>审批配置</a-divider>
           <a-row :gutter="16">
             <a-col :span="16">
               <a-form-item label="审批标题" required>
@@ -123,7 +208,9 @@
           </a-form-item>
         </template>
 
+        <!-- ==================== gRPC 预留 ==================== -->
         <template v-else-if="form.task_type === 'Grpc'">
+          <a-divider>gRPC 配置</a-divider>
           <a-alert type="info">gRPC 类型配置即将支持</a-alert>
         </template>
 
@@ -143,7 +230,8 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { taskApi } from '../../../api/task'
 import { Notification } from '@arco-design/web-vue'
-import type { TaskEntity, HttpMethod } from '../../../types/task'
+import { IconDelete } from '@arco-design/web-vue/es/icon'
+import type { TaskEntity, HttpMethod, FormField, FormValueType } from '../../../types/task'
 
 const route = useRoute()
 const router = useRouter()
@@ -158,12 +246,19 @@ const form = reactive({
   status: 'Draft' as string,
 })
 
+interface FormRow {
+  key: string
+  value: any
+  type: FormValueType
+  description: string
+}
+
 const httpConfig = reactive({
   url: '',
   method: 'Get' as HttpMethod,
-  headers: {} as Record<string, string>,
-  body: null as any,
-  form: null as any,
+  headers: [] as FormRow[],
+  body: [] as FormRow[],
+  form: [] as FormRow[],
   retry_count: 0,
   retry_delay: 0,
   timeout: 30,
@@ -178,19 +273,66 @@ const approvalConfig = reactive({
   timeout: null as number | null,
 })
 
-const headersJson = ref('{}')
-const bodyJson = ref('')
+// ---- Header 预设与建议 ----
+
+const headerPresets = [
+  { key: 'Content-Type', value: 'application/json', type: 'String' as FormValueType },
+  { key: 'Authorization', value: 'Bearer ', type: 'Variable' as FormValueType },
+  { key: 'Accept', value: 'application/json', type: 'String' as FormValueType },
+  { key: 'X-API-Key', value: '', type: 'Variable' as FormValueType },
+]
+
+const headerSuggestions = [
+  'Content-Type', 'Authorization', 'Accept', 'X-API-Key',
+  'Cache-Control', 'User-Agent', 'X-Request-ID', 'X-Forwarded-For',
+  'If-None-Match', 'Origin', 'Referer',
+]
+
+function addPresetHeader(preset: { key: string; value: string; type: FormValueType }) {
+  const exists = httpConfig.headers.some(h => h.key === preset.key)
+  if (exists) {
+    Notification.warning({ content: `Header "${preset.key}" 已存在` })
+    return
+  }
+  httpConfig.headers.push({ key: preset.key, value: preset.value, type: preset.type, description: '' })
+}
+
+function addHeaderRow() {
+  httpConfig.headers.push({ key: '', value: '', type: 'String', description: '' })
+}
+
+function addBodyRow() {
+  httpConfig.body.push({ key: '', value: '', type: 'String', description: '' })
+}
+
+function addFormRow() {
+  httpConfig.form.push({ key: '', value: '', type: 'String', description: '' })
+}
+
+// ---- 构建提交数据 ----
+
+function toFormFields(rows: FormRow[]): FormField[] {
+  return rows
+    .filter(r => r.key.trim() !== '')
+    .map(r => {
+      const field: FormField = { key: r.key, value: r.value, type: r.type }
+      if (r.description) field.description = r.description
+      return field
+    })
+}
 
 function buildTaskTemplate() {
   if (form.task_type === 'Http') {
-    try { httpConfig.headers = JSON.parse(headersJson.value || '{}') } catch { httpConfig.headers = {} }
-    const bodyVal = bodyJson.value.trim()
-    const bodyField = bodyVal ? { key: 'body', value: bodyVal, type: 'json' } : null
     return {
       Http: {
-        ...httpConfig,
-        body: bodyField,
-        form: null,
+        url: httpConfig.url,
+        method: httpConfig.method,
+        headers: toFormFields(httpConfig.headers),
+        body: toFormFields(httpConfig.body),
+        form: toFormFields(httpConfig.form),
+        retry_count: httpConfig.retry_count,
+        retry_delay: httpConfig.retry_delay,
+        timeout: httpConfig.timeout,
         success_condition: httpConfig.success_condition || null,
       },
     }
@@ -234,6 +376,18 @@ async function handleSave() {
   } catch {} finally { saving.value = false }
 }
 
+// ---- 编辑模式加载 ----
+
+function formFieldsToRows(fields: FormField[] | undefined | null): FormRow[] {
+  if (!fields || !Array.isArray(fields)) return []
+  return fields.map(f => ({
+    key: f.key,
+    value: f.value,
+    type: f.type || 'String',
+    description: f.description || '',
+  }))
+}
+
 onMounted(async () => {
   if (isEdit.value) {
     pageLoading.value = true
@@ -246,9 +400,15 @@ onMounted(async () => {
       form.status = entity.status
       if (entity.task_type === 'Http' && typeof entity.task_template === 'object' && 'Http' in entity.task_template) {
         const tpl = entity.task_template.Http
-        Object.assign(httpConfig, tpl)
-        headersJson.value = JSON.stringify(tpl.headers || {}, null, 2)
-        bodyJson.value = tpl.body ? (typeof tpl.body.value === 'string' ? tpl.body.value : JSON.stringify(tpl.body.value)) : ''
+        httpConfig.url = tpl.url
+        httpConfig.method = tpl.method
+        httpConfig.headers = formFieldsToRows(tpl.headers)
+        httpConfig.body = formFieldsToRows(tpl.body)
+        httpConfig.form = formFieldsToRows(tpl.form)
+        httpConfig.retry_count = tpl.retry_count
+        httpConfig.retry_delay = tpl.retry_delay
+        httpConfig.timeout = tpl.timeout
+        httpConfig.success_condition = tpl.success_condition
       } else if (entity.task_type === 'Approval' && typeof entity.task_template === 'object' && 'Approval' in entity.task_template) {
         const tpl = entity.task_template.Approval
         approvalConfig.title = tpl.title
@@ -266,3 +426,34 @@ onMounted(async () => {
   }
 })
 </script>
+
+<style scoped>
+.form-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.form-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.preset-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.preset-label {
+  font-size: 13px;
+  color: var(--color-text-3);
+}
+
+.preset-tag {
+  cursor: pointer;
+}
+</style>

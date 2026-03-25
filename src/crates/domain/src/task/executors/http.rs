@@ -35,11 +35,28 @@ impl TaskExecutor for HttpTaskExecutor {
             }
         };
 
+        let headers_map: serde_json::Map<String, serde_json::Value> = config
+            .headers
+            .iter()
+            .map(|f| (f.key.clone(), json!(f.value)))
+            .collect();
+
+        let body_map: serde_json::Map<String, serde_json::Value> = config
+            .body
+            .iter()
+            .map(|f| (f.key.clone(), json!(f.value)))
+            .collect();
+        let body_json = if body_map.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(body_map))
+        };
+
         let input_data = json!({
             "url": config.url,
             "method": config.method,
-            "headers": config.headers,
-            "body": config.body,
+            "headers": headers_map,
+            "body": body_json,
         });
 
         let mut last_error: Option<String> = None;
@@ -54,12 +71,14 @@ impl TaskExecutor for HttpTaskExecutor {
                 HttpMethod::Head => self.client.head(&config.url),
             };
 
-            for (k, v) in &config.headers {
-                request = request.header(k.as_str(), v.as_str());
+            for h in &config.headers {
+                if let crate::shared::form::FormValue::String(v) = &h.value {
+                    request = request.header(h.key.as_str(), v.as_str());
+                }
             }
 
-            if let Some(ref form) = config.body {
-                request = request.json(form);
+            if let Some(ref bj) = body_json {
+                request = request.json(bj);
             }
 
             if config.timeout > 0 {

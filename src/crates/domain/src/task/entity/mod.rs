@@ -3,7 +3,6 @@ use crate::shared::workflow::{TaskInstanceStatus, TaskStatus, TaskType};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
 use std::fmt::{self, Display};
 
 // 任务模板枚举 用于表示任务的模板 如http、grpc、审批等
@@ -75,13 +74,15 @@ pub struct SubWorkflowTemplate {
 pub struct TaskHttpTemplate {
     pub url: String,
     pub method: HttpMethod,
-    pub headers: HashMap<String, String>,
-    pub body: Option<Form>,
-    pub form: Option<Form>,
-    pub retry_count: u32, // 重试次数
-    pub retry_delay: u32, // 重试延迟 单位：秒
-    pub timeout: u32,     // 超时时间 单位：秒
-    // 添加成功条件检测 如状态码、响应体、正则表达式等
+    #[serde(default)]
+    pub headers: Vec<Form>,
+    #[serde(default)]
+    pub body: Vec<Form>,
+    #[serde(default)]
+    pub form: Vec<Form>,
+    pub retry_count: u32,
+    pub retry_delay: u32,
+    pub timeout: u32,
     pub success_condition: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

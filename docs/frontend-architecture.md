@@ -282,11 +282,38 @@ type TenantRole = 'TenantAdmin' | 'Developer' | 'Operator' | 'Viewer'
 type TenantStatus = 'Active' | 'Suspended' | 'Deleted'
 type VariableScope = 'Tenant' | 'WorkflowMeta'
 type VariableType = 'String' | 'Number' | 'Bool' | 'Json' | 'Secret'
+
+// 对应后端 shared/form.rs
+type FormValueType = 'String' | 'Number' | 'Bool' | 'Json' | 'Variable'
 ```
 
 ### 5.2 实体类型
 
 ```typescript
+// 表单字段 (对应后端 shared/form.rs)
+// FormValueType 决定引擎如何处理 value：
+//   String / Number / Bool / Json → 字面量，原样使用
+//   Variable → 模板字符串，引擎渲染 {{}} 占位符
+interface FormField {
+  key: string
+  value: string | number | boolean | JsonValue
+  type: FormValueType
+  description?: string
+}
+
+// HTTP 任务模板
+interface TaskHttpTemplate {
+  url: string                       // 支持 {{变量}} 模板，约定始终做模板渲染
+  method: HttpMethod
+  headers: FormField[]              // 请求头列表，Variable 类型支持 {{变量}}
+  body: FormField[]                 // 请求体字段列表，每条构成 body JSON 的一个 key
+  form: FormField[]                 // 用户输入表单定义，运行时渲染到 URL/Headers/Body
+  retry_count: number
+  retry_delay: number
+  timeout: number
+  success_condition: string | null
+}
+
 // WorkflowMeta
 interface WorkflowMeta {
   workflow_meta_id: string
@@ -476,9 +503,19 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 
 | TaskType | 子表单组件 | 核心字段 |
 |----------|------------|----------|
-| Http | `task-http-form.vue` | url, method (Select), headers (KV编辑器), body, retry_count, retry_delay, timeout, success_condition |
+| Http | `task-http-form.vue` | url, method, headers (FormField[] KV编辑器+常用预设), body (FormField[] 字段编辑器), form (FormField[] 用户表单定义), retry_count, retry_delay, timeout, success_condition |
 | Grpc | `task-grpc-form.vue` | (预留) |
 | Approval | `task-approval-form.vue` | title, description, approval_mode (Any/All/Majority), approvers (动态规则列表: User/Role/ContextVariable), timeout |
+
+**HTTP 任务编辑器分为三个区块**：
+
+1. **请求配置**（任务设计者填写）：URL、Method、Headers（FormField[] 动态 KV 编辑器 + 常用 Header 快捷标签）、Body（FormField[] 字段编辑器，每行 key+value+type+description）
+2. **用户表单定义**（定义最终用户看到的输入表单）：Form（FormField[] 编辑器），此处定义的字段在工作流实例创建时展示给用户填写，值通过 `{{key}}` 在 URL/Headers/Body 中引用
+3. **运行参数**：timeout、retry_count、retry_delay、success_condition
+
+**FormField.type（FormValueType）语义**：
+- `String` / `Number` / `Bool` / `Json`：字面量，原样使用，不做模板渲染
+- `Variable`：模板字符串，引擎执行时渲染 `{{}}` 占位符
 
 > 注意：`IfCondition`、`ContextRewrite`、`Parallel`、`ForkJoin`、`SubWorkflow` 是编排层节点类型，不作为独立原子任务模板暴露在此页面。它们只在**工作流可视化编排器**中作为节点类型使用。
 
@@ -532,7 +569,7 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 
 **Tab 1: 基础信息**
 - 编辑 Meta 基础字段（name, description, status）
-- **表单设计器**：可视化编辑 `form[]` 字段，每个 FormField 包含 key、value（默认值）、type、description
+- **表单设计器**：可视化编辑 `form[]` 字段，每个 FormField 包含 key、value（默认值）、type（FormValueType 枚举）、description
 
 **Tab 2: 版本管理**
 - 列出该 Meta 下所有版本（`WorkflowEntity`）
@@ -605,7 +642,7 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 
 | 节点类型 | 属性面板内容 |
 |----------|-------------|
-| **Http** | URL (支持 `{{变量}}` 模板语法)、Method、Headers (KV 编辑器)、Body、超时、重试次数、重试延迟、成功条件 |
+| **Http** | URL (支持 `{{变量}}` 模板语法)、Method、Headers (FormField[] KV编辑器)、Body (FormField[] 字段编辑器)、Form (FormField[] 用户表单)、超时、重试次数、重试延迟、成功条件 |
 | **IfCondition** | 条件名称、Rhai 表达式 (Monaco Editor)、Then 节点 (Select)、Else 节点 (Select) |
 | **ContextRewrite** | 名称、Rhai 脚本 (Monaco Editor)、合并模式 (Merge / Replace) |
 | **Parallel** | items_path、item_alias、子任务模板配置（内嵌原子任务表单）、concurrency、mode (Rolling / Batch)、max_failures |
@@ -709,12 +746,13 @@ POST /api/v1/workflow/meta/{metaId}/template
 1. 显示所选 `workflow_meta_id` 和 `version`
 2. **动态表单**：根据 `WorkflowMetaEntity.form[]` 动态渲染输入控件
 
-| FormField.type | 渲染控件 |
-|----------------|----------|
-| `string` | Input |
-| `number` | InputNumber |
-| `boolean` | Switch |
-| `json` | Monaco Editor (JSON mode) |
+| FormField.type (FormValueType) | 渲染控件 |
+|-------------------------------|----------|
+| `String` | Input |
+| `Number` | InputNumber |
+| `Bool` | Switch |
+| `Json` | Monaco Editor (JSON mode) |
+| `Variable` | Input（提示支持 `{{变量}}` 模板语法） |
 
 3. 提交时将表单数据组装为 `context` JSON，调用 `POST /api/v1/workflow/instance`
 4. 成功后可选择"立即执行"（追加调用 `POST /api/v1/workflow/instance/{id}/execute`）或"仅创建"

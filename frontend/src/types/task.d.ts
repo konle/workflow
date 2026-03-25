@@ -7,19 +7,21 @@ export type HttpMethod = 'Get' | 'Post' | 'Put' | 'Delete' | 'Head'
 export type ParallelMode = 'Rolling' | 'Batch'
 export type MergeMode = 'Merge' | 'Replace'
 
+export type FormValueType = 'String' | 'Number' | 'Bool' | 'Json' | 'Variable'
+
 export interface FormField {
   key: string
   value: string | number | boolean | JsonValue
-  type: string
+  type: FormValueType
   description?: string
 }
 
 export interface TaskHttpTemplate {
   url: string
   method: HttpMethod
-  headers: Record<string, string>
-  body: FormField | null
-  form: FormField | null
+  headers: FormField[]
+  body: FormField[]
+  form: FormField[]
   retry_count: number
   retry_delay: number
   timeout: number
