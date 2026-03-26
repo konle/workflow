@@ -67,13 +67,21 @@
             <template #item="{ item }">
               <a-list-item>
                 <a-list-item-meta>
-                  <template #title>版本 {{ item.version }}</template>
+                  <template #title>
+                    版本 {{ item.version }}
+                    <a-tag :color="item.status === 'Draft' ? 'gray' : item.status === 'Published' ? 'green' : 'orange'" size="small" style="margin-left: 8px">{{ item.status }}</a-tag>
+                  </template>
                   <template #description>
                     {{ item.nodes?.length || 0 }} 个节点 · {{ formatDate(item.created_at) }}
                   </template>
                 </a-list-item-meta>
                 <template #actions>
-                  <a-button type="text" size="small" @click="$router.push(`/workflows/${metaId}/editor/${item.version}`)">编辑</a-button>
+                  <a-button type="text" size="small" @click="$router.push(`/workflows/${metaId}/editor/${item.version}`)">
+                    {{ item.status === 'Draft' ? '编辑' : '查看' }}
+                  </a-button>
+                  <a-popconfirm v-if="canWrite && item.status === 'Draft'" content="确定发布此版本？发布后不可编辑。" @ok="handlePublishVersion(item.version)">
+                    <a-button type="text" size="small" status="success">发布</a-button>
+                  </a-popconfirm>
                   <a-button type="text" size="small" status="success" @click="openLaunch(item.version)">发起实例</a-button>
                   <a-popconfirm v-if="canWrite" content="确定删除此版本？" @ok="handleDeleteVersion(item.version)">
                     <a-button type="text" size="small" status="danger">删除</a-button>
@@ -218,6 +226,14 @@ async function handleDeleteVersion(version: number) {
   await workflowApi.deleteTemplate(metaId, version)
   Notification.success({ content: '版本已删除' })
   fetchVersions()
+}
+
+async function handlePublishVersion(version: number) {
+  try {
+    await workflowApi.publishTemplate(metaId, version)
+    Notification.success({ content: `版本 ${version} 已发布` })
+    fetchVersions()
+  } catch {}
 }
 
 function openLaunch(version: number) {

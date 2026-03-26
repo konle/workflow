@@ -58,6 +58,10 @@ pub fn routes(handler: Arc<WorkflowHandler>) -> Router {
         .route("/meta", post(create_workflow_meta).get(list_workflow_meta))
         .route("/meta/{workflow_meta_id}", get(get_workflow_meta).put(update_workflow_meta).delete(delete_workflow_meta))
         .route("/meta/{workflow_meta_id}/template", post(save_workflow_template).get(list_workflow_templates))
+        .route(
+            "/meta/{workflow_meta_id}/template/{version}/publish",
+            post(publish_workflow_template),
+        )
         .route("/meta/{workflow_meta_id}/template/{version}", get(get_workflow_template).delete(delete_workflow_template))
         .with_state(handler)
 }
@@ -179,5 +183,15 @@ async fn delete_workflow_template(
 ) -> Result<Json<Response<()>>, ApiError> {
     handler.service.get_workflow_meta_entity_scoped(&auth.tenant_id, &workflow_meta_id).await?;
     handler.service.delete_workflow_entity(workflow_meta_id, version).await?;
+    Ok(Json(Response::success(())))
+}
+
+async fn publish_workflow_template(
+    State(handler): State<Arc<WorkflowHandler>>,
+    Extension(auth): Extension<AuthContext>,
+    Path((workflow_meta_id, version)): Path<(String, u32)>,
+) -> Result<Json<Response<()>>, ApiError> {
+    handler.service.get_workflow_meta_entity_scoped(&auth.tenant_id, &workflow_meta_id).await?;
+    handler.service.publish_workflow_entity(&workflow_meta_id, version).await?;
     Ok(Json(Response::success(())))
 }

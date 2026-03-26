@@ -2,9 +2,12 @@
   <div class="editor-container">
     <div class="editor-header">
       <a-button @click="$router.back()">← 返回</a-button>
-      <span class="editor-title">{{ metaName }} <a-tag v-if="currentVersion">v{{ currentVersion }}</a-tag></span>
+      <span class="editor-title">{{ metaName }} <a-tag v-if="currentVersion">v{{ currentVersion }}</a-tag>
+        <a-tag v-if="versionStatus" :color="versionStatus === 'Draft' ? 'gray' : versionStatus === 'Published' ? 'green' : 'orange'">{{ versionStatus }}</a-tag>
+      </span>
       <a-space>
-        <a-button type="primary" @click="handleSave" :loading="saving">保存</a-button>
+        <a-button v-if="!readonly" type="primary" @click="handleSave" :loading="saving">保存</a-button>
+        <a-tag v-if="readonly" color="orange">只读模式（已发布版本不可编辑）</a-tag>
       </a-space>
     </div>
 
@@ -15,8 +18,8 @@
           v-for="nt in nodeTypes"
           :key="nt.type"
           class="node-item"
-          :style="{ borderLeftColor: nt.color }"
-          draggable="true"
+          :style="{ borderLeftColor: nt.color, opacity: readonly ? 0.5 : 1, cursor: readonly ? 'not-allowed' : 'grab' }"
+          :draggable="!readonly"
           @dragstart="onDragStart($event, nt)"
         >
           <span class="node-dot" :style="{ background: nt.color }"></span>
@@ -40,6 +43,9 @@
           <Background />
           <Controls />
           <MiniMap />
+          <Panel :position="PanelPosition.BottomLeft" class="shortcut-hint">
+            Ctrl+Z 撤回 | Ctrl+Shift+Z 重做
+          </Panel>
         </VueFlow>
       </div>
 
@@ -62,6 +68,7 @@
                   v-model="selectedNode.data.taskId"
                   placeholder="搜索并选择已有任务"
                   allow-search
+                  :disabled="readonly"
                   @change="onTaskSelected(selectedNode)"
                 >
                   <a-option
@@ -101,8 +108,8 @@
                   <div class="form-list">
                     <div v-for="(f, idx) in selectedNode.data.formFields" :key="idx" class="form-row">
                       <a-input :model-value="f.key" disabled style="width: 120px" />
-                      <a-input v-model="f.value" :placeholder="f.description || '值'" style="flex: 1" />
-                      <a-select v-model="f.type" style="width: 110px">
+                      <a-input v-model="f.value" :placeholder="f.description || '值'" style="flex: 1" :disabled="readonly" />
+                      <a-select v-model="f.type" style="width: 110px" :disabled="readonly">
                         <a-option :value="f.originalType">{{ f.originalType }}</a-option>
                         <a-option v-if="f.originalType !== 'Variable'" value="Variable">Variable</a-option>
                       </a-select>
@@ -120,42 +127,30 @@
                   v-model="selectedNode.data.subWorkflowMetaId"
                   placeholder="搜索并选择已有工作流"
                   allow-search
+                  :disabled="readonly"
                   @change="onSubWorkflowMetaSelected(selectedNode)"
                 >
-                  <a-option
-                    v-for="m in workflowMetas"
-                    :key="m.workflow_meta_id"
-                    :value="m.workflow_meta_id"
-                  >{{ m.name }} ({{ m.status }})</a-option>
+                  <a-option v-for="m in workflowMetas" :key="m.workflow_meta_id" :value="m.workflow_meta_id">{{ m.name }} ({{ m.status }})</a-option>
                 </a-select>
               </a-form-item>
               <a-form-item v-if="selectedNode.data.subWorkflowVersions?.length" label="版本">
-                <a-select
-                  v-model="selectedNode.data.subWorkflowVersion"
-                  @change="onSubWorkflowVersionSelected(selectedNode)"
-                >
-                  <a-option
-                    v-for="v in selectedNode.data.subWorkflowVersions"
-                    :key="v.version"
-                    :value="v.version"
-                  >v{{ v.version }} ({{ v.nodes?.length || 0 }}节点)</a-option>
+                <a-select v-model="selectedNode.data.subWorkflowVersion" :disabled="readonly" @change="onSubWorkflowVersionSelected(selectedNode)">
+                  <a-option v-for="v in selectedNode.data.subWorkflowVersions" :key="v.version" :value="v.version">v{{ v.version }} ({{ v.nodes?.length || 0 }}节点)</a-option>
                 </a-select>
               </a-form-item>
-
               <template v-if="selectedNode.data.subWorkflowMeta">
                 <a-divider>工作流信息</a-divider>
                 <a-descriptions :column="1" size="small" bordered>
                   <a-descriptions-item label="名称">{{ selectedNode.data.subWorkflowMeta.name }}</a-descriptions-item>
                   <a-descriptions-item label="状态">{{ selectedNode.data.subWorkflowMeta.status }}</a-descriptions-item>
                 </a-descriptions>
-
                 <template v-if="selectedNode.data.formFields?.length">
                   <a-divider>运行参数</a-divider>
                   <div class="form-list">
                     <div v-for="(f, idx) in selectedNode.data.formFields" :key="idx" class="form-row">
                       <a-input :model-value="f.key" disabled style="width: 120px" />
-                      <a-input v-model="f.value" :placeholder="f.description || '值'" style="flex: 1" />
-                      <a-select v-model="f.type" style="width: 110px">
+                      <a-input v-model="f.value" :placeholder="f.description || '值'" style="flex: 1" :disabled="readonly" />
+                      <a-select v-model="f.type" style="width: 110px" :disabled="readonly">
                         <a-option :value="f.originalType">{{ f.originalType }}</a-option>
                         <a-option v-if="f.originalType !== 'Variable'" value="Variable">Variable</a-option>
                       </a-select>
@@ -164,17 +159,17 @@
                 </template>
               </template>
               <a-form-item label="超时(秒)">
-                <a-input-number v-model="selectedNode.data.config.timeout" :min="0" placeholder="不填则不超时" />
+                <a-input-number v-model="selectedNode.data.config.timeout" :min="0" placeholder="不填则不超时" :disabled="readonly" />
               </a-form-item>
             </template>
 
-            <!-- ===== 控制流: IfCondition ===== -->
+            <!-- ===== IfCondition ===== -->
             <template v-else-if="selectedNode.data.nodeType === 'IfCondition'">
               <a-form-item label="条件名称">
-                <a-input v-model="selectedNode.data.config.name" />
+                <a-input v-model="selectedNode.data.config.name" :disabled="readonly" @change="updateNodeLabel(selectedNode)" />
               </a-form-item>
               <a-form-item label="条件表达式 (Rhai)">
-                <a-textarea v-model="selectedNode.data.config.condition" :auto-size="{ minRows: 3 }" />
+                <a-textarea v-model="selectedNode.data.config.condition" :auto-size="{ minRows: 3 }" :disabled="readonly" />
               </a-form-item>
               <a-divider>分支连接</a-divider>
               <a-form-item label="Then → 节点">
@@ -185,67 +180,68 @@
               </a-form-item>
             </template>
 
-            <!-- ===== 控制流: ContextRewrite ===== -->
+            <!-- ===== ContextRewrite ===== -->
             <template v-else-if="selectedNode.data.nodeType === 'ContextRewrite'">
               <a-form-item label="名称">
-                <a-input v-model="selectedNode.data.config.name" />
+                <a-input v-model="selectedNode.data.config.name" :disabled="readonly" @change="updateNodeLabel(selectedNode)" />
               </a-form-item>
               <a-form-item label="Rhai 脚本">
-                <a-textarea v-model="selectedNode.data.config.script" :auto-size="{ minRows: 4 }" />
+                <a-textarea v-model="selectedNode.data.config.script" :auto-size="{ minRows: 4 }" :disabled="readonly" />
               </a-form-item>
               <a-form-item label="合并模式">
-                <a-select v-model="selectedNode.data.config.merge_mode">
+                <a-select v-model="selectedNode.data.config.merge_mode" :disabled="readonly">
                   <a-option value="Merge">Merge</a-option>
                   <a-option value="Replace">Replace</a-option>
                 </a-select>
               </a-form-item>
             </template>
 
-            <!-- ===== 控制流: Parallel ===== -->
+            <!-- ===== Parallel ===== -->
             <template v-else-if="selectedNode.data.nodeType === 'Parallel'">
               <a-form-item label="数据路径 (items_path)">
-                <a-input v-model="selectedNode.data.config.items_path" />
+                <a-input v-model="selectedNode.data.config.items_path" :disabled="readonly" />
               </a-form-item>
               <a-form-item label="迭代变量名 (item_alias)">
-                <a-input v-model="selectedNode.data.config.item_alias" />
+                <a-input v-model="selectedNode.data.config.item_alias" :disabled="readonly" />
               </a-form-item>
               <a-form-item label="并发度">
-                <a-input-number v-model="selectedNode.data.config.concurrency" :min="1" />
+                <a-input-number v-model="selectedNode.data.config.concurrency" :min="1" :disabled="readonly" />
               </a-form-item>
               <a-form-item label="模式">
-                <a-select v-model="selectedNode.data.config.mode">
+                <a-select v-model="selectedNode.data.config.mode" :disabled="readonly">
                   <a-option value="Rolling">Rolling</a-option>
                   <a-option value="Batch">Batch</a-option>
                 </a-select>
               </a-form-item>
               <a-form-item label="最大失败数">
-                <a-input-number v-model="selectedNode.data.config.max_failures" :min="0" />
+                <a-input-number v-model="selectedNode.data.config.max_failures" :min="0" :disabled="readonly" />
               </a-form-item>
             </template>
 
-            <!-- ===== 控制流: ForkJoin ===== -->
+            <!-- ===== ForkJoin ===== -->
             <template v-else-if="selectedNode.data.nodeType === 'ForkJoin'">
               <a-form-item label="并发度">
-                <a-input-number v-model="selectedNode.data.config.concurrency" :min="1" />
+                <a-input-number v-model="selectedNode.data.config.concurrency" :min="1" :disabled="readonly" />
               </a-form-item>
               <a-form-item label="模式">
-                <a-select v-model="selectedNode.data.config.mode">
+                <a-select v-model="selectedNode.data.config.mode" :disabled="readonly">
                   <a-option value="Rolling">Rolling</a-option>
                   <a-option value="Batch">Batch</a-option>
                 </a-select>
               </a-form-item>
               <a-form-item label="子任务 (JSON)">
-                <a-textarea v-model="selectedNode.data.config.tasksJson" :auto-size="{ minRows: 4 }" />
+                <a-textarea v-model="selectedNode.data.config.tasksJson" :auto-size="{ minRows: 4 }" :disabled="readonly" />
               </a-form-item>
             </template>
 
             <a-form-item label="Context (JSON)">
-              <a-textarea v-model="selectedNode.data.contextJson" :auto-size="{ minRows: 2 }" />
+              <a-textarea v-model="selectedNode.data.contextJson" :auto-size="{ minRows: 2 }" :disabled="readonly" />
             </a-form-item>
+
+            <a-button v-if="!readonly" status="danger" long @click="handleDeleteNode">删除节点</a-button>
           </a-form>
         </template>
 
-        <!-- Selected edge info -->
         <template v-else-if="selectedEdge">
           <a-form layout="vertical" size="small">
             <a-form-item label="连线">
@@ -256,7 +252,7 @@
                 {{ selectedEdge.sourceHandle === 'then' ? 'True' : 'False' }}
               </a-tag>
             </a-form-item>
-            <a-button status="danger" long @click="deleteSelectedEdge">删除连线</a-button>
+            <a-button v-if="!readonly" status="danger" long @click="deleteSelectedEdge">删除连线</a-button>
           </a-form>
         </template>
 
@@ -267,15 +263,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, markRaw } from 'vue'
+import { ref, onMounted, onUnmounted, markRaw, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { VueFlow, useVueFlow, type Node, type Edge, type Connection } from '@vue-flow/core'
+import { VueFlow, useVueFlow, Panel, PanelPosition, type Node, type Edge, type Connection } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 import { workflowApi } from '../../../api/workflow'
 import { taskApi } from '../../../api/task'
-import { Notification } from '@arco-design/web-vue'
+import { Notification, Modal } from '@arco-design/web-vue'
 import type { TaskEntity, FormField } from '../../../types/task'
 import type { WorkflowMetaEntity } from '../../../types/workflow'
 import dagre from 'dagre'
@@ -293,7 +289,9 @@ const versionParam = route.params.version ? Number(route.params.version) : null
 
 const metaName = ref('')
 const currentVersion = ref(versionParam || 0)
+const versionStatus = ref<string>('')
 const saving = ref(false)
+const readonly = computed(() => versionStatus.value !== '' && versionStatus.value !== 'Draft')
 
 const nodes = ref<Node[]>([])
 const edges = ref<Edge[]>([])
@@ -306,10 +304,7 @@ const workflowMetas = ref<WorkflowMetaEntity[]>([])
 let nodeCounter = 0
 
 const TASK_REF_TYPES = ['Http', 'Approval', 'Grpc']
-function isTaskRefNode(nodeType: string) {
-  return TASK_REF_TYPES.includes(nodeType)
-}
-
+function isTaskRefNode(nodeType: string) { return TASK_REF_TYPES.includes(nodeType) }
 function getTasksForType(nodeType: string): TaskEntity[] {
   return taskCache.value.filter(t => t.task_type === nodeType && t.status === 'Published')
 }
@@ -325,19 +320,11 @@ const nodeTypes = [
   { type: 'Approval', label: '审批', color: '#F77234' },
 ]
 
-interface EditorFormField {
-  key: string
-  value: any
-  type: string
-  originalType: string
-  description: string
-}
+interface EditorFormField { key: string; value: any; type: string; originalType: string; description: string }
 
 function getDefaultConfig(type: string): any {
   switch (type) {
-    case 'Http': return {}
-    case 'Approval': return {}
-    case 'Grpc': return {}
+    case 'Http': case 'Approval': case 'Grpc': return {}
     case 'SubWorkflow': return { timeout: null }
     case 'IfCondition': return { name: '', condition: '' }
     case 'ContextRewrite': return { name: '', script: '', merge_mode: 'Merge' }
@@ -347,18 +334,31 @@ function getDefaultConfig(type: string): any {
   }
 }
 
-function getVueFlowNodeType(nodeType: string): string {
-  return nodeType === 'IfCondition' ? 'condition' : 'workflow'
-}
+function getVueFlowNodeType(t: string) { return t === 'IfCondition' ? 'condition' : 'workflow' }
 
 function buildFormFields(formDef: FormField[]): EditorFormField[] {
-  return formDef.map(f => ({
-    key: f.key,
-    value: f.value ?? '',
-    type: f.type || 'String',
-    originalType: f.type || 'String',
-    description: f.description || '',
-  }))
+  return formDef.map(f => ({ key: f.key, value: f.value ?? '', type: f.type || 'String', originalType: f.type || 'String', description: f.description || '' }))
+}
+
+// ---- Node label ----
+
+function resolveLabel(nodeId: string, nodeType: string, data: any): string {
+  if (isTaskRefNode(nodeType) && data.taskId) {
+    const task = taskCache.value.find(t => t.id === data.taskId)
+    if (task) return task.name
+  }
+  if (nodeType === 'SubWorkflow' && data.subWorkflowMeta) {
+    const ver = data.subWorkflowVersion ? ` v${data.subWorkflowVersion}` : ''
+    return `${data.subWorkflowMeta.name}${ver}`
+  }
+  if (['IfCondition', 'ContextRewrite'].includes(nodeType) && data.config?.name) {
+    return data.config.name
+  }
+  return `${nodeId} (${nodeType})`
+}
+
+function updateNodeLabel(node: Node) {
+  node.data = { ...node.data, label: resolveLabel(node.id, node.data.nodeType, node.data) }
 }
 
 // ---- IfCondition edge helpers ----
@@ -367,7 +367,6 @@ function getThenTarget(nodeId: string): string {
   const e = edges.value.find(e => e.source === nodeId && e.sourceHandle === 'then')
   return e ? e.target : '(未连接)'
 }
-
 function getElseTarget(nodeId: string): string {
   const e = edges.value.find(e => e.source === nodeId && e.sourceHandle === 'else')
   return e ? e.target : '(未连接)'
@@ -377,20 +376,12 @@ function getElseTarget(nodeId: string): string {
 
 function onTaskSelected(node: Node) {
   const task = taskCache.value.find(t => t.id === node.data.taskId)
-  if (!task) {
-    node.data.taskSnapshot = null
-    node.data.formFields = []
-    return
-  }
+  if (!task) { node.data.taskSnapshot = null; node.data.formFields = []; return }
   node.data.taskSnapshot = task.task_template
-  const tpl = task.task_template as any
-  const typeKey = node.data.nodeType
-  const inner = tpl[typeKey]
-  if (inner?.form) {
-    node.data.formFields = buildFormFields(inner.form)
-  } else {
-    node.data.formFields = []
-  }
+  const inner = (task.task_template as any)[node.data.nodeType]
+  node.data.formFields = inner?.form ? buildFormFields(inner.form) : []
+  updateNodeLabel(node)
+  pushSnapshot()
 }
 
 async function onSubWorkflowMetaSelected(node: Node) {
@@ -401,184 +392,262 @@ async function onSubWorkflowMetaSelected(node: Node) {
   try {
     const res = await workflowApi.listTemplates(id)
     node.data.subWorkflowVersions = res.data
-    if (res.data.length > 0) {
-      node.data.subWorkflowVersion = res.data[res.data.length - 1].version
-    }
-  } catch {
-    node.data.subWorkflowVersions = []
-  }
-  if (meta?.form?.length) {
-    node.data.formFields = buildFormFields(meta.form)
-  } else {
-    node.data.formFields = []
-  }
+    if (res.data.length > 0) node.data.subWorkflowVersion = res.data[res.data.length - 1].version
+  } catch { node.data.subWorkflowVersions = [] }
+  node.data.formFields = meta?.form?.length ? buildFormFields(meta.form) : []
+  updateNodeLabel(node)
+  pushSnapshot()
+}
+function onSubWorkflowVersionSelected(node: Node) { updateNodeLabel(node); pushSnapshot() }
+
+// ---- Undo / Redo ----
+
+interface Snapshot { nodes: string; edges: string }
+const history: Snapshot[] = []
+let historyIndex = -1
+const MAX_HISTORY = 50
+
+function takeSnapshot(): Snapshot {
+  return { nodes: JSON.stringify(nodes.value), edges: JSON.stringify(edges.value) }
+}
+function pushSnapshot() {
+  const snap = takeSnapshot()
+  if (historyIndex < history.length - 1) history.splice(historyIndex + 1)
+  history.push(snap)
+  if (history.length > MAX_HISTORY) history.shift()
+  historyIndex = history.length - 1
+}
+function restoreSnapshot(snap: Snapshot) {
+  nodes.value = JSON.parse(snap.nodes)
+  edges.value = JSON.parse(snap.edges)
+  selectedNode.value = null
+  selectedEdge.value = null
+}
+function undo() {
+  if (historyIndex <= 0) return
+  historyIndex--
+  restoreSnapshot(history[historyIndex])
+}
+function redo() {
+  if (historyIndex >= history.length - 1) return
+  historyIndex++
+  restoreSnapshot(history[historyIndex])
 }
 
-function onSubWorkflowVersionSelected(_node: Node) {}
+function handleGlobalKeyDown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'Z' || (e.key === 'z' && e.shiftKey) || e.key === 'y')) { e.preventDefault(); redo() }
+}
+onMounted(() => document.addEventListener('keydown', handleGlobalKeyDown))
+onUnmounted(() => document.removeEventListener('keydown', handleGlobalKeyDown))
 
 // ---- Connection handling ----
 
 function onConnect(connection: Connection) {
-  const sourceNode = nodes.value.find(n => n.id === connection.source)
-  const isConditionHandle = connection.sourceHandle === 'then' || connection.sourceHandle === 'else'
-
-  if (isConditionHandle) {
-    const existing = edges.value.findIndex(
-      e => e.source === connection.source && e.sourceHandle === connection.sourceHandle
-    )
-    if (existing !== -1) {
-      edges.value.splice(existing, 1)
-    }
+  if (readonly.value) return
+  const isCondHandle = connection.sourceHandle === 'then' || connection.sourceHandle === 'else'
+  if (isCondHandle) {
+    const idx = edges.value.findIndex(e => e.source === connection.source && e.sourceHandle === connection.sourceHandle)
+    if (idx !== -1) edges.value.splice(idx, 1)
   } else {
-    const existing = edges.value.findIndex(
-      e => e.source === connection.source && !e.sourceHandle
-    )
-    if (existing !== -1) {
-      edges.value.splice(existing, 1)
-    }
+    const idx = edges.value.findIndex(e => e.source === connection.source && !e.sourceHandle)
+    if (idx !== -1) edges.value.splice(idx, 1)
   }
-
-  const edgeColor = connection.sourceHandle === 'then' ? '#00B42A'
-    : connection.sourceHandle === 'else' ? '#F53F3F'
-    : undefined
-
-  const edgeLabel = connection.sourceHandle === 'then' ? 'True'
-    : connection.sourceHandle === 'else' ? 'False'
-    : undefined
-
+  const color = connection.sourceHandle === 'then' ? '#00B42A' : connection.sourceHandle === 'else' ? '#F53F3F' : undefined
+  const label = connection.sourceHandle === 'then' ? 'True' : connection.sourceHandle === 'else' ? 'False' : undefined
   edges.value.push({
     id: `${connection.source}-${connection.sourceHandle || 'next'}->${connection.target}`,
-    source: connection.source!,
-    target: connection.target!,
+    source: connection.source!, target: connection.target!,
     sourceHandle: connection.sourceHandle || undefined,
     targetHandle: connection.targetHandle || undefined,
     type: 'smoothstep',
-    style: edgeColor ? { stroke: edgeColor, strokeWidth: 2 } : undefined,
-    label: edgeLabel,
-    labelStyle: edgeColor ? { fill: edgeColor, fontWeight: 700, fontSize: '11px' } : undefined,
+    style: color ? { stroke: color, strokeWidth: 2 } : undefined,
+    label, labelStyle: color ? { fill: color, fontWeight: 700, fontSize: '11px' } : undefined,
     labelBgStyle: { fill: '#fff', fillOpacity: 0.9 },
   })
+  pushSnapshot()
 }
 
 // ---- Selection ----
 
-function onNodeClick({ node }: { node: Node }) {
-  selectedNode.value = node
-  selectedEdge.value = null
-}
-
-function onEdgeClick({ edge }: { edge: Edge }) {
-  selectedEdge.value = edge
-  selectedNode.value = null
-}
-
-function onPaneClick() {
-  selectedNode.value = null
-  selectedEdge.value = null
-}
+function onNodeClick({ node }: { node: Node }) { selectedNode.value = node; selectedEdge.value = null }
+function onEdgeClick({ edge }: { edge: Edge }) { selectedEdge.value = edge; selectedNode.value = null }
+function onPaneClick() { selectedNode.value = null; selectedEdge.value = null }
 
 function deleteSelectedEdge() {
-  if (!selectedEdge.value) return
+  if (!selectedEdge.value || readonly.value) return
   edges.value = edges.value.filter(e => e.id !== selectedEdge.value!.id)
   selectedEdge.value = null
+  pushSnapshot()
 }
 
 function onKeyDown(event: KeyboardEvent) {
-  if ((event.key === 'Delete' || event.key === 'Backspace') && selectedEdge.value) {
-    deleteSelectedEdge()
+  if (readonly.value) return
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    if (selectedEdge.value) deleteSelectedEdge()
+    else if (selectedNode.value) handleDeleteNode()
   }
+}
+
+// ---- Delete node ----
+
+function handleDeleteNode() {
+  if (!selectedNode.value || readonly.value) return
+  const nodeId = selectedNode.value.id
+  const label = selectedNode.value.data.label
+  Modal.confirm({
+    title: '删除节点',
+    content: `确定删除节点 "${label}"？该节点的所有入边和出边将被一并删除。`,
+    okText: '删除',
+    okButtonProps: { status: 'danger' },
+    onOk: () => {
+      nodes.value = nodes.value.filter(n => n.id !== nodeId)
+      edges.value = edges.value.filter(e => e.source !== nodeId && e.target !== nodeId)
+      selectedNode.value = null
+      pushSnapshot()
+    },
+  })
 }
 
 // ---- Drag & Drop ----
 
 function onDragStart(event: DragEvent, nt: { type: string; label: string }) {
+  if (readonly.value) return
   event.dataTransfer?.setData('nodeType', nt.type)
 }
 
 const { screenToFlowCoordinate } = useVueFlow()
 
 function onDrop(event: DragEvent) {
+  if (readonly.value) return
   const type = event.dataTransfer?.getData('nodeType')
   if (!type) return
   const position = screenToFlowCoordinate({ x: event.clientX, y: event.clientY })
   const id = `node_${++nodeCounter}`
   const color = nodeTypes.find(n => n.type === type)?.color || '#86909C'
   nodes.value.push({
-    id,
-    type: getVueFlowNodeType(type),
-    position,
+    id, type: getVueFlowNodeType(type), position,
     data: {
-      label: `${id} (${type})`,
-      nodeType: type,
-      color,
-      dangling: false,
-      config: getDefaultConfig(type),
-      contextJson: '{}',
-      taskId: null,
-      taskSnapshot: null,
-      formFields: [],
-      subWorkflowMetaId: null,
-      subWorkflowVersion: null,
-      subWorkflowMeta: null,
-      subWorkflowVersions: [],
+      label: `${id} (${type})`, nodeType: type, color, dangling: false, configError: false,
+      config: getDefaultConfig(type), contextJson: '{}',
+      taskId: null, taskSnapshot: null, formFields: [],
+      subWorkflowMetaId: null, subWorkflowVersion: null, subWorkflowMeta: null, subWorkflowVersions: [],
     },
   })
+  pushSnapshot()
 }
 
-// ---- Dangling node validation ----
+// ---- Save validation ----
 
 function findDanglingNodes(): string[] {
   if (nodes.value.length <= 1) return []
   const connected = new Set<string>()
-  for (const e of edges.value) {
-    connected.add(e.source)
-    connected.add(e.target)
-  }
-  return nodes.value
-    .filter(n => !connected.has(n.id))
-    .map(n => n.id)
+  for (const e of edges.value) { connected.add(e.source); connected.add(e.target) }
+  return nodes.value.filter(n => !connected.has(n.id)).map(n => n.id)
 }
 
-function markDanglingNodes(danglingIds: string[]) {
-  const s = new Set(danglingIds)
-  for (const n of nodes.value) {
-    n.data = { ...n.data, dangling: s.has(n.id) }
-  }
-}
+interface ValidationError { nodeId: string; message: string }
 
-function clearDanglingMarks() {
+function validateNodeConfigs(): ValidationError[] {
+  const errors: ValidationError[] = []
   for (const n of nodes.value) {
-    if (n.data.dangling) {
-      n.data = { ...n.data, dangling: false }
+    const d = n.data as any
+    const type = d.nodeType
+    if (isTaskRefNode(type) && !d.taskId) {
+      errors.push({ nodeId: n.id, message: `${n.id}: 未选择任务模板` })
     }
+    if (type === 'SubWorkflow' && (!d.subWorkflowMetaId || !d.subWorkflowVersion)) {
+      errors.push({ nodeId: n.id, message: `${n.id}: 未选择工作流或版本` })
+    }
+    if (type === 'IfCondition' && !d.config?.condition) {
+      errors.push({ nodeId: n.id, message: `${n.id}: 条件表达式为空` })
+    }
+    if (type === 'IfCondition') {
+      if (!edges.value.some(e => e.source === n.id && e.sourceHandle === 'then'))
+        errors.push({ nodeId: n.id, message: `${n.id}: Then 分支未连接` })
+      if (!edges.value.some(e => e.source === n.id && e.sourceHandle === 'else'))
+        errors.push({ nodeId: n.id, message: `${n.id}: Else 分支未连接` })
+    }
+    if (type === 'ContextRewrite' && !d.config?.script) {
+      errors.push({ nodeId: n.id, message: `${n.id}: 脚本为空` })
+    }
+    if (type === 'Parallel' && !d.config?.items_path) {
+      errors.push({ nodeId: n.id, message: `${n.id}: items_path 为空` })
+    }
+    if (type === 'ForkJoin') {
+      try { const t = JSON.parse(d.config?.tasksJson || '[]'); if (!Array.isArray(t) || t.length === 0) throw 0 }
+      catch { errors.push({ nodeId: n.id, message: `${n.id}: 子任务列表为空或格式错误` }) }
+    }
+  }
+  return errors
+}
+
+function detectCycle(): string[] | null {
+  const adj = new Map<string, string[]>()
+  for (const n of nodes.value) adj.set(n.id, [])
+  for (const e of edges.value) adj.get(e.source)?.push(e.target)
+
+  const WHITE = 0, GRAY = 1, BLACK = 2
+  const color = new Map<string, number>()
+  for (const n of nodes.value) color.set(n.id, WHITE)
+  const parent = new Map<string, string | null>()
+
+  for (const n of nodes.value) {
+    if (color.get(n.id) !== WHITE) continue
+    const stack: string[] = [n.id]
+    while (stack.length > 0) {
+      const u = stack[stack.length - 1]
+      if (color.get(u) === WHITE) {
+        color.set(u, GRAY)
+        for (const v of adj.get(u) || []) {
+          if (color.get(v) === GRAY) {
+            const cycle = [v, u]
+            let cur = u
+            while (cur !== v) { cur = parent.get(cur)!; if (cur) cycle.push(cur) }
+            return cycle.reverse()
+          }
+          if (color.get(v) === WHITE) { parent.set(v, u); stack.push(v) }
+        }
+      } else {
+        color.set(u, BLACK)
+        stack.pop()
+      }
+    }
+  }
+  return null
+}
+
+function markNodes(nodeIds: string[], type: 'dangling' | 'configError') {
+  const s = new Set(nodeIds)
+  for (const n of nodes.value) {
+    n.data = { ...n.data, [type]: s.has(n.id), ...(type === 'dangling' ? {} : {}) }
+  }
+}
+
+function clearMarks() {
+  for (const n of nodes.value) {
+    n.data = { ...n.data, dangling: false, configError: false }
   }
 }
 
 // ---- Build & Save ----
 
 function formFieldsToFormArray(fields: EditorFormField[]): FormField[] {
-  return fields
-    .filter(f => f.key.trim() !== '')
-    .map(f => {
-      const field: FormField = { key: f.key, value: f.value, type: f.type as any }
-      if (f.description) field.description = f.description
-      return field
-    })
+  return fields.filter(f => f.key.trim() !== '').map(f => {
+    const field: FormField = { key: f.key, value: f.value, type: f.type as any }
+    if (f.description) field.description = f.description
+    return field
+  })
 }
 
 function buildWorkflowEntity(): any {
   const nextNodeMap = new Map<string, string>()
   const thenMap = new Map<string, string>()
   const elseMap = new Map<string, string>()
-
   for (const e of edges.value) {
-    if (e.sourceHandle === 'then') {
-      thenMap.set(e.source, e.target)
-    } else if (e.sourceHandle === 'else') {
-      elseMap.set(e.source, e.target)
-    } else {
-      nextNodeMap.set(e.source, e.target)
-    }
+    if (e.sourceHandle === 'then') thenMap.set(e.source, e.target)
+    else if (e.sourceHandle === 'else') elseMap.set(e.source, e.target)
+    else nextNodeMap.set(e.source, e.target)
   }
 
   const workflowNodes: any[] = (nodes.value as any[]).map((n: any) => {
@@ -589,91 +658,64 @@ function buildWorkflowEntity(): any {
     if (isTaskRefNode(d.nodeType) && d.taskSnapshot) {
       config = d.taskSnapshot
     } else if (d.nodeType === 'SubWorkflow') {
-      config = {
-        SubWorkflow: {
-          workflow_meta_id: d.subWorkflowMetaId || '',
-          workflow_version: d.subWorkflowVersion || 1,
-          form: formFieldsToFormArray(d.formFields || []),
-          timeout: d.config.timeout || null,
-        },
-      }
+      config = { SubWorkflow: { workflow_meta_id: d.subWorkflowMetaId || '', workflow_version: d.subWorkflowVersion || 1, form: formFieldsToFormArray(d.formFields || []), timeout: d.config.timeout || null } }
     } else {
       switch (d.nodeType) {
         case 'IfCondition':
-          config = {
-            IfCondition: {
-              name: d.config.name,
-              condition: d.config.condition,
-              then_task: thenMap.get(n.id) || null,
-              else_task: elseMap.get(n.id) || null,
-            },
-          }
-          break
+          config = { IfCondition: { name: d.config.name, condition: d.config.condition, then_task: thenMap.get(n.id) || null, else_task: elseMap.get(n.id) || null } }; break
         case 'ContextRewrite':
-          config = { ContextRewrite: { name: d.config.name, script: d.config.script, merge_mode: d.config.merge_mode || 'Merge' } }
-          break
+          config = { ContextRewrite: { name: d.config.name, script: d.config.script, merge_mode: d.config.merge_mode || 'Merge' } }; break
         case 'Parallel':
-          config = { Parallel: { items_path: d.config.items_path, item_alias: d.config.item_alias, task_template: d.config.task_template || { Http: { url: '', method: 'Get', headers: [], body: [], form: [], retry_count: 0, retry_delay: 0, timeout: 30, success_condition: null } }, concurrency: d.config.concurrency || 10, mode: d.config.mode || 'Rolling', max_failures: d.config.max_failures } }
-          break
+          config = { Parallel: { items_path: d.config.items_path, item_alias: d.config.item_alias, task_template: d.config.task_template || { Http: { url: '', method: 'Get', headers: [], body: [], form: [], retry_count: 0, retry_delay: 0, timeout: 30, success_condition: null } }, concurrency: d.config.concurrency || 10, mode: d.config.mode || 'Rolling', max_failures: d.config.max_failures } }; break
         case 'ForkJoin': {
-          let tasks: any[] = []
-          try { tasks = JSON.parse(d.config.tasksJson || '[]') } catch {}
-          config = { ForkJoin: { tasks, concurrency: d.config.concurrency || 5, mode: d.config.mode || 'Rolling', max_failures: d.config.max_failures } }
-          break
+          let tasks: any[] = []; try { tasks = JSON.parse(d.config.tasksJson || '[]') } catch {}
+          config = { ForkJoin: { tasks, concurrency: d.config.concurrency || 5, mode: d.config.mode || 'Rolling', max_failures: d.config.max_failures } }; break
         }
-        default:
-          config = d.nodeType
+        default: config = d.nodeType
       }
     }
-
     if (isTaskRefNode(d.nodeType) && d.formFields?.length) {
       const formData = formFieldsToFormArray(d.formFields)
       const typeKey = d.nodeType as string
-      if (config && config[typeKey]) {
-        config[typeKey] = { ...config[typeKey], form: formData }
-      }
+      if (config?.[typeKey]) config[typeKey] = { ...config[typeKey], form: formData }
     }
-
-    let context: any = {}
-    try { context = JSON.parse(d.contextJson || '{}') } catch {}
-
-    const nextNode = d.nodeType === 'IfCondition' ? null : (nextNodeMap.get(n.id) || null)
-
-    return {
-      node_id: n.id,
-      node_type: d.nodeType,
-      task_id: taskId,
-      config,
-      context,
-      next_node: nextNode,
-    }
+    let context: any = {}; try { context = JSON.parse(d.contextJson || '{}') } catch {}
+    return { node_id: n.id, node_type: d.nodeType, task_id: taskId, config, context, next_node: d.nodeType === 'IfCondition' ? null : (nextNodeMap.get(n.id) || null) }
   })
-  return {
-    workflow_meta_id: metaId,
-    version: currentVersion.value || 1,
-    status: 'Draft',
-    nodes: workflowNodes,
-  }
+  return { workflow_meta_id: metaId, version: currentVersion.value || 1, status: 'Draft', nodes: workflowNodes }
 }
 
 async function handleSave() {
+  if (readonly.value) return
+  clearMarks()
+
+  if (nodes.value.length === 0) {
+    Notification.warning({ content: '画布为空，请添加至少一个节点' }); return
+  }
+
   const danglingIds = findDanglingNodes()
   if (danglingIds.length > 0) {
-    markDanglingNodes(danglingIds)
-    Notification.warning({
-      title: '存在未连接的节点',
-      content: `以下节点未连线，请连接或删除后再保存：${danglingIds.join(', ')}`,
-      duration: 5000,
-    })
-    return
+    markNodes(danglingIds, 'dangling')
+    Notification.warning({ title: '存在未连接的节点', content: `请连接或删除：${danglingIds.join(', ')}`, duration: 5000 }); return
   }
-  clearDanglingMarks()
+
+  const configErrors = validateNodeConfigs()
+  if (configErrors.length > 0) {
+    markNodes(configErrors.map(e => e.nodeId), 'configError')
+    Notification.warning({ title: '节点配置不完整', content: configErrors.map(e => e.message).join('\n'), duration: 5000 }); return
+  }
+
+  const cycle = detectCycle()
+  if (cycle) {
+    Notification.error({ title: '检测到回环', content: `回环路径：${cycle.join(' → ')}`, duration: 5000 }); return
+  }
 
   saving.value = true
   try {
     const entity = buildWorkflowEntity()
     await workflowApi.saveTemplate(metaId, entity)
     currentVersion.value = entity.version
+    if (!versionStatus.value) versionStatus.value = 'Draft'
     Notification.success({ content: '保存成功' })
   } catch {} finally { saving.value = false }
 }
@@ -710,19 +752,13 @@ function loadFromEntity(entity: any) {
     if (isTaskRefNode(type) && n.config) {
       taskSnapshot = n.config
       const inner = (n.config as any)[type]
-      if (inner?.form) {
-        formFields = buildFormFields(inner.form)
-      }
+      if (inner?.form) formFields = buildFormFields(inner.form)
     } else if (type === 'SubWorkflow' && n.config?.SubWorkflow) {
       const s = n.config.SubWorkflow
-      subWorkflowMetaId = s.workflow_meta_id
-      subWorkflowVersion = s.workflow_version
+      subWorkflowMetaId = s.workflow_meta_id; subWorkflowVersion = s.workflow_version
       config = { timeout: s.timeout }
-      if (s.form?.length) {
-        formFields = buildFormFields(s.form)
-      }
-      const meta = workflowMetas.value.find(m => m.workflow_meta_id === subWorkflowMetaId)
-      subWorkflowMeta = meta || null
+      if (s.form?.length) formFields = buildFormFields(s.form)
+      subWorkflowMeta = workflowMetas.value.find(m => m.workflow_meta_id === subWorkflowMetaId) || null
     } else if (type === 'IfCondition' && n.config?.IfCondition) {
       config = { name: n.config.IfCondition.name, condition: n.config.IfCondition.condition }
     } else if (type === 'ContextRewrite' && n.config?.ContextRewrite) {
@@ -735,69 +771,27 @@ function loadFromEntity(entity: any) {
       config = { concurrency: f.concurrency, mode: f.mode, max_failures: f.max_failures, tasksJson: JSON.stringify(f.tasks, null, 2) }
     }
 
-    return {
-      id: n.node_id,
-      type: getVueFlowNodeType(type),
-      position: { x: pos?.x || 0, y: pos?.y || 0 },
-      data: {
-        label: `${n.node_id} (${type})`,
-        nodeType: type,
-        color,
-        dangling: false,
-        config,
-        contextJson: JSON.stringify(n.context || {}, null, 2),
-        taskId,
-        taskSnapshot,
-        formFields,
-        subWorkflowMetaId,
-        subWorkflowVersion,
-        subWorkflowMeta,
-        subWorkflowVersions: [],
-      },
+    const data = {
+      label: '', nodeType: type, color, dangling: false, configError: false, config,
+      contextJson: JSON.stringify(n.context || {}, null, 2),
+      taskId, taskSnapshot, formFields, subWorkflowMetaId, subWorkflowVersion, subWorkflowMeta, subWorkflowVersions: [],
     }
+    data.label = resolveLabel(n.node_id, type, data)
+
+    return { id: n.node_id, type: getVueFlowNodeType(type), position: { x: pos?.x || 0, y: pos?.y || 0 }, data }
   })
 
   const loadedEdges: Edge[] = []
   for (const n of entity.nodes) {
-    if (n.next_node) {
-      loadedEdges.push({
-        id: `${n.node_id}-next->${n.next_node}`,
-        source: n.node_id,
-        target: n.next_node,
-        type: 'smoothstep',
-      })
-    }
+    if (n.next_node) loadedEdges.push({ id: `${n.node_id}-next->${n.next_node}`, source: n.node_id, target: n.next_node, type: 'smoothstep' })
     if (n.config?.IfCondition) {
       const ic = n.config.IfCondition
-      if (ic.then_task) {
-        loadedEdges.push({
-          id: `${n.node_id}-then->${ic.then_task}`,
-          source: n.node_id,
-          target: ic.then_task,
-          sourceHandle: 'then',
-          type: 'smoothstep',
-          style: { stroke: '#00B42A', strokeWidth: 2 },
-          label: 'True',
-          labelStyle: { fill: '#00B42A', fontWeight: 700, fontSize: '11px' },
-          labelBgStyle: { fill: '#fff', fillOpacity: 0.9 },
-        })
-      }
-      if (ic.else_task) {
-        loadedEdges.push({
-          id: `${n.node_id}-else->${ic.else_task}`,
-          source: n.node_id,
-          target: ic.else_task,
-          sourceHandle: 'else',
-          type: 'smoothstep',
-          style: { stroke: '#F53F3F', strokeWidth: 2 },
-          label: 'False',
-          labelStyle: { fill: '#F53F3F', fontWeight: 700, fontSize: '11px' },
-          labelBgStyle: { fill: '#fff', fillOpacity: 0.9 },
-        })
-      }
+      if (ic.then_task) loadedEdges.push({ id: `${n.node_id}-then->${ic.then_task}`, source: n.node_id, target: ic.then_task, sourceHandle: 'then', type: 'smoothstep', style: { stroke: '#00B42A', strokeWidth: 2 }, label: 'True', labelStyle: { fill: '#00B42A', fontWeight: 700, fontSize: '11px' }, labelBgStyle: { fill: '#fff', fillOpacity: 0.9 } })
+      if (ic.else_task) loadedEdges.push({ id: `${n.node_id}-else->${ic.else_task}`, source: n.node_id, target: ic.else_task, sourceHandle: 'else', type: 'smoothstep', style: { stroke: '#F53F3F', strokeWidth: 2 }, label: 'False', labelStyle: { fill: '#F53F3F', fontWeight: 700, fontSize: '11px' }, labelBgStyle: { fill: '#fff', fillOpacity: 0.9 } })
     }
   }
   edges.value = loadedEdges
+  pushSnapshot()
 }
 
 // ---- Init ----
@@ -805,9 +799,7 @@ function loadFromEntity(entity: any) {
 onMounted(async () => {
   try {
     const [metaRes, tasksRes, metasRes] = await Promise.all([
-      workflowApi.getMeta(metaId),
-      taskApi.list(),
-      workflowApi.listMeta(),
+      workflowApi.getMeta(metaId), taskApi.list(), workflowApi.listMeta(),
     ])
     metaName.value = metaRes.data.name
     taskCache.value = tasksRes.data
@@ -817,94 +809,37 @@ onMounted(async () => {
   if (versionParam) {
     try {
       const res = await workflowApi.getTemplate(metaId, versionParam)
+      versionStatus.value = res.data.status
       loadFromEntity(res.data)
     } catch {}
+  } else {
+    try {
+      const res = await workflowApi.listTemplates(metaId)
+      const nextVersion = res.data.length > 0 ? Math.max(...res.data.map((v: any) => v.version)) + 1 : 1
+      currentVersion.value = nextVersion
+      versionStatus.value = 'Draft'
+    } catch { currentVersion.value = 1; versionStatus.value = 'Draft' }
+    pushSnapshot()
   }
 })
 </script>
 
 <style scoped>
-.editor-container {
-  display: flex;
-  flex-direction: column;
-  height: calc(100vh - 88px);
-}
-.editor-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-bg-2);
-}
-.editor-title {
-  flex: 1;
-  font-size: 16px;
-  font-weight: 600;
-}
-.editor-body {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-}
-.editor-panel-left {
-  width: 180px;
-  border-right: 1px solid var(--color-border);
-  background: var(--color-bg-2);
-  padding: 12px;
-  overflow-y: auto;
-}
-.editor-canvas {
-  flex: 1;
-  position: relative;
-}
-.editor-panel-right {
-  width: 320px;
-  border-left: 1px solid var(--color-border);
-  background: var(--color-bg-2);
-  padding: 12px;
-  overflow-y: auto;
-}
-.panel-title {
-  font-weight: 600;
-  margin-bottom: 12px;
-  font-size: 14px;
-}
-.node-item {
-  padding: 8px 12px;
-  margin-bottom: 6px;
-  border-radius: 4px;
-  border-left: 3px solid;
-  background: var(--color-fill-2);
-  cursor: grab;
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.node-item:hover {
-  background: var(--color-fill-3);
-}
-.node-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.task-info {
-  margin-bottom: 8px;
-}
-.form-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-}
-.form-row {
-  display: flex;
-  gap: 6px;
-  align-items: flex-start;
-}
+.editor-container { display: flex; flex-direction: column; height: calc(100vh - 88px); }
+.editor-header { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--color-border); background: var(--color-bg-2); }
+.editor-title { flex: 1; font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.editor-body { display: flex; flex: 1; overflow: hidden; }
+.editor-panel-left { width: 180px; border-right: 1px solid var(--color-border); background: var(--color-bg-2); padding: 12px; overflow-y: auto; }
+.editor-canvas { flex: 1; position: relative; }
+.editor-panel-right { width: 320px; border-left: 1px solid var(--color-border); background: var(--color-bg-2); padding: 12px; overflow-y: auto; }
+.panel-title { font-weight: 600; margin-bottom: 12px; font-size: 14px; }
+.node-item { padding: 8px 12px; margin-bottom: 6px; border-radius: 4px; border-left: 3px solid; background: var(--color-fill-2); font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.node-item:hover { background: var(--color-fill-3); }
+.node-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.task-info { margin-bottom: 8px; }
+.form-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.form-row { display: flex; gap: 6px; align-items: flex-start; }
+.shortcut-hint { font-size: 11px; color: var(--color-text-3); padding: 4px 8px; background: rgba(255,255,255,0.8); border-radius: 4px; user-select: none; pointer-events: none; }
 </style>
 
 <style>

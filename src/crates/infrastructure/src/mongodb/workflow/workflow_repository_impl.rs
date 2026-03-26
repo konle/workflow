@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use futures::TryStreamExt;
 use mongodb::{Client, Database, Collection};
 use mongodb::bson::doc;
-use domain::shared::workflow::WorkflowInstanceStatus;
+use domain::shared::workflow::{WorkflowInstanceStatus, WorkflowStatus};
 use domain::workflow::entity::{WorkflowEntity, WorkflowInstanceEntity, WorkflowMetaEntity};
 use domain::workflow::repository::{WorkflowDefinitionRepository, WorkflowInstanceRepository, RepositoryError};
 
@@ -19,6 +19,33 @@ impl WorkflowDefinitionRepositoryImpl {
         let collection = database.collection("workflow_entities");
         let workflow_meta_collection = database.collection("workflow_meta_entities");
         Self { client, database, collection, workflow_meta_collection }
+    }
+
+    pub async fn ensure_indexes(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // mongodb 3.4 does not publicly export IndexOptions; use createIndexes command.
+        self.database
+            .run_command(doc! {
+                "createIndexes": "workflow_entities",
+                "indexes": [{
+                    "key": { "workflow_meta_id": 1, "version": 1 },
+                    "name": "uk_workflow_meta_id_version",
+                    "unique": true,
+                }],
+            })
+            .await?;
+
+        self.database
+            .run_command(doc! {
+                "createIndexes": "workflow_meta_entities",
+                "indexes": [{
+                    "key": { "workflow_meta_id": 1 },
+                    "name": "uk_workflow_meta_id",
+                    "unique": true,
+                }],
+            })
+            .await?;
+
+        Ok(())
     }
 }
 
@@ -41,7 +68,61 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionRepositoryImpl {
     }
 
     async fn save_workflow_entity(&self, entity: &WorkflowEntity) -> Result<(), RepositoryError> {
-        self.collection.insert_one(entity).await?;
+        let filter = doc! {
+            "workflow_meta_id": &entity.workflow_meta_id,
+            "version": entity.version as i64,
+        };
+
+        let existing = self.collection.find_one(filter.clone()).await?;
+        if let Some(ref existing_entity) = existing {
+            if existing_entity.status != WorkflowStatus::Draft {
+                return Err(format!(
+                    "cannot update workflow version {} (status: {:?}), only Draft versions can be modified",
+                    entity.version, existing_entity.status
+                ).into());
+            }
+        }
+
+        let update = doc! {
+            "$set": {
+                "nodes": mongodb::bson::to_bson(&entity.nodes).map_err(|e| format!("serialize nodes: {}", e))?,
+                "status": mongodb::bson::to_bson(&entity.status).map_err(|e| format!("serialize status: {}", e))?,
+                "updated_at": mongodb::bson::to_bson(&entity.updated_at).map_err(|e| format!("serialize updated_at: {}", e))?,
+            },
+            "$setOnInsert": {
+                "workflow_meta_id": &entity.workflow_meta_id,
+                "version": entity.version as i64,
+                "created_at": mongodb::bson::to_bson(&entity.created_at).map_err(|e| format!("serialize created_at: {}", e))?,
+                "deleted_at": mongodb::bson::Bson::Null,
+            }
+        };
+
+        self.collection
+            .update_one(filter, update)
+            .upsert(true)
+            .await?;
+        Ok(())
+    }
+
+    async fn publish_workflow_entity(&self, workflow_meta_id: &str, version: u32) -> Result<(), RepositoryError> {
+        let filter = doc! {
+            "workflow_meta_id": workflow_meta_id,
+            "version": version as i64,
+            "status": mongodb::bson::to_bson(&WorkflowStatus::Draft).map_err(|e| format!("serialize status: {}", e))?,
+        };
+        let update = doc! {
+            "$set": {
+                "status": mongodb::bson::to_bson(&WorkflowStatus::Published).map_err(|e| format!("serialize status: {}", e))?,
+                "updated_at": mongodb::bson::to_bson(&chrono::Utc::now()).map_err(|e| format!("serialize: {}", e))?,
+            }
+        };
+        let result = self.collection.update_one(filter, update).await?;
+        if result.matched_count == 0 {
+            return Err(format!(
+                "cannot publish workflow version {}: not found or not in Draft status",
+                version
+            ).into());
+        }
         Ok(())
     }
 

@@ -32,6 +32,9 @@ export const workflowApi = {
   deleteTemplate: (metaId: string, version: number) =>
     request.delete<any, { data: void }>(`/workflow/meta/${metaId}/template/${version}`),
 
+  publishTemplate: (metaId: string, version: number) =>
+    request.post<any, { data: void }>(`/workflow/meta/${metaId}/template/${version}/publish`),
+
   createInstance: (data: CreateWorkflowInstanceRequest) =>
     request.post<any, { data: WorkflowInstanceEntity }>('/workflow/instance', data),
 

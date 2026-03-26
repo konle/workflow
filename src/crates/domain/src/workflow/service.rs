@@ -37,6 +37,10 @@ impl WorkflowDefinitionService {
         self.repository.save_workflow_entity(entity).await
     }
 
+    pub async fn publish_workflow_entity(&self, workflow_meta_id: &str, version: u32) -> Result<(), RepositoryError> {
+        self.repository.publish_workflow_entity(workflow_meta_id, version).await
+    }
+
     pub async fn delete_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<(), RepositoryError> {
         self.repository.delete_workflow_entity(workflow_meta_id, version).await
     }

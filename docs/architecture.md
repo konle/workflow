@@ -735,7 +735,49 @@ POST   /api/v1/approvals/{id}/decide         # 提交决策
 
 ---
 
-## 11. 总结与扩展
+## 11. 工作流模板持久化 (WorkflowEntity)
+
+### 11.1 保存与 upsert 行为
+
+`save_workflow_entity` 使用 MongoDB **upsert**：按 `(workflow_meta_id, version)` 查找，若文档已存在则更新，否则插入。
+
+- **仅 `Draft` 状态的版本可被更新**。对已存在且状态为 `Published` 或 `Archived` 的版本发起保存（更新）时，API 返回 **422**（Unprocessable Entity）。
+
+### 11.2 版本生命周期与 WorkflowStatus
+
+`WorkflowEntity` 的版本状态由 `WorkflowStatus` 枚举表示，生命周期如下：
+
+```
+Draft → (可反复更新 upsert) → Published → Archived → Deleted(标记删除)
+```
+
+| 状态 | 说明 |
+|------|------|
+| **Draft** | 可编辑、可保存 |
+| **Published** | 不可修改，可发起实例 |
+| **Archived** | 不可修改，已运行实例可继续，不可新发起 |
+| **Deleted** | 标记删除 |
+
+### 11.3 唯一索引
+
+MongoDB 在应用启动时通过 `ensure_indexes()` 确保以下唯一索引存在：
+
+| 集合 | 唯一索引字段 |
+|------|----------------|
+| `workflow_entities` | `(workflow_meta_id, version)` |
+| `workflow_meta_entities` | `(workflow_meta_id)` |
+
+### 11.4 发布接口
+
+将指定 **Draft** 版本变更为 **Published**：
+
+```
+POST /api/v1/workflow/meta/{workflow_meta_id}/template/{version}/publish
+```
+
+---
+
+## 12. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
 

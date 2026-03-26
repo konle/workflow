@@ -134,6 +134,9 @@ async fn main() {
     let approval_repo = Arc::new(ApprovalRepositoryImpl::new(mongo_client.clone()));
     let variable_repo = Arc::new(VariableRepositoryImpl::new(mongo_client.clone()));
     let workflow_def_repo = Arc::new(WorkflowDefinitionRepositoryImpl::new(mongo_client.clone()));
+    workflow_def_repo.ensure_indexes().await.unwrap_or_else(|e| {
+        error!(error = %e, "failed to ensure workflow indexes");
+    });
     let workflow_inst_repo = Arc::new(WorkflowInstanceRepositoryImpl::new(mongo_client.clone()));
 
     let task_service = TaskService::new(task_repo);

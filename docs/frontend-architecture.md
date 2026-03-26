@@ -243,6 +243,8 @@ export const workflowApi = {
     request.get<WorkflowEntity>(`/workflow/meta/${metaId}/template/${version}`),
   deleteTemplate: (metaId: string, version: number) =>
     request.delete(`/workflow/meta/${metaId}/template/${version}`),
+  publishTemplate: (metaId: string, version: number) =>
+    request.post(`/workflow/meta/${metaId}/template/${version}/publish`),
 
   // Instance
   createInstance: (data: CreateWorkflowInstanceReq) =>
@@ -685,6 +687,19 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 - Delete/Backspace 删除选中的边
 - 容器节点 (Parallel / ForkJoin) 内部子任务配置在属性面板中完成
 
+**节点展示名称**：
+
+- 引用原子任务的节点（Http / Approval / gRPC）：选中任务后展示**任务名称**
+- **SubWorkflow**：展示**工作流名称 + 版本**
+- **IfCondition** / **ContextRewrite**：展示配置中的 `name`（`config.name`）
+- 以上均不可用时，回退为 `node_id (类型)` 形式
+
+**删除节点**：
+
+- 选中节点后按 **Delete** / **Backspace**，或点击工具栏 **「删除节点」**
+- 删除节点时**同时移除**与该节点相连的全部边，**不做**自动桥接（不会在上下游之间自动补边）
+- 操作前弹出**确认对话框**
+
 #### 6.8.4 属性面板 (右侧)
 
 点击画布中的节点，右侧面板动态渲染该节点类型对应的配置表单。
@@ -716,6 +731,17 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
    - 弹出警告通知，列出悬空节点 ID
    - 将悬空节点边框标红并闪烁动画，方便用户定位
 4. 用户连线或删除悬空节点后，再次保存即可通过校验
+
+5. **配置完整性检测**（在通过悬空节点校验之后继续检查）：
+   - **Http / Approval / gRPC**：必须已选择 `task_id`
+   - **SubWorkflow**：必须填写 `meta_id` 与 `version`
+   - **IfCondition**：必须配置条件表达式，且 **Then / Else** 两路均已连线
+   - **ContextRewrite**：必须填写脚本
+   - **Parallel**：必须填写 `items_path`
+   - **ForkJoin**：子任务列表须为合法 **JSON** 且通过校验
+   - 未满足上述条件的节点：**橙色边框 + 脉冲动画**，保存被阻止并提示
+
+6. **回环检测**：对 DAG 做 **DFS** 环检测。若存在有向环，**阻止保存**并展示错误信息（含环上路径），便于用户修正。
 
 > 设计理由：工作流模板保存后要执行，悬空节点没有意义，只会造成数据冗余和执行引擎歧义。编辑器处于 Draft 阶段，用户随时可调整，不需要"先存一半"。
 
@@ -768,6 +794,21 @@ POST /api/v1/workflow/meta/{metaId}/template
 - 模板中 `then_task` / `else_task` 存储目标 `node_id`
 - 画布中渲染为两个输出锚点（标注 "True" / "False"）
 - `next_node` 字段在 If 节点上保持为 `null`，分支目标由 `IfConditionTemplate.then_task` / `else_task` 承载
+
+#### 6.8.7 Undo / Redo
+
+- **Ctrl+Z**：撤销；**Ctrl+Shift+Z**：重做（标准重做快捷键）
+- 基于**快照**：每次对 `nodes` + `edges` 做**深拷贝**入栈
+- 历史栈**最多保留 50 步**
+- 在以下操作后会推入新快照：添加节点、连线、删除节点/边、选择任务或子工作流、切换子工作流版本等
+- 画布**左下角**展示快捷键提示文案
+
+#### 6.8.8 版本生命周期（编排器与 Meta 详情联动）
+
+- **新建版本**：前端自动计算下一版本号 = 当前 Meta 下已有版本的 **max(version) + 1**
+- **保存**：与后端 upsert 对齐；同一 **Draft** 版本可反复保存覆盖，**Published / Archived** 版本不可通过保存更新（后端 422）
+- **已发布版本**：打开编排器时为**只读模式**（输入禁用、禁止拖拽与连线变更、**不显示保存按钮**等）
+- **版本列表**（Meta 详情 Tab）：每条版本展示状态标签——**Draft** 灰色、**Published** 绿色、**Archived** 橙色；**Draft** 显示 **「发布」**；非 Draft 时入口文案为 **「查看」** 而非 **「编辑」**
 
 ---
 
@@ -1048,7 +1089,6 @@ SuperAdmin 登录后，顶栏右侧显示**租户切换器** (Select 组件)：
 | P0 | 分页与搜索 | 所有列表接口补充分页参数 (`page`, `page_size`) 和关键字搜索 |
 | P1 | WebSocket 实时推送 | 替代轮询，实例状态变更由后端主动推送 |
 | P1 | 工作流执行日志流 | 实时查看节点级执行日志 |
-| P2 | 编排器 Undo/Redo | 基于命令模式实现画布操作的撤销/重做 |
 | P2 | 工作流模板导入/导出 | JSON 格式的模板序列化，支持跨租户迁移 |
 | P2 | 暗色主题 | Arco Design 原生支持，需适配画布节点色彩 |
 
@@ -1119,6 +1159,7 @@ DELETE /workflow/meta/{workflow_meta_id}
 POST   /workflow/meta/{workflow_meta_id}/template
 GET    /workflow/meta/{workflow_meta_id}/template/{version}
 DELETE /workflow/meta/{workflow_meta_id}/template/{version}
+POST   /workflow/meta/{workflow_meta_id}/template/{version}/publish
 
 # 工作流模板变量
 POST   /workflow/meta/{meta_id}/variables
