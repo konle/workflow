@@ -28,9 +28,14 @@
         <VueFlow
           v-model:nodes="nodes"
           v-model:edges="edges"
+          :node-types="customNodeTypes"
           @node-click="onNodeClick"
+          @connect="onConnect"
+          @edge-click="onEdgeClick"
+          @pane-click="onPaneClick"
+          @keydown="onKeyDown"
           fit-view-on-init
-          :default-edge-options="{ type: 'smoothstep' }"
+          :default-edge-options="{ type: 'smoothstep', animated: false }"
         >
           <Background />
           <Controls />
@@ -171,11 +176,12 @@
               <a-form-item label="条件表达式 (Rhai)">
                 <a-textarea v-model="selectedNode.data.config.condition" :auto-size="{ minRows: 3 }" />
               </a-form-item>
-              <a-form-item label="Then 节点ID">
-                <a-input v-model="selectedNode.data.config.then_task" />
+              <a-divider>分支连接</a-divider>
+              <a-form-item label="Then → 节点">
+                <a-input :model-value="getThenTarget(selectedNode.id)" disabled placeholder="从 True 端口拖线到目标节点" />
               </a-form-item>
-              <a-form-item label="Else 节点ID">
-                <a-input v-model="selectedNode.data.config.else_task" />
+              <a-form-item label="Else → 节点">
+                <a-input :model-value="getElseTarget(selectedNode.id)" disabled placeholder="从 False 端口拖线到目标节点" />
               </a-form-item>
             </template>
 
@@ -238,16 +244,32 @@
             </a-form-item>
           </a-form>
         </template>
-        <a-empty v-else description="点击节点编辑属性" />
+
+        <!-- Selected edge info -->
+        <template v-else-if="selectedEdge">
+          <a-form layout="vertical" size="small">
+            <a-form-item label="连线">
+              <a-input :model-value="`${selectedEdge.source} → ${selectedEdge.target}`" disabled />
+            </a-form-item>
+            <a-form-item v-if="selectedEdge.sourceHandle" label="分支">
+              <a-tag :color="selectedEdge.sourceHandle === 'then' ? 'green' : 'red'">
+                {{ selectedEdge.sourceHandle === 'then' ? 'True' : 'False' }}
+              </a-tag>
+            </a-form-item>
+            <a-button status="danger" long @click="deleteSelectedEdge">删除连线</a-button>
+          </a-form>
+        </template>
+
+        <a-empty v-else description="点击节点编辑属性，拖拽端口连线" />
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { VueFlow, useVueFlow, type Node, type Edge } from '@vue-flow/core'
+import { ref, onMounted, markRaw } from 'vue'
+import { useRoute } from 'vue-router'
+import { VueFlow, useVueFlow, type Node, type Edge, type Connection } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
@@ -255,11 +277,17 @@ import { workflowApi } from '../../../api/workflow'
 import { taskApi } from '../../../api/task'
 import { Notification } from '@arco-design/web-vue'
 import type { TaskEntity, FormField } from '../../../types/task'
-import type { WorkflowMetaEntity, WorkflowEntity } from '../../../types/workflow'
+import type { WorkflowMetaEntity } from '../../../types/workflow'
 import dagre from 'dagre'
+import WorkflowNode from './workflow-node.vue'
+import ConditionNode from './condition-node.vue'
+
+const customNodeTypes = {
+  workflow: markRaw(WorkflowNode),
+  condition: markRaw(ConditionNode),
+}
 
 const route = useRoute()
-const router = useRouter()
 const metaId = route.params.metaId as string
 const versionParam = route.params.version ? Number(route.params.version) : null
 
@@ -270,6 +298,7 @@ const saving = ref(false)
 const nodes = ref<Node[]>([])
 const edges = ref<Edge[]>([])
 const selectedNode = ref<Node | null>(null)
+const selectedEdge = ref<Edge | null>(null)
 
 const taskCache = ref<TaskEntity[]>([])
 const workflowMetas = ref<WorkflowMetaEntity[]>([])
@@ -310,12 +339,16 @@ function getDefaultConfig(type: string): any {
     case 'Approval': return {}
     case 'Grpc': return {}
     case 'SubWorkflow': return { timeout: null }
-    case 'IfCondition': return { name: '', condition: '', then_task: '', else_task: '' }
+    case 'IfCondition': return { name: '', condition: '' }
     case 'ContextRewrite': return { name: '', script: '', merge_mode: 'Merge' }
     case 'Parallel': return { items_path: '', item_alias: 'item', concurrency: 10, mode: 'Rolling', max_failures: null, task_template: null }
     case 'ForkJoin': return { concurrency: 5, mode: 'Rolling', max_failures: null, tasksJson: '[]' }
     default: return {}
   }
+}
+
+function getVueFlowNodeType(nodeType: string): string {
+  return nodeType === 'IfCondition' ? 'condition' : 'workflow'
 }
 
 function buildFormFields(formDef: FormField[]): EditorFormField[] {
@@ -327,6 +360,20 @@ function buildFormFields(formDef: FormField[]): EditorFormField[] {
     description: f.description || '',
   }))
 }
+
+// ---- IfCondition edge helpers ----
+
+function getThenTarget(nodeId: string): string {
+  const e = edges.value.find(e => e.source === nodeId && e.sourceHandle === 'then')
+  return e ? e.target : '(未连接)'
+}
+
+function getElseTarget(nodeId: string): string {
+  const e = edges.value.find(e => e.source === nodeId && e.sourceHandle === 'else')
+  return e ? e.target : '(未连接)'
+}
+
+// ---- Task / SubWorkflow selection ----
 
 function onTaskSelected(node: Node) {
   const task = taskCache.value.find(t => t.id === node.data.taskId)
@@ -347,16 +394,15 @@ function onTaskSelected(node: Node) {
 }
 
 async function onSubWorkflowMetaSelected(node: Node) {
-  const metaId = node.data.subWorkflowMetaId
-  if (!metaId) return
-  const meta = workflowMetas.value.find(m => m.workflow_meta_id === metaId)
+  const id = node.data.subWorkflowMetaId
+  if (!id) return
+  const meta = workflowMetas.value.find(m => m.workflow_meta_id === id)
   node.data.subWorkflowMeta = meta || null
   try {
-    const res = await workflowApi.listTemplates(metaId)
+    const res = await workflowApi.listTemplates(id)
     node.data.subWorkflowVersions = res.data
     if (res.data.length > 0) {
       node.data.subWorkflowVersion = res.data[res.data.length - 1].version
-      onSubWorkflowVersionSelected(node)
     }
   } catch {
     node.data.subWorkflowVersions = []
@@ -368,8 +414,79 @@ async function onSubWorkflowMetaSelected(node: Node) {
   }
 }
 
-function onSubWorkflowVersionSelected(_node: Node) {
-  // version selected, no extra action needed since form is on meta level
+function onSubWorkflowVersionSelected(_node: Node) {}
+
+// ---- Connection handling ----
+
+function onConnect(connection: Connection) {
+  const sourceNode = nodes.value.find(n => n.id === connection.source)
+  const isConditionHandle = connection.sourceHandle === 'then' || connection.sourceHandle === 'else'
+
+  if (isConditionHandle) {
+    const existing = edges.value.findIndex(
+      e => e.source === connection.source && e.sourceHandle === connection.sourceHandle
+    )
+    if (existing !== -1) {
+      edges.value.splice(existing, 1)
+    }
+  } else {
+    const existing = edges.value.findIndex(
+      e => e.source === connection.source && !e.sourceHandle
+    )
+    if (existing !== -1) {
+      edges.value.splice(existing, 1)
+    }
+  }
+
+  const edgeColor = connection.sourceHandle === 'then' ? '#00B42A'
+    : connection.sourceHandle === 'else' ? '#F53F3F'
+    : undefined
+
+  const edgeLabel = connection.sourceHandle === 'then' ? 'True'
+    : connection.sourceHandle === 'else' ? 'False'
+    : undefined
+
+  edges.value.push({
+    id: `${connection.source}-${connection.sourceHandle || 'next'}->${connection.target}`,
+    source: connection.source!,
+    target: connection.target!,
+    sourceHandle: connection.sourceHandle || undefined,
+    targetHandle: connection.targetHandle || undefined,
+    type: 'smoothstep',
+    style: edgeColor ? { stroke: edgeColor, strokeWidth: 2 } : undefined,
+    label: edgeLabel,
+    labelStyle: edgeColor ? { fill: edgeColor, fontWeight: 700, fontSize: '11px' } : undefined,
+    labelBgStyle: { fill: '#fff', fillOpacity: 0.9 },
+  })
+}
+
+// ---- Selection ----
+
+function onNodeClick({ node }: { node: Node }) {
+  selectedNode.value = node
+  selectedEdge.value = null
+}
+
+function onEdgeClick({ edge }: { edge: Edge }) {
+  selectedEdge.value = edge
+  selectedNode.value = null
+}
+
+function onPaneClick() {
+  selectedNode.value = null
+  selectedEdge.value = null
+}
+
+function deleteSelectedEdge() {
+  if (!selectedEdge.value) return
+  edges.value = edges.value.filter(e => e.id !== selectedEdge.value!.id)
+  selectedEdge.value = null
+}
+
+function onKeyDown(event: KeyboardEvent) {
+  if ((event.key === 'Delete' || event.key === 'Backspace') && selectedEdge.value) {
+    deleteSelectedEdge()
+  }
 }
 
 // ---- Drag & Drop ----
@@ -388,10 +505,13 @@ function onDrop(event: DragEvent) {
   const color = nodeTypes.find(n => n.type === type)?.color || '#86909C'
   nodes.value.push({
     id,
+    type: getVueFlowNodeType(type),
     position,
     data: {
       label: `${id} (${type})`,
       nodeType: type,
+      color,
+      dangling: false,
       config: getDefaultConfig(type),
       contextJson: '{}',
       taskId: null,
@@ -402,12 +522,36 @@ function onDrop(event: DragEvent) {
       subWorkflowMeta: null,
       subWorkflowVersions: [],
     },
-    style: { background: color, color: '#fff', borderRadius: '6px', padding: '6px 12px', fontSize: '12px', border: 'none' },
   })
 }
 
-function onNodeClick({ node }: { node: Node }) {
-  selectedNode.value = node
+// ---- Dangling node validation ----
+
+function findDanglingNodes(): string[] {
+  if (nodes.value.length <= 1) return []
+  const connected = new Set<string>()
+  for (const e of edges.value) {
+    connected.add(e.source)
+    connected.add(e.target)
+  }
+  return nodes.value
+    .filter(n => !connected.has(n.id))
+    .map(n => n.id)
+}
+
+function markDanglingNodes(danglingIds: string[]) {
+  const s = new Set(danglingIds)
+  for (const n of nodes.value) {
+    n.data = { ...n.data, dangling: s.has(n.id) }
+  }
+}
+
+function clearDanglingMarks() {
+  for (const n of nodes.value) {
+    if (n.data.dangling) {
+      n.data = { ...n.data, dangling: false }
+    }
+  }
 }
 
 // ---- Build & Save ----
@@ -423,10 +567,20 @@ function formFieldsToFormArray(fields: EditorFormField[]): FormField[] {
 }
 
 function buildWorkflowEntity(): any {
-  const edgeMap = new Map<string, string>()
+  const nextNodeMap = new Map<string, string>()
+  const thenMap = new Map<string, string>()
+  const elseMap = new Map<string, string>()
+
   for (const e of edges.value) {
-    edgeMap.set(e.source, e.target)
+    if (e.sourceHandle === 'then') {
+      thenMap.set(e.source, e.target)
+    } else if (e.sourceHandle === 'else') {
+      elseMap.set(e.source, e.target)
+    } else {
+      nextNodeMap.set(e.source, e.target)
+    }
   }
+
   const workflowNodes: any[] = (nodes.value as any[]).map((n: any) => {
     const d = n.data as any
     let config: any
@@ -446,7 +600,14 @@ function buildWorkflowEntity(): any {
     } else {
       switch (d.nodeType) {
         case 'IfCondition':
-          config = { IfCondition: { name: d.config.name, condition: d.config.condition, then_task: d.config.then_task || null, else_task: d.config.else_task || null } }
+          config = {
+            IfCondition: {
+              name: d.config.name,
+              condition: d.config.condition,
+              then_task: thenMap.get(n.id) || null,
+              else_task: elseMap.get(n.id) || null,
+            },
+          }
           break
         case 'ContextRewrite':
           config = { ContextRewrite: { name: d.config.name, script: d.config.script, merge_mode: d.config.merge_mode || 'Merge' } }
@@ -475,13 +636,16 @@ function buildWorkflowEntity(): any {
 
     let context: any = {}
     try { context = JSON.parse(d.contextJson || '{}') } catch {}
+
+    const nextNode = d.nodeType === 'IfCondition' ? null : (nextNodeMap.get(n.id) || null)
+
     return {
       node_id: n.id,
       node_type: d.nodeType,
       task_id: taskId,
       config,
       context,
-      next_node: edgeMap.get(n.id) || null,
+      next_node: nextNode,
     }
   })
   return {
@@ -493,6 +657,18 @@ function buildWorkflowEntity(): any {
 }
 
 async function handleSave() {
+  const danglingIds = findDanglingNodes()
+  if (danglingIds.length > 0) {
+    markDanglingNodes(danglingIds)
+    Notification.warning({
+      title: '存在未连接的节点',
+      content: `以下节点未连线，请连接或删除后再保存：${danglingIds.join(', ')}`,
+      duration: 5000,
+    })
+    return
+  }
+  clearDanglingMarks()
+
   saving.value = true
   try {
     const entity = buildWorkflowEntity()
@@ -511,9 +687,14 @@ function loadFromEntity(entity: any) {
   for (const n of entity.nodes) {
     g.setNode(n.node_id, { width: 160, height: 44 })
     if (n.next_node) g.setEdge(n.node_id, n.next_node)
+    if (n.config?.IfCondition) {
+      if (n.config.IfCondition.then_task) g.setEdge(n.node_id, n.config.IfCondition.then_task)
+      if (n.config.IfCondition.else_task) g.setEdge(n.node_id, n.config.IfCondition.else_task)
+    }
   }
   dagre.layout(g)
   nodeCounter = entity.nodes.length
+
   nodes.value = entity.nodes.map((n: any) => {
     const pos = g.node(n.node_id)
     const type = n.node_type
@@ -528,17 +709,8 @@ function loadFromEntity(entity: any) {
 
     if (isTaskRefNode(type) && n.config) {
       taskSnapshot = n.config
-      if (taskId) {
-        const task = taskCache.value.find(t => t.id === taskId)
-        if (task) {
-          const inner = (n.config as any)[type]
-          if (inner?.form) {
-            formFields = buildFormFields(inner.form)
-          }
-        }
-      }
       const inner = (n.config as any)[type]
-      if (inner?.form && formFields.length === 0) {
+      if (inner?.form) {
         formFields = buildFormFields(inner.form)
       }
     } else if (type === 'SubWorkflow' && n.config?.SubWorkflow) {
@@ -552,7 +724,7 @@ function loadFromEntity(entity: any) {
       const meta = workflowMetas.value.find(m => m.workflow_meta_id === subWorkflowMetaId)
       subWorkflowMeta = meta || null
     } else if (type === 'IfCondition' && n.config?.IfCondition) {
-      config = { ...n.config.IfCondition }
+      config = { name: n.config.IfCondition.name, condition: n.config.IfCondition.condition }
     } else if (type === 'ContextRewrite' && n.config?.ContextRewrite) {
       config = { ...n.config.ContextRewrite }
     } else if (type === 'Parallel' && n.config?.Parallel) {
@@ -565,10 +737,13 @@ function loadFromEntity(entity: any) {
 
     return {
       id: n.node_id,
+      type: getVueFlowNodeType(type),
       position: { x: pos?.x || 0, y: pos?.y || 0 },
       data: {
         label: `${n.node_id} (${type})`,
         nodeType: type,
+        color,
+        dangling: false,
         config,
         contextJson: JSON.stringify(n.context || {}, null, 2),
         taskId,
@@ -579,12 +754,50 @@ function loadFromEntity(entity: any) {
         subWorkflowMeta,
         subWorkflowVersions: [],
       },
-      style: { background: color, color: '#fff', borderRadius: '6px', padding: '6px 12px', fontSize: '12px', border: 'none' },
     }
   })
-  edges.value = entity.nodes
-    .filter((n: any) => n.next_node)
-    .map((n: any) => ({ id: `${n.node_id}->${n.next_node}`, source: n.node_id, target: n.next_node, type: 'smoothstep' }))
+
+  const loadedEdges: Edge[] = []
+  for (const n of entity.nodes) {
+    if (n.next_node) {
+      loadedEdges.push({
+        id: `${n.node_id}-next->${n.next_node}`,
+        source: n.node_id,
+        target: n.next_node,
+        type: 'smoothstep',
+      })
+    }
+    if (n.config?.IfCondition) {
+      const ic = n.config.IfCondition
+      if (ic.then_task) {
+        loadedEdges.push({
+          id: `${n.node_id}-then->${ic.then_task}`,
+          source: n.node_id,
+          target: ic.then_task,
+          sourceHandle: 'then',
+          type: 'smoothstep',
+          style: { stroke: '#00B42A', strokeWidth: 2 },
+          label: 'True',
+          labelStyle: { fill: '#00B42A', fontWeight: 700, fontSize: '11px' },
+          labelBgStyle: { fill: '#fff', fillOpacity: 0.9 },
+        })
+      }
+      if (ic.else_task) {
+        loadedEdges.push({
+          id: `${n.node_id}-else->${ic.else_task}`,
+          source: n.node_id,
+          target: ic.else_task,
+          sourceHandle: 'else',
+          type: 'smoothstep',
+          style: { stroke: '#F53F3F', strokeWidth: 2 },
+          label: 'False',
+          labelStyle: { fill: '#F53F3F', fontWeight: 700, fontSize: '11px' },
+          labelBgStyle: { fill: '#fff', fillOpacity: 0.9 },
+        })
+      }
+    }
+  }
+  edges.value = loadedEdges
 }
 
 // ---- Init ----

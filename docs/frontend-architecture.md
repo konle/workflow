@@ -655,13 +655,35 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 
 #### 6.8.3 画布区域 (中央)
 
-基于 **Vue Flow** 实现：
+基于 **Vue Flow** 实现，使用自定义节点组件：
 
-- **节点 (Node)**：自定义渲染组件 `workflow-node.vue`，展示节点名称、类型图标、执行状态（编辑态为灰色/在实例详情中按实际状态着色）
-- **边 (Edge)**：表示 `next_node` 连接关系，支持用户拖拽连线
-- **IfCondition 节点**：拥有两个输出端口（Then / Else），分别连向不同的下游节点
-- **容器节点 (Parallel / ForkJoin)**：渲染为可展开的分组框，内部子任务配置在属性面板中完成
-- **画布交互**：拖拽平移、滚轮缩放、框选多节点、Delete 键删除选中
+**自定义节点组件**：
+
+| 组件文件 | Vue Flow type | 用途 | Handle 配置 |
+|---------|---------------|------|-------------|
+| `workflow-node.vue` | `workflow` | 所有普通节点 | 顶部 1 个 target + 底部 1 个 source |
+| `condition-node.vue` | `condition` | IfCondition 节点 | 顶部 1 个 target + 底部 2 个 source（`then` 绿色 / `else` 红色） |
+
+**连线交互**：
+
+- 从节点底部 source handle 拖拽到另一节点顶部 target handle 创建边（`@connect` 事件处理）
+- 普通节点：一个 source handle，同一节点只允许一条出边（新连线自动替换旧连线）
+- IfCondition 节点：两个 source handle（`then`/`else`），各自独立连线
+- 点击边可在右侧属性面板查看信息或删除，也支持 Delete/Backspace 键删除选中边
+
+**边的样式**：
+
+| 边类型 | 颜色 | 标签 | 来源 |
+|--------|------|------|------|
+| 普通 `next_node` | 默认灰 | 无 | source handle（默认） |
+| IfCondition Then | 绿色 `#00B42A` | `True` | sourceHandle = `then` |
+| IfCondition Else | 红色 `#F53F3F` | `False` | sourceHandle = `else` |
+
+**其他画布功能**：
+
+- 拖拽平移、滚轮缩放、框选多节点
+- Delete/Backspace 删除选中的边
+- 容器节点 (Parallel / ForkJoin) 内部子任务配置在属性面板中完成
 
 #### 6.8.4 属性面板 (右侧)
 
@@ -673,7 +695,7 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 | **Approval** | **引用任务** | 同上，按 task_type=Approval 过滤，信息展示：标题、审批模式，运行参数同 form |
 | **gRPC** | **引用任务** | 同上，按 task_type=Grpc 过滤 |
 | **SubWorkflow** | **引用工作流** | 1. 工作流选择（搜索下拉）→ 版本选择 → 2. 工作流信息（只读：名称、状态）→ 3. 运行参数（来自 WorkflowMeta.form，type 仅可选原始类型或 Variable）→ 超时 |
-| **IfCondition** | **内联配置** | 条件名称、Rhai 表达式、Then 节点 (Select)、Else 节点 (Select) |
+| **IfCondition** | **内联配置** | 条件名称、Rhai 表达式、分支连接（Then/Else 目标节点由画布连线决定，属性面板只读显示） |
 | **ContextRewrite** | **内联配置** | 名称、Rhai 脚本、合并模式 (Merge / Replace) |
 | **Parallel** | **内联配置** | items_path、item_alias、子任务模板配置、concurrency、mode (Rolling / Batch)、max_failures |
 | **ForkJoin** | **内联配置** | 子任务列表（JSON）、concurrency、mode、max_failures |
@@ -681,12 +703,35 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 
 > **运行参数 type 约束**：在编排器中填写 form 参数时，每个字段的 type 选择器仅提供两个选项：该字段的原始类型（由任务/工作流设计者定义）和 Variable（引用上下文变量）。这确保类型安全的同时允许动态取值。
 
-#### 6.8.5 数据模型转换
+> **点击边**：选中一条边后，右侧属性面板显示连线信息（源节点 → 目标节点、分支类型），并提供"删除连线"按钮。
+
+#### 6.8.5 保存校验
+
+保存时执行悬空节点检测（严格模式）：
+
+1. 遍历所有节点，统计每个节点是否至少有一条入边或出边
+2. 起始节点（仅有出边无入边）视为合法
+3. 若存在完全孤立的悬空节点（既无入边也无出边）：
+   - **阻止保存**
+   - 弹出警告通知，列出悬空节点 ID
+   - 将悬空节点边框标红并闪烁动画，方便用户定位
+4. 用户连线或删除悬空节点后，再次保存即可通过校验
+
+> 设计理由：工作流模板保存后要执行，悬空节点没有意义，只会造成数据冗余和执行引擎歧义。编辑器处于 Draft 阶段，用户随时可调整，不需要"先存一半"。
+
+#### 6.8.6 数据模型转换
 
 **画布 → API**：保存时将 Vue Flow 的 nodes/edges 转换为后端 `WorkflowEntity` 格式：
 
 ```
 Vue Flow nodes[] + edges[]
+    ↓ 按 sourceHandle 分类边
+    - 无 sourceHandle / 默认 → nextNodeMap (source → target)
+    - sourceHandle = "then"  → thenMap (source → target)
+    - sourceHandle = "else"  → elseMap (source → target)
+    ↓ 构建节点
+    - 普通节点: next_node = nextNodeMap[node_id]
+    - IfCondition: next_node = null, config.IfCondition.then_task = thenMap[node_id], else_task = elseMap[node_id]
     ↓ 转换
 WorkflowEntity {
   workflow_meta_id,
@@ -696,9 +741,17 @@ WorkflowEntity {
     {
       node_id: "node_1",
       node_type: "Http",
+      task_id: "5c4a8a2c-...",
       config: { Http: { url: "...", method: "Get", ... } },
       context: {},
       next_node: "node_2"
+    },
+    {
+      node_id: "node_3",
+      node_type: "IfCondition",
+      config: { IfCondition: { name: "...", condition: "...", then_task: "node_4", else_task: "node_5" } },
+      context: {},
+      next_node: null
     },
     ...
   ]
