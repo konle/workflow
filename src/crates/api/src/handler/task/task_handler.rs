@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Extension, Path, State},
+    extract::{Extension, Path, Query, State},
     routing::{get, post},
     Json, Router,
 };
@@ -10,6 +10,7 @@ use crate::error::ApiError;
 use crate::middleware::auth::AuthContext;
 use crate::response::response::Response;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Deserialize)]
@@ -84,8 +85,13 @@ async fn create_task(
 async fn list_tasks(
     State(handler): State<Arc<TaskHandler>>,
     Extension(auth): Extension<AuthContext>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Response<Vec<TaskEntity>>>, ApiError> {
-    let result = handler.service.list_task_entities(&auth.tenant_id).await?;
+    let result = if let Some(task_type) = params.get("task_type") {
+        handler.service.list_task_entities_by_type(&auth.tenant_id, task_type).await?
+    } else {
+        handler.service.list_task_entities(&auth.tenant_id).await?
+    };
     Ok(Json(Response::success(result)))
 }
 

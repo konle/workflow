@@ -354,7 +354,8 @@ interface WorkflowEntity {
 interface WorkflowNodeEntity {
   node_id: string
   node_type: TaskType
-  config: TaskTemplate  // 联合类型，按 node_type 区分
+  task_id?: string | null  // 引用的原子任务模板ID（Http/Approval/gRPC 节点使用）
+  config: TaskTemplate     // 联合类型，按 node_type 区分；原子任务节点存储选中任务的 template 快照
   context: JsonValue
   next_node: string | null
 }
@@ -666,16 +667,19 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 
 点击画布中的节点，右侧面板动态渲染该节点类型对应的配置表单。
 
-| 节点类型 | 属性面板内容 |
-|----------|-------------|
-| **Http** | URL (支持 `{{变量}}` 模板语法)、Method、Headers (FormField[] KV编辑器)、Body (FormField[] 字段编辑器)、Form (FormField[] 用户表单)、超时、重试次数、重试延迟、成功条件 |
-| **IfCondition** | 条件名称、Rhai 表达式 (Monaco Editor)、Then 节点 (Select)、Else 节点 (Select) |
-| **ContextRewrite** | 名称、Rhai 脚本 (Monaco Editor)、合并模式 (Merge / Replace) |
-| **Parallel** | items_path、item_alias、子任务模板配置（内嵌原子任务表单）、concurrency、mode (Rolling / Batch)、max_failures |
-| **ForkJoin** | 子任务列表（可增删，每项含 task_key + name + 内嵌原子任务表单）、concurrency、mode、max_failures |
-| **SubWorkflow** | 工作流 Meta 选择器（下拉）、版本选择、input_mapping (JSON 编辑器)、output_path、timeout |
-| **Approval** | 审批标题 (支持 `{{变量}}` 模板)、审批说明、审批模式 (Any/All/Majority)、审批人规则 (JSON 编辑器)、超时 |
-| **通用字段** | node_id (只读)、context (JSON 编辑器) |
+| 节点类型 | 交互模式 | 属性面板内容 |
+|----------|---------|-------------|
+| **Http** | **引用任务** | 1. 任务选择（搜索下拉，按 task_type=Http 过滤已发布任务）→ 2. 任务信息（只读：URL、Method、超时、重试）→ 3. 运行参数（根据 form 定义渲染，type 仅可选原始类型或 Variable） |
+| **Approval** | **引用任务** | 同上，按 task_type=Approval 过滤，信息展示：标题、审批模式，运行参数同 form |
+| **gRPC** | **引用任务** | 同上，按 task_type=Grpc 过滤 |
+| **SubWorkflow** | **引用工作流** | 1. 工作流选择（搜索下拉）→ 版本选择 → 2. 工作流信息（只读：名称、状态）→ 3. 运行参数（来自 WorkflowMeta.form，type 仅可选原始类型或 Variable）→ 超时 |
+| **IfCondition** | **内联配置** | 条件名称、Rhai 表达式、Then 节点 (Select)、Else 节点 (Select) |
+| **ContextRewrite** | **内联配置** | 名称、Rhai 脚本、合并模式 (Merge / Replace) |
+| **Parallel** | **内联配置** | items_path、item_alias、子任务模板配置、concurrency、mode (Rolling / Batch)、max_failures |
+| **ForkJoin** | **内联配置** | 子任务列表（JSON）、concurrency、mode、max_failures |
+| **通用字段** | — | node_id (只读)、context (JSON 编辑器) |
+
+> **运行参数 type 约束**：在编排器中填写 form 参数时，每个字段的 type 选择器仅提供两个选项：该字段的原始类型（由任务/工作流设计者定义）和 Variable（引用上下文变量）。这确保类型安全的同时允许动态取值。
 
 #### 6.8.5 数据模型转换
 

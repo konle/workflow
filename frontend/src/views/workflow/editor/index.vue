@@ -49,32 +49,121 @@
               <a-input :model-value="selectedNode.data.nodeType" disabled />
             </a-form-item>
 
-            <template v-if="selectedNode.data.nodeType === 'Http'">
-              <a-form-item label="URL">
-                <a-input v-model="selectedNode.data.config.url" />
-              </a-form-item>
-              <a-form-item label="Method">
-                <a-select v-model="selectedNode.data.config.method">
-                  <a-option value="Get">GET</a-option>
-                  <a-option value="Post">POST</a-option>
-                  <a-option value="Put">PUT</a-option>
-                  <a-option value="Delete">DELETE</a-option>
+            <!-- ===== 引用原子任务: Http / Approval / gRPC ===== -->
+            <template v-if="isTaskRefNode(selectedNode.data.nodeType)">
+              <a-divider>任务选择</a-divider>
+              <a-form-item label="选择任务模板">
+                <a-select
+                  v-model="selectedNode.data.taskId"
+                  placeholder="搜索并选择已有任务"
+                  allow-search
+                  @change="onTaskSelected(selectedNode)"
+                >
+                  <a-option
+                    v-for="t in getTasksForType(selectedNode.data.nodeType)"
+                    :key="t.id"
+                    :value="t.id"
+                  >{{ t.name }} ({{ t.status }})</a-option>
                 </a-select>
               </a-form-item>
-              <a-form-item label="Headers (JSON)">
-                <a-textarea v-model="selectedNode.data.config.headersJson" :auto-size="{ minRows: 2 }" />
+
+              <template v-if="selectedNode.data.taskSnapshot">
+                <a-divider>任务信息</a-divider>
+                <div class="task-info">
+                  <template v-if="selectedNode.data.nodeType === 'Http' && selectedNode.data.taskSnapshot.Http">
+                    <a-descriptions :column="1" size="small" bordered>
+                      <a-descriptions-item label="URL">{{ selectedNode.data.taskSnapshot.Http.url }}</a-descriptions-item>
+                      <a-descriptions-item label="Method">{{ selectedNode.data.taskSnapshot.Http.method }}</a-descriptions-item>
+                      <a-descriptions-item label="超时">{{ selectedNode.data.taskSnapshot.Http.timeout }}s</a-descriptions-item>
+                      <a-descriptions-item label="重试">{{ selectedNode.data.taskSnapshot.Http.retry_count }}次</a-descriptions-item>
+                    </a-descriptions>
+                  </template>
+                  <template v-else-if="selectedNode.data.nodeType === 'Approval' && selectedNode.data.taskSnapshot.Approval">
+                    <a-descriptions :column="1" size="small" bordered>
+                      <a-descriptions-item label="标题">{{ selectedNode.data.taskSnapshot.Approval.title }}</a-descriptions-item>
+                      <a-descriptions-item label="模式">{{ selectedNode.data.taskSnapshot.Approval.approval_mode }}</a-descriptions-item>
+                    </a-descriptions>
+                  </template>
+                  <template v-else-if="selectedNode.data.nodeType === 'Grpc'">
+                    <a-descriptions :column="1" size="small" bordered>
+                      <a-descriptions-item label="类型">gRPC</a-descriptions-item>
+                    </a-descriptions>
+                  </template>
+                </div>
+
+                <template v-if="selectedNode.data.formFields?.length">
+                  <a-divider>运行参数</a-divider>
+                  <div class="form-list">
+                    <div v-for="(f, idx) in selectedNode.data.formFields" :key="idx" class="form-row">
+                      <a-input :model-value="f.key" disabled style="width: 120px" />
+                      <a-input v-model="f.value" :placeholder="f.description || '值'" style="flex: 1" />
+                      <a-select v-model="f.type" style="width: 110px">
+                        <a-option :value="f.originalType">{{ f.originalType }}</a-option>
+                        <a-option v-if="f.originalType !== 'Variable'" value="Variable">Variable</a-option>
+                      </a-select>
+                    </div>
+                  </div>
+                </template>
+              </template>
+            </template>
+
+            <!-- ===== 引用工作流: SubWorkflow ===== -->
+            <template v-else-if="selectedNode.data.nodeType === 'SubWorkflow'">
+              <a-divider>工作流选择</a-divider>
+              <a-form-item label="选择工作流">
+                <a-select
+                  v-model="selectedNode.data.subWorkflowMetaId"
+                  placeholder="搜索并选择已有工作流"
+                  allow-search
+                  @change="onSubWorkflowMetaSelected(selectedNode)"
+                >
+                  <a-option
+                    v-for="m in workflowMetas"
+                    :key="m.workflow_meta_id"
+                    :value="m.workflow_meta_id"
+                  >{{ m.name }} ({{ m.status }})</a-option>
+                </a-select>
               </a-form-item>
-              <a-form-item label="Body">
-                <a-textarea v-model="selectedNode.data.config.bodyJson" :auto-size="{ minRows: 2 }" />
+              <a-form-item v-if="selectedNode.data.subWorkflowVersions?.length" label="版本">
+                <a-select
+                  v-model="selectedNode.data.subWorkflowVersion"
+                  @change="onSubWorkflowVersionSelected(selectedNode)"
+                >
+                  <a-option
+                    v-for="v in selectedNode.data.subWorkflowVersions"
+                    :key="v.version"
+                    :value="v.version"
+                  >v{{ v.version }} ({{ v.nodes?.length || 0 }}节点)</a-option>
+                </a-select>
               </a-form-item>
+
+              <template v-if="selectedNode.data.subWorkflowMeta">
+                <a-divider>工作流信息</a-divider>
+                <a-descriptions :column="1" size="small" bordered>
+                  <a-descriptions-item label="名称">{{ selectedNode.data.subWorkflowMeta.name }}</a-descriptions-item>
+                  <a-descriptions-item label="状态">{{ selectedNode.data.subWorkflowMeta.status }}</a-descriptions-item>
+                </a-descriptions>
+
+                <template v-if="selectedNode.data.formFields?.length">
+                  <a-divider>运行参数</a-divider>
+                  <div class="form-list">
+                    <div v-for="(f, idx) in selectedNode.data.formFields" :key="idx" class="form-row">
+                      <a-input :model-value="f.key" disabled style="width: 120px" />
+                      <a-input v-model="f.value" :placeholder="f.description || '值'" style="flex: 1" />
+                      <a-select v-model="f.type" style="width: 110px">
+                        <a-option :value="f.originalType">{{ f.originalType }}</a-option>
+                        <a-option v-if="f.originalType !== 'Variable'" value="Variable">Variable</a-option>
+                      </a-select>
+                    </div>
+                  </div>
+                </template>
+              </template>
               <a-form-item label="超时(秒)">
-                <a-input-number v-model="selectedNode.data.config.timeout" :min="1" />
-              </a-form-item>
-              <a-form-item label="重试次数">
-                <a-input-number v-model="selectedNode.data.config.retry_count" :min="0" />
+                <a-input-number v-model="selectedNode.data.config.timeout" :min="0" placeholder="不填则不超时" />
               </a-form-item>
             </template>
 
+            <!-- ===== 控制流: IfCondition ===== -->
             <template v-else-if="selectedNode.data.nodeType === 'IfCondition'">
               <a-form-item label="条件名称">
                 <a-input v-model="selectedNode.data.config.name" />
@@ -90,6 +179,7 @@
               </a-form-item>
             </template>
 
+            <!-- ===== 控制流: ContextRewrite ===== -->
             <template v-else-if="selectedNode.data.nodeType === 'ContextRewrite'">
               <a-form-item label="名称">
                 <a-input v-model="selectedNode.data.config.name" />
@@ -105,6 +195,7 @@
               </a-form-item>
             </template>
 
+            <!-- ===== 控制流: Parallel ===== -->
             <template v-else-if="selectedNode.data.nodeType === 'Parallel'">
               <a-form-item label="数据路径 (items_path)">
                 <a-input v-model="selectedNode.data.config.items_path" />
@@ -126,6 +217,7 @@
               </a-form-item>
             </template>
 
+            <!-- ===== 控制流: ForkJoin ===== -->
             <template v-else-if="selectedNode.data.nodeType === 'ForkJoin'">
               <a-form-item label="并发度">
                 <a-input-number v-model="selectedNode.data.config.concurrency" :min="1" />
@@ -138,43 +230,6 @@
               </a-form-item>
               <a-form-item label="子任务 (JSON)">
                 <a-textarea v-model="selectedNode.data.config.tasksJson" :auto-size="{ minRows: 4 }" />
-              </a-form-item>
-            </template>
-
-            <template v-else-if="selectedNode.data.nodeType === 'Approval'">
-              <a-form-item label="审批标题">
-                <a-input v-model="selectedNode.data.config.title" placeholder="支持 {{变量}} 模板" />
-              </a-form-item>
-              <a-form-item label="审批说明">
-                <a-textarea v-model="selectedNode.data.config.description" :auto-size="{ minRows: 2 }" />
-              </a-form-item>
-              <a-form-item label="审批模式">
-                <a-select v-model="selectedNode.data.config.approval_mode">
-                  <a-option value="Any">抢单 (Any)</a-option>
-                  <a-option value="All">会签 (All)</a-option>
-                  <a-option value="Majority">投票 (Majority)</a-option>
-                </a-select>
-              </a-form-item>
-              <a-form-item label="审批人 (JSON)">
-                <a-textarea v-model="selectedNode.data.config.approversJson" :auto-size="{ minRows: 3 }" placeholder='[{"User":"uid"},{"Role":"TenantAdmin"}]' />
-              </a-form-item>
-              <a-form-item label="超时(秒)">
-                <a-input-number v-model="selectedNode.data.config.timeout" :min="0" placeholder="不填则不超时" />
-              </a-form-item>
-            </template>
-
-            <template v-else-if="selectedNode.data.nodeType === 'SubWorkflow'">
-              <a-form-item label="工作流 Meta ID">
-                <a-input v-model="selectedNode.data.config.workflow_meta_id" />
-              </a-form-item>
-              <a-form-item label="版本">
-                <a-input-number v-model="selectedNode.data.config.workflow_version" :min="1" />
-              </a-form-item>
-              <a-form-item label="Input Mapping (JSON)">
-                <a-textarea v-model="selectedNode.data.config.inputMappingJson" :auto-size="{ minRows: 2 }" />
-              </a-form-item>
-              <a-form-item label="超时(秒)">
-                <a-input-number v-model="selectedNode.data.config.timeout" />
               </a-form-item>
             </template>
 
@@ -197,8 +252,10 @@ import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 import { workflowApi } from '../../../api/workflow'
-import { TASK_TYPE_MAP } from '../../../utils/constants'
+import { taskApi } from '../../../api/task'
 import { Notification } from '@arco-design/web-vue'
+import type { TaskEntity, FormField } from '../../../types/task'
+import type { WorkflowMetaEntity, WorkflowEntity } from '../../../types/workflow'
 import dagre from 'dagre'
 
 const route = useRoute()
@@ -214,7 +271,19 @@ const nodes = ref<Node[]>([])
 const edges = ref<Edge[]>([])
 const selectedNode = ref<Node | null>(null)
 
+const taskCache = ref<TaskEntity[]>([])
+const workflowMetas = ref<WorkflowMetaEntity[]>([])
+
 let nodeCounter = 0
+
+const TASK_REF_TYPES = ['Http', 'Approval', 'Grpc']
+function isTaskRefNode(nodeType: string) {
+  return TASK_REF_TYPES.includes(nodeType)
+}
+
+function getTasksForType(nodeType: string): TaskEntity[] {
+  return taskCache.value.filter(t => t.task_type === nodeType && t.status === 'Published')
+}
 
 const nodeTypes = [
   { type: 'Http', label: 'HTTP', color: '#3491FA' },
@@ -227,18 +296,83 @@ const nodeTypes = [
   { type: 'Approval', label: '审批', color: '#F77234' },
 ]
 
+interface EditorFormField {
+  key: string
+  value: any
+  type: string
+  originalType: string
+  description: string
+}
+
 function getDefaultConfig(type: string): any {
   switch (type) {
-    case 'Http': return { url: '', method: 'Get', headersJson: '{}', bodyJson: '', timeout: 30, retry_count: 0, retry_delay: 0, success_condition: '' }
+    case 'Http': return {}
+    case 'Approval': return {}
+    case 'Grpc': return {}
+    case 'SubWorkflow': return { timeout: null }
     case 'IfCondition': return { name: '', condition: '', then_task: '', else_task: '' }
     case 'ContextRewrite': return { name: '', script: '', merge_mode: 'Merge' }
     case 'Parallel': return { items_path: '', item_alias: 'item', concurrency: 10, mode: 'Rolling', max_failures: null, task_template: null }
     case 'ForkJoin': return { concurrency: 5, mode: 'Rolling', max_failures: null, tasksJson: '[]' }
-    case 'Approval': return { title: '', description: '', approval_mode: 'Any', approversJson: '[]', timeout: null }
-    case 'SubWorkflow': return { workflow_meta_id: '', workflow_version: 1, inputMappingJson: '{}', timeout: null }
     default: return {}
   }
 }
+
+function buildFormFields(formDef: FormField[]): EditorFormField[] {
+  return formDef.map(f => ({
+    key: f.key,
+    value: f.value ?? '',
+    type: f.type || 'String',
+    originalType: f.type || 'String',
+    description: f.description || '',
+  }))
+}
+
+function onTaskSelected(node: Node) {
+  const task = taskCache.value.find(t => t.id === node.data.taskId)
+  if (!task) {
+    node.data.taskSnapshot = null
+    node.data.formFields = []
+    return
+  }
+  node.data.taskSnapshot = task.task_template
+  const tpl = task.task_template as any
+  const typeKey = node.data.nodeType
+  const inner = tpl[typeKey]
+  if (inner?.form) {
+    node.data.formFields = buildFormFields(inner.form)
+  } else {
+    node.data.formFields = []
+  }
+}
+
+async function onSubWorkflowMetaSelected(node: Node) {
+  const metaId = node.data.subWorkflowMetaId
+  if (!metaId) return
+  const meta = workflowMetas.value.find(m => m.workflow_meta_id === metaId)
+  node.data.subWorkflowMeta = meta || null
+  try {
+    const res = await workflowApi.listTemplates(metaId)
+    node.data.subWorkflowVersions = res.data
+    if (res.data.length > 0) {
+      node.data.subWorkflowVersion = res.data[res.data.length - 1].version
+      onSubWorkflowVersionSelected(node)
+    }
+  } catch {
+    node.data.subWorkflowVersions = []
+  }
+  if (meta?.form?.length) {
+    node.data.formFields = buildFormFields(meta.form)
+  } else {
+    node.data.formFields = []
+  }
+}
+
+function onSubWorkflowVersionSelected(_node: Node) {
+  // version selected, no extra action needed since form is on meta level
+}
+
+// ---- Drag & Drop ----
 
 function onDragStart(event: DragEvent, nt: { type: string; label: string }) {
   event.dataTransfer?.setData('nodeType', nt.type)
@@ -255,13 +389,37 @@ function onDrop(event: DragEvent) {
   nodes.value.push({
     id,
     position,
-    data: { label: `${id} (${type})`, nodeType: type, config: getDefaultConfig(type), contextJson: '{}' },
+    data: {
+      label: `${id} (${type})`,
+      nodeType: type,
+      config: getDefaultConfig(type),
+      contextJson: '{}',
+      taskId: null,
+      taskSnapshot: null,
+      formFields: [],
+      subWorkflowMetaId: null,
+      subWorkflowVersion: null,
+      subWorkflowMeta: null,
+      subWorkflowVersions: [],
+    },
     style: { background: color, color: '#fff', borderRadius: '6px', padding: '6px 12px', fontSize: '12px', border: 'none' },
   })
 }
 
 function onNodeClick({ node }: { node: Node }) {
   selectedNode.value = node
+}
+
+// ---- Build & Save ----
+
+function formFieldsToFormArray(fields: EditorFormField[]): FormField[] {
+  return fields
+    .filter(f => f.key.trim() !== '')
+    .map(f => {
+      const field: FormField = { key: f.key, value: f.value, type: f.type as any }
+      if (f.description) field.description = f.description
+      return field
+    })
 }
 
 function buildWorkflowEntity(): any {
@@ -272,70 +430,55 @@ function buildWorkflowEntity(): any {
   const workflowNodes: any[] = (nodes.value as any[]).map((n: any) => {
     const d = n.data as any
     let config: any
-    switch (d.nodeType) {
-      case 'Http': {
-        let headers = {}
-        try { headers = JSON.parse(d.config.headersJson || '{}') } catch {}
-        const bodyVal = (d.config.bodyJson || '').trim()
-        config = {
-          Http: {
-            url: d.config.url || '',
-            method: d.config.method || 'Get',
-            headers,
-            body: bodyVal ? { key: 'body', value: bodyVal, type: 'json' } : null,
-            form: null,
-            retry_count: d.config.retry_count || 0,
-            retry_delay: d.config.retry_delay || 0,
-            timeout: d.config.timeout || 30,
-            success_condition: d.config.success_condition || null,
-          },
+    const taskId = d.taskId || null
+
+    if (isTaskRefNode(d.nodeType) && d.taskSnapshot) {
+      config = d.taskSnapshot
+    } else if (d.nodeType === 'SubWorkflow') {
+      config = {
+        SubWorkflow: {
+          workflow_meta_id: d.subWorkflowMetaId || '',
+          workflow_version: d.subWorkflowVersion || 1,
+          form: formFieldsToFormArray(d.formFields || []),
+          timeout: d.config.timeout || null,
+        },
+      }
+    } else {
+      switch (d.nodeType) {
+        case 'IfCondition':
+          config = { IfCondition: { name: d.config.name, condition: d.config.condition, then_task: d.config.then_task || null, else_task: d.config.else_task || null } }
+          break
+        case 'ContextRewrite':
+          config = { ContextRewrite: { name: d.config.name, script: d.config.script, merge_mode: d.config.merge_mode || 'Merge' } }
+          break
+        case 'Parallel':
+          config = { Parallel: { items_path: d.config.items_path, item_alias: d.config.item_alias, task_template: d.config.task_template || { Http: { url: '', method: 'Get', headers: [], body: [], form: [], retry_count: 0, retry_delay: 0, timeout: 30, success_condition: null } }, concurrency: d.config.concurrency || 10, mode: d.config.mode || 'Rolling', max_failures: d.config.max_failures } }
+          break
+        case 'ForkJoin': {
+          let tasks: any[] = []
+          try { tasks = JSON.parse(d.config.tasksJson || '[]') } catch {}
+          config = { ForkJoin: { tasks, concurrency: d.config.concurrency || 5, mode: d.config.mode || 'Rolling', max_failures: d.config.max_failures } }
+          break
         }
-        break
+        default:
+          config = d.nodeType
       }
-      case 'IfCondition':
-        config = { IfCondition: { name: d.config.name, condition: d.config.condition, then_task: d.config.then_task || null, else_task: d.config.else_task || null } }
-        break
-      case 'ContextRewrite':
-        config = { ContextRewrite: { name: d.config.name, script: d.config.script, merge_mode: d.config.merge_mode || 'Merge' } }
-        break
-      case 'Parallel':
-        config = { Parallel: { items_path: d.config.items_path, item_alias: d.config.item_alias, task_template: d.config.task_template || { Http: { url: '', method: 'Get', headers: {}, body: null, form: null, retry_count: 0, retry_delay: 0, timeout: 30, success_condition: null } }, concurrency: d.config.concurrency || 10, mode: d.config.mode || 'Rolling', max_failures: d.config.max_failures } }
-        break
-      case 'ForkJoin': {
-        let tasks = []
-        try { tasks = JSON.parse(d.config.tasksJson || '[]') } catch {}
-        config = { ForkJoin: { tasks, concurrency: d.config.concurrency || 5, mode: d.config.mode || 'Rolling', max_failures: d.config.max_failures } }
-        break
-      }
-      case 'SubWorkflow': {
-        let inputMapping = null
-        try { inputMapping = JSON.parse(d.config.inputMappingJson || 'null') } catch {}
-        config = { SubWorkflow: { workflow_meta_id: d.config.workflow_meta_id, workflow_version: d.config.workflow_version, input_mapping: inputMapping, output_path: null, timeout: d.config.timeout } }
-        break
-      }
-      case 'Approval': {
-        let approvers = []
-        try { approvers = JSON.parse(d.config.approversJson || '[]') } catch {}
-        config = {
-          Approval: {
-            name: d.label || '',
-            title: d.config.title || '',
-            description: d.config.description || null,
-            approvers,
-            approval_mode: d.config.approval_mode || 'Any',
-            timeout: d.config.timeout || null,
-          },
-        }
-        break
-      }
-      default:
-        config = d.nodeType
     }
-    let context = {}
+
+    if (isTaskRefNode(d.nodeType) && d.formFields?.length) {
+      const formData = formFieldsToFormArray(d.formFields)
+      const typeKey = d.nodeType as string
+      if (config && config[typeKey]) {
+        config[typeKey] = { ...config[typeKey], form: formData }
+      }
+    }
+
+    let context: any = {}
     try { context = JSON.parse(d.contextJson || '{}') } catch {}
     return {
       node_id: n.id,
       node_type: d.nodeType,
+      task_id: taskId,
       config,
       context,
       next_node: edgeMap.get(n.id) || null,
@@ -359,6 +502,8 @@ async function handleSave() {
   } catch {} finally { saving.value = false }
 }
 
+// ---- Load from entity ----
+
 function loadFromEntity(entity: any) {
   const g = new dagre.graphlib.Graph()
   g.setGraph({ rankdir: 'LR', nodesep: 60, ranksep: 100 })
@@ -374,9 +519,38 @@ function loadFromEntity(entity: any) {
     const type = n.node_type
     const color = nodeTypes.find(t => t.type === type)?.color || '#86909C'
     let config: any = getDefaultConfig(type)
-    if (type === 'Http' && n.config?.Http) {
-      const h = n.config.Http
-      config = { ...config, url: h.url, method: h.method, headersJson: JSON.stringify(h.headers || {}, null, 2), bodyJson: h.body?.value || '', timeout: h.timeout, retry_count: h.retry_count, retry_delay: h.retry_delay, success_condition: h.success_condition || '' }
+    let taskId: string | null = n.task_id || null
+    let taskSnapshot: any = null
+    let formFields: EditorFormField[] = []
+    let subWorkflowMetaId: string | null = null
+    let subWorkflowVersion: number | null = null
+    let subWorkflowMeta: any = null
+
+    if (isTaskRefNode(type) && n.config) {
+      taskSnapshot = n.config
+      if (taskId) {
+        const task = taskCache.value.find(t => t.id === taskId)
+        if (task) {
+          const inner = (n.config as any)[type]
+          if (inner?.form) {
+            formFields = buildFormFields(inner.form)
+          }
+        }
+      }
+      const inner = (n.config as any)[type]
+      if (inner?.form && formFields.length === 0) {
+        formFields = buildFormFields(inner.form)
+      }
+    } else if (type === 'SubWorkflow' && n.config?.SubWorkflow) {
+      const s = n.config.SubWorkflow
+      subWorkflowMetaId = s.workflow_meta_id
+      subWorkflowVersion = s.workflow_version
+      config = { timeout: s.timeout }
+      if (s.form?.length) {
+        formFields = buildFormFields(s.form)
+      }
+      const meta = workflowMetas.value.find(m => m.workflow_meta_id === subWorkflowMetaId)
+      subWorkflowMeta = meta || null
     } else if (type === 'IfCondition' && n.config?.IfCondition) {
       config = { ...n.config.IfCondition }
     } else if (type === 'ContextRewrite' && n.config?.ContextRewrite) {
@@ -387,17 +561,24 @@ function loadFromEntity(entity: any) {
     } else if (type === 'ForkJoin' && n.config?.ForkJoin) {
       const f = n.config.ForkJoin
       config = { concurrency: f.concurrency, mode: f.mode, max_failures: f.max_failures, tasksJson: JSON.stringify(f.tasks, null, 2) }
-    } else if (type === 'Approval' && n.config?.Approval) {
-      const a = n.config.Approval
-      config = { title: a.title, description: a.description || '', approval_mode: a.approval_mode, approversJson: JSON.stringify(a.approvers, null, 2), timeout: a.timeout }
-    } else if (type === 'SubWorkflow' && n.config?.SubWorkflow) {
-      const s = n.config.SubWorkflow
-      config = { workflow_meta_id: s.workflow_meta_id, workflow_version: s.workflow_version, inputMappingJson: JSON.stringify(s.input_mapping, null, 2), timeout: s.timeout }
     }
+
     return {
       id: n.node_id,
       position: { x: pos?.x || 0, y: pos?.y || 0 },
-      data: { label: `${n.node_id} (${type})`, nodeType: type, config, contextJson: JSON.stringify(n.context || {}, null, 2) },
+      data: {
+        label: `${n.node_id} (${type})`,
+        nodeType: type,
+        config,
+        contextJson: JSON.stringify(n.context || {}, null, 2),
+        taskId,
+        taskSnapshot,
+        formFields,
+        subWorkflowMetaId,
+        subWorkflowVersion,
+        subWorkflowMeta,
+        subWorkflowVersions: [],
+      },
       style: { background: color, color: '#fff', borderRadius: '6px', padding: '6px 12px', fontSize: '12px', border: 'none' },
     }
   })
@@ -406,11 +587,20 @@ function loadFromEntity(entity: any) {
     .map((n: any) => ({ id: `${n.node_id}->${n.next_node}`, source: n.node_id, target: n.next_node, type: 'smoothstep' }))
 }
 
+// ---- Init ----
+
 onMounted(async () => {
   try {
-    const metaRes = await workflowApi.getMeta(metaId)
+    const [metaRes, tasksRes, metasRes] = await Promise.all([
+      workflowApi.getMeta(metaId),
+      taskApi.list(),
+      workflowApi.listMeta(),
+    ])
     metaName.value = metaRes.data.name
+    taskCache.value = tasksRes.data
+    workflowMetas.value = metasRes.data
   } catch {}
+
   if (versionParam) {
     try {
       const res = await workflowApi.getTemplate(metaId, versionParam)
@@ -456,7 +646,7 @@ onMounted(async () => {
   position: relative;
 }
 .editor-panel-right {
-  width: 300px;
+  width: 320px;
   border-left: 1px solid var(--color-border);
   background: var(--color-bg-2);
   padding: 12px;
@@ -487,6 +677,20 @@ onMounted(async () => {
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
+}
+.task-info {
+  margin-bottom: 8px;
+}
+.form-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.form-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
 }
 </style>
 

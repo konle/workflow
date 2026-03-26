@@ -34,6 +34,8 @@ pub struct WorkflowEntity {
 pub struct WorkflowNodeEntity {
     pub node_id: String,
     pub node_type: TaskType,
+    #[serde(default)]
+    pub task_id: Option<String>,
     pub config: TaskTemplate,
     pub context: JsonValue,
     pub next_node: Option<String>,

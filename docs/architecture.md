@@ -257,13 +257,14 @@ ForkJoin.execute()
 
 ```rust
 pub struct SubWorkflowTemplate {
-    pub workflow_meta_id: String,         // 引用哪个工作流
-    pub workflow_version: u32,            // 指定版本
-    pub input_mapping: Option<JsonValue>, // 传递给子工作流的上下文
-    pub output_path: Option<String>,      // 子工作流结果写回父节点上下文的路径
-    pub timeout: Option<u64>,             // 超时（秒）
+    pub workflow_meta_id: String,    // 引用哪个工作流
+    pub workflow_version: u32,       // 指定版本
+    pub form: Vec<Form>,             // 传递给子工作流的初始上下文参数，与目标工作流 form 定义对齐
+    pub timeout: Option<u64>,        // 超时（秒）
 }
 ```
+
+> `form` 替代了原 `input_mapping`。发起子工作流等同于发起工作流实例：指定 meta_id + version，填写 form 参数作为初始上下文。Form 字段值支持字面量或 `{{变量}}` 引用父工作流上下文。
 
 ### 6.2 实体扩展
 

@@ -87,6 +87,10 @@ impl TaskService {
         self.task_entity_repository.list_task_entities(tenant_id).await
     }
 
+    pub async fn list_task_entities_by_type(&self, tenant_id: &str, task_type: &str) -> Result<Vec<TaskEntity>, RepositoryError> {
+        self.task_entity_repository.list_task_entities_by_type(tenant_id, task_type).await
+    }
+
     pub async fn update_task_entity(&self, task_entity: TaskEntity) -> Result<TaskEntity, RepositoryError> {
         self.task_entity_repository.update_task_entity(task_entity).await
     }

@@ -65,8 +65,8 @@ pub struct ForkJoinTaskItem {
 pub struct SubWorkflowTemplate {
     pub workflow_meta_id: String,
     pub workflow_version: u32,
-    pub input_mapping: Option<JsonValue>,
-    pub output_path: Option<String>,
+    #[serde(default)]
+    pub form: Vec<Form>,
     pub timeout: Option<u64>,
 }
 

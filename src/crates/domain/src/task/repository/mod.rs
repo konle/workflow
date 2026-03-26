@@ -11,6 +11,7 @@ pub trait TaskEntityRepository: Send + Sync {
     async fn get_task_entity(&self, id: String) -> Result<TaskEntity, RepositoryError>;
     async fn get_task_entity_scoped(&self, tenant_id: &str, id: &str) -> Result<TaskEntity, RepositoryError>;
     async fn list_task_entities(&self, tenant_id: &str) -> Result<Vec<TaskEntity>, RepositoryError>;
+    async fn list_task_entities_by_type(&self, tenant_id: &str, task_type: &str) -> Result<Vec<TaskEntity>, RepositoryError>;
     async fn update_task_entity(&self, task_entity: TaskEntity) -> Result<TaskEntity, RepositoryError>;
     async fn delete_task_entity(&self, tenant_id: &str, id: &str) -> Result<(), RepositoryError>;
 }

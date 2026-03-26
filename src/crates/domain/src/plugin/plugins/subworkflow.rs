@@ -67,9 +67,14 @@ impl PluginInterface for SubWorkflowPlugin {
                 anyhow::anyhow!("Failed to load sub-workflow template: {}", e)
             })?;
 
-        let child_context = template.input_mapping
-            .clone()
-            .unwrap_or(workflow_instance.context.clone());
+        let mut child_context = workflow_instance.context.clone();
+        if !template.form.is_empty() {
+            if let serde_json::Value::Object(ref mut ctx) = child_context {
+                for field in &template.form {
+                    ctx.insert(field.key.clone(), serde_json::to_value(&field.value).unwrap_or_default());
+                }
+            }
+        }
 
         let parent_ctx = WorkflowCallerContext {
             workflow_instance_id: workflow_instance.workflow_instance_id.clone(),

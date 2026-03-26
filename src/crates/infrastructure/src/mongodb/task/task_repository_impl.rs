@@ -135,6 +135,14 @@ impl TaskEntityRepository for TaskRepositoryImpl {
         Ok(results)
     }
 
+    async fn list_task_entities_by_type(&self, tenant_id: &str, task_type: &str) -> Result<Vec<TaskEntity>, RepositoryError> {
+        let cursor = self.collection
+            .find(doc! {"tenant_id": tenant_id, "task_type": task_type})
+            .await?;
+        let results: Vec<TaskEntity> = cursor.try_collect().await?;
+        Ok(results)
+    }
+
     async fn update_task_entity(&self, task_entity: TaskEntity) -> Result<TaskEntity, RepositoryError> {
         let filter = doc! {"tenant_id": &task_entity.tenant_id, "id": &task_entity.id};
         self.collection.replace_one(filter, &task_entity).await?;

@@ -27,6 +27,7 @@ export interface WorkflowMetaEntity {
 export interface WorkflowNodeEntity {
   node_id: string
   node_type: TaskType
+  task_id?: string | null
   config: TaskTemplate
   context: JsonValue
   next_node: string | null

@@ -66,8 +66,7 @@ export interface ForkJoinTemplate {
 export interface SubWorkflowTemplate {
   workflow_meta_id: string
   workflow_version: number
-  input_mapping: JsonValue | null
-  output_path: string | null
+  form: FormField[]
   timeout: number | null
 }
 

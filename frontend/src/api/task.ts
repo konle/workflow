@@ -5,8 +5,8 @@ export const taskApi = {
   create: (data: Partial<TaskEntity>) =>
     request.post<any, { data: TaskEntity }>('/task', data),
 
-  list: () =>
-    request.get<any, { data: TaskEntity[] }>('/task'),
+  list: (params?: { task_type?: string }) =>
+    request.get<any, { data: TaskEntity[] }>('/task', { params }),
 
   get: (id: string) =>
     request.get<any, { data: TaskEntity }>(`/task/${id}`),
