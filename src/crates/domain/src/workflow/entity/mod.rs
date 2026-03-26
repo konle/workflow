@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::shared::form::Form;
 use crate::shared::job::WorkflowCallerContext;
 use crate::shared::workflow::{TaskType, WorkflowInstanceStatus};
@@ -27,6 +29,7 @@ pub struct WorkflowEntity {
     pub version: u32, // 工作流版本
     pub workflow_meta_id: String, // 工作流模板ID + version组成唯一性索引
     pub status: WorkflowStatus,
+    pub entry_node: String, // 入口节点
     pub nodes: Vec<WorkflowNodeEntity>,
 }
 
@@ -61,6 +64,27 @@ pub struct WorkflowInstanceEntity {
     pub parent_context: Option<WorkflowCallerContext>,
     pub depth: u32,
 }
+
+impl fmt::Display for WorkflowInstanceEntity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "WorkflowInstanceEntity(instance_id={}, tenant_id={}, workflow_meta_id={}, version={}, status={:?}, current_node={}, entry_node={}, epoch={}, depth={}, nodes={:?})",
+            self.workflow_instance_id,
+            self.tenant_id,
+            self.workflow_meta_id,
+            self.workflow_version,
+            self.status,
+            self.current_node,
+            self.entry_node,
+            self.epoch,
+            self.depth,
+            self.nodes
+        )
+    }
+}
+
+
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NodeExecutionStatus {

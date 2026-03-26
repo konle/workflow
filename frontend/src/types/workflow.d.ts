@@ -37,6 +37,7 @@ export interface WorkflowEntity {
   workflow_meta_id: string
   version: number
   status: WorkflowStatus
+  entry_node: string
   nodes: WorkflowNodeEntity[]
   created_at: string
   updated_at: string

@@ -60,7 +60,7 @@ impl WorkflowInstanceStatus {
     ///   Pending   -> Running
     ///   Running   -> Completed | Failed | Suspended | Await
     ///   Failed    -> Pending (retry) | Canceled
-    ///   Suspended -> Running (resume) | Canceled
+    ///   Suspended -> Pending (resume) | Canceled
     ///   Completed -> (terminal)
     ///   Canceled  -> (terminal)
     ///   Await     -> Pending
@@ -74,7 +74,7 @@ impl WorkflowInstanceStatus {
                 | (WorkflowInstanceStatus::Running, WorkflowInstanceStatus::Await)
                 | (WorkflowInstanceStatus::Failed, WorkflowInstanceStatus::Pending)
                 | (WorkflowInstanceStatus::Failed, WorkflowInstanceStatus::Canceled)
-                | (WorkflowInstanceStatus::Suspended, WorkflowInstanceStatus::Running)
+                | (WorkflowInstanceStatus::Suspended, WorkflowInstanceStatus::Pending)
                 | (WorkflowInstanceStatus::Suspended, WorkflowInstanceStatus::Canceled)
                 | (WorkflowInstanceStatus::Await, WorkflowInstanceStatus::Pending)
         )

@@ -6,7 +6,7 @@ mongo_url = "mongodb://127.0.0.1:27017"
 redis_url = "redis://127.0.0.1:6379"
 
 [log]
-level = "info"
+level = "debug"
 format = "pretty"
 
 [security]

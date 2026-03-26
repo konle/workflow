@@ -37,6 +37,7 @@ pub struct UpdateWorkflowMetaRequest {
 
 #[derive(Deserialize)]
 pub struct SaveWorkflowTemplateRequest {
+    pub entry_node: String,
     pub version: u32,
     pub status: WorkflowStatus,
     pub nodes: Vec<WorkflowNodeEntity>,
@@ -145,6 +146,7 @@ async fn save_workflow_template(
     let now = Utc::now();
     let entity = WorkflowEntity {
         workflow_meta_id,
+        entry_node: req.entry_node,
         version: req.version,
         status: req.status,
         nodes: req.nodes,

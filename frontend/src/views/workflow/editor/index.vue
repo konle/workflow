@@ -640,6 +640,17 @@ function formFieldsToFormArray(fields: EditorFormField[]): FormField[] {
   })
 }
 
+function computeEntryNodeId(): string {
+  if (nodes.value.length === 0) return ''
+  const inDegree = new Map<string, number>()
+  for (const n of nodes.value) inDegree.set(n.id, 0)
+  for (const e of edges.value) {
+    inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1)
+  }
+  const candidate = nodes.value.find(n => (inDegree.get(n.id) || 0) === 0)
+  return candidate?.id || nodes.value[0].id
+}
+
 function buildWorkflowEntity(): any {
   const nextNodeMap = new Map<string, string>()
   const thenMap = new Map<string, string>()
@@ -682,7 +693,13 @@ function buildWorkflowEntity(): any {
     let context: any = {}; try { context = JSON.parse(d.contextJson || '{}') } catch {}
     return { node_id: n.id, node_type: d.nodeType, task_id: taskId, config, context, next_node: d.nodeType === 'IfCondition' ? null : (nextNodeMap.get(n.id) || null) }
   })
-  return { workflow_meta_id: metaId, version: currentVersion.value || 1, status: 'Draft', nodes: workflowNodes }
+  return {
+    workflow_meta_id: metaId,
+    version: currentVersion.value || 1,
+    status: 'Draft',
+    entry_node: computeEntryNodeId(),
+    nodes: workflowNodes,
+  }
 }
 
 async function handleSave() {

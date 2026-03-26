@@ -6,7 +6,7 @@ use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface}
 use crate::plugin::rhai_engine;
 use crate::shared::workflow::TaskType;
 use crate::task::entity::TaskTemplate;
-use crate::workflow::entity::{WorkflowInstanceEntity, WorkflowNodeInstanceEntity};
+use crate::workflow::entity::{NodeOutput, WorkflowInstanceEntity, WorkflowNodeInstanceEntity};
 
 pub struct IfConditionPlugin {}
 
@@ -55,6 +55,15 @@ impl PluginInterface for IfConditionPlugin {
         } else {
             template.else_task.clone()
         };
+        node_instance.output = Some(NodeOutput { data: serde_json::json!(
+            { 
+                "if_condition_result": result, 
+                "next_node": next_node, 
+                "then_task": template.then_task.clone(), 
+                "else_task": template.else_task.clone(),
+                "condition": template.condition.clone(),
+            }) 
+        });
 
         debug!(
             node_id = %node_instance.node_id,

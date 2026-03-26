@@ -348,6 +348,7 @@ interface WorkflowEntity {
   workflow_meta_id: string
   version: number
   status: WorkflowStatus
+  entry_node: string
   nodes: WorkflowNodeEntity[]
   created_at: string
   updated_at: string
@@ -763,6 +764,7 @@ WorkflowEntity {
   workflow_meta_id,
   version,
   status,
+  entry_node,   // 入口节点ID（优先取入度为0的节点，兜底为第一个节点）
   nodes: [
     {
       node_id: "node_1",

@@ -100,9 +100,7 @@ impl WorkflowInstanceService {
         let now = Utc::now();
         let instance_id = Uuid::new_v4().to_string();
 
-        let entry_node = workflow_entity.nodes.first()
-            .map(|n| n.node_id.clone())
-            .unwrap_or_default();
+        let entry_node = workflow_entity.entry_node.clone();
 
         let nodes: Vec<WorkflowNodeInstanceEntity> = workflow_entity.nodes.iter().map(|node| {
             let task_instance_id = Uuid::new_v4().to_string();
@@ -112,8 +110,8 @@ impl WorkflowInstanceService {
                 task_instance: TaskInstanceEntity {
                     id: task_instance_id.clone(),
                     tenant_id: tenant_id.to_string(),
-                    task_id: String::new(),
-                    task_name: String::new(),
+                    task_id: node.task_id.clone().unwrap_or_default(),
+                    task_name: String::from(""),
                     task_type: node.node_type.clone(),
                     task_template: node.config.clone(),
                     task_status: TaskInstanceStatus::Pending,
@@ -243,6 +241,18 @@ impl WorkflowInstanceService {
         ).await
     }
 
+    /// Running -> Await (yield CPU and wait for async callback)
+    pub async fn await_instance(
+        &self,
+        workflow_instance_id: &str,
+    ) -> Result<WorkflowInstanceEntity, RepositoryError> {
+        self.transfer_status(
+            workflow_instance_id,
+            &WorkflowInstanceStatus::Running,
+            &WorkflowInstanceStatus::Await,
+        ).await
+    }
+
     /// Failed -> Pending (user chooses to retry)
     pub async fn retry_instance(
         &self,
@@ -255,7 +265,7 @@ impl WorkflowInstanceService {
         ).await
     }
 
-    /// Suspended -> Running (user approves / chooses to continue)
+    /// Suspended -> Pending (user approves / chooses to continue)
     pub async fn resume_instance(
         &self,
         workflow_instance_id: &str,
@@ -263,7 +273,19 @@ impl WorkflowInstanceService {
         self.transfer_status(
             workflow_instance_id,
             &WorkflowInstanceStatus::Suspended,
-            &WorkflowInstanceStatus::Running,
+            &WorkflowInstanceStatus::Pending,
+        ).await
+    }
+
+    /// Await -> Pending (callback received, ready to be scheduled again)
+    pub async fn wake_from_await(
+        &self,
+        workflow_instance_id: &str,
+    ) -> Result<WorkflowInstanceEntity, RepositoryError> {
+        self.transfer_status(
+            workflow_instance_id,
+            &WorkflowInstanceStatus::Await,
+            &WorkflowInstanceStatus::Pending,
         ).await
     }
 

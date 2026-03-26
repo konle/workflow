@@ -29,7 +29,7 @@ sequenceDiagram
     WW->>DB: 1. 读取 WorkflowInstance
     WW->>WW: 2. Manager 调用 Plugin::execute (如 HttpPlugin)
     WW->>RQ: 3. 发送 ExecuteTaskJob (包含 CallerContext)
-    WW->>DB: 4. 将 Node 置为 Suspended 并保存状态
+    WW->>DB: 4. 将 WorkflowInstance 置为 Await 并保存状态（让出 CPU）
 
     Note over RQ, DB: 2. 任务消费与执行阶段
     RQ->>TW: 5. 消费 ExecuteTaskJob
@@ -43,6 +43,30 @@ sequenceDiagram
     WW->>WW: 11. 路由给对应 Plugin 的 handle_callback 吸收执行结果
     WW->>DB: 12. 更新 Node 状态并持久化，继续执行下一节点
 ```
+
+### 1.3 WorkflowInstance 状态机（统一语义）
+
+为避免 `Suspended` 语义混淆（人工暂停 vs 技术性等待），状态机约束如下：
+
+| 当前状态 | 触发事件 | 目标状态 | 说明 |
+|------|------|------|------|
+| `Pending` | Worker 拉起执行（Start） | `Running` | 进入执行态 |
+| `Running` | 分发异步子任务后让出 CPU | `Await` | 系统等待回调，不是人工暂停 |
+| `Running` | 审批节点进入人工等待 | `Suspended` | 仅人工介入场景 |
+| `Running` | 正常结束 | `Completed` | 终态 |
+| `Running` | 执行失败 | `Failed` | 终态（可重试） |
+| `Running` | 用户取消 | `Canceled` | 终态 |
+| `Await` | 收到回调并恢复调度 | `Pending` | 统一回到安全边界，再由 Worker 重新进入 `Running` |
+| `Await` | 用户取消 | `Canceled` | 终态 |
+| `Suspended` | 用户恢复/审批通过 | `Pending` | 不允许直达 `Running`，避免无锁恢复风险 |
+| `Suspended` | 用户取消 | `Canceled` | 终态 |
+| `Failed` | 用户重试 | `Pending` | 重新调度 |
+
+关键约束：
+
+1. `Await -> Pending`（禁止 `Await -> Running`）
+2. `Suspended -> Pending`（禁止 `Suspended -> Running`）
+3. `Pending` 是统一安全边界，只有 Worker 持锁执行时才进入 `Running`
 
 ---
 

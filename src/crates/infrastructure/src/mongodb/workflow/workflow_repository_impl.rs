@@ -62,6 +62,7 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionRepositoryImpl {
                 "nodes": mongodb::bson::to_bson(&entity.nodes).map_err(|e| format!("serialize nodes: {}", e))?,
                 "status": mongodb::bson::to_bson(&entity.status).map_err(|e| format!("serialize status: {}", e))?,
                 "updated_at": mongodb::bson::to_bson(&entity.updated_at).map_err(|e| format!("serialize updated_at: {}", e))?,
+                "entry_node": &entity.entry_node,
             },
             "$setOnInsert": {
                 "workflow_meta_id": &entity.workflow_meta_id,

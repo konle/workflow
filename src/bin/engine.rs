@@ -121,6 +121,7 @@ async fn handle_task_job(
 fn create_plugin_manager(
     workflow_definition_svc: WorkflowDefinitionService,
     workflow_instance_svc: Arc<WorkflowInstanceService>,
+    task_instance_svc: Arc<TaskInstanceService>,
     variable_svc: VariableService,
     approval_svc: ApprovalService,
     task_storage: RedisStorage<ExecuteTaskJob>,
@@ -128,6 +129,7 @@ fn create_plugin_manager(
 ) -> Arc<PluginManager> {
     let dispatcher = Arc::new(ApalisDispatcher::new(task_storage, workflow_storage));
     let mut manager = PluginManager::new(workflow_instance_svc.clone(), dispatcher)
+        .with_task_instance_service(task_instance_svc)
         .with_variable_service(variable_svc);
     manager.register(Box::new(domain::plugin::plugins::http::HttpPlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::parallel::ParallelPlugin::new()));
@@ -197,13 +199,21 @@ async fn main() {
 
     let task_repo = Arc::new(infrastructure::mongodb::task::task_repository_impl::TaskInstanceRepositoryImpl::new(mongo_client.clone()));
     let task_svc = Arc::new(TaskInstanceService::new(task_repo));
-    let task_manager = create_task_manager(task_svc);
+    let task_manager = create_task_manager(task_svc.clone());
 
     let wf_storage = consumer::create_workflow_storage(&config.database.redis_url).await;
     let task_storage = consumer::create_task_storage(&config.database.redis_url).await;
     info!("connected to Redis");
 
-    let plugin_manager = create_plugin_manager(workflow_definition_svc, workflow_instance_svc, variable_svc, approval_svc, task_storage.clone(), wf_storage.clone());
+    let plugin_manager = create_plugin_manager(
+        workflow_definition_svc,
+        workflow_instance_svc,
+        task_svc.clone(),
+        variable_svc,
+        approval_svc,
+        task_storage.clone(),
+        wf_storage.clone(),
+    );
 
     let wf_worker = WorkerBuilder::new("workflow-worker")
         .data(plugin_manager.clone())
