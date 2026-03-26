@@ -126,6 +126,12 @@ async fn main() {
     let dispatcher: Arc<dyn domain::shared::job::TaskDispatcher> =
         Arc::new(ApalisDispatcher::new(task_storage, workflow_storage));
 
+    let db = mongo_client.database("workflow");
+    infrastructure::mongodb::indexes::ensure_all_indexes(&db).await.unwrap_or_else(|e| {
+        error!(error = %e, "failed to ensure indexes");
+    });
+    info!("ensured MongoDB indexes");
+
     let task_repo = Arc::new(TaskRepositoryImpl::new(mongo_client.clone()));
     let task_instance_repo = Arc::new(TaskInstanceRepositoryImpl::new(mongo_client.clone()));
     let tenant_repo = Arc::new(TenantRepositoryImpl::new(mongo_client.clone()));
@@ -134,9 +140,6 @@ async fn main() {
     let approval_repo = Arc::new(ApprovalRepositoryImpl::new(mongo_client.clone()));
     let variable_repo = Arc::new(VariableRepositoryImpl::new(mongo_client.clone()));
     let workflow_def_repo = Arc::new(WorkflowDefinitionRepositoryImpl::new(mongo_client.clone()));
-    workflow_def_repo.ensure_indexes().await.unwrap_or_else(|e| {
-        error!(error = %e, "failed to ensure workflow indexes");
-    });
     let workflow_inst_repo = Arc::new(WorkflowInstanceRepositoryImpl::new(mongo_client.clone()));
 
     let task_service = TaskService::new(task_repo);

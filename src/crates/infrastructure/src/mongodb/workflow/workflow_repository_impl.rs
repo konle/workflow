@@ -21,32 +21,6 @@ impl WorkflowDefinitionRepositoryImpl {
         Self { client, database, collection, workflow_meta_collection }
     }
 
-    pub async fn ensure_indexes(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // mongodb 3.4 does not publicly export IndexOptions; use createIndexes command.
-        self.database
-            .run_command(doc! {
-                "createIndexes": "workflow_entities",
-                "indexes": [{
-                    "key": { "workflow_meta_id": 1, "version": 1 },
-                    "name": "uk_workflow_meta_id_version",
-                    "unique": true,
-                }],
-            })
-            .await?;
-
-        self.database
-            .run_command(doc! {
-                "createIndexes": "workflow_meta_entities",
-                "indexes": [{
-                    "key": { "workflow_meta_id": 1 },
-                    "name": "uk_workflow_meta_id",
-                    "unique": true,
-                }],
-            })
-            .await?;
-
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -140,7 +114,26 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionRepositoryImpl {
     }
 
     async fn save_workflow_meta_entity(&self, entity: &WorkflowMetaEntity) -> Result<(), RepositoryError> {
-        self.workflow_meta_collection.insert_one(entity).await?;
+        let filter = doc! { "workflow_meta_id": &entity.workflow_meta_id };
+        let update = doc! {
+            "$set": {
+                "name": &entity.name,
+                "description": &entity.description,
+                "status": mongodb::bson::to_bson(&entity.status).map_err(|e| format!("serialize status: {}", e))?,
+                "form": mongodb::bson::to_bson(&entity.form).map_err(|e| format!("serialize form: {}", e))?,
+                "updated_at": mongodb::bson::to_bson(&entity.updated_at).map_err(|e| format!("serialize updated_at: {}", e))?,
+            },
+            "$setOnInsert": {
+                "workflow_meta_id": &entity.workflow_meta_id,
+                "tenant_id": &entity.tenant_id,
+                "created_at": mongodb::bson::to_bson(&entity.created_at).map_err(|e| format!("serialize created_at: {}", e))?,
+                "deleted_at": mongodb::bson::Bson::Null,
+            }
+        };
+        self.workflow_meta_collection
+            .update_one(filter, update)
+            .upsert(true)
+            .await?;
         Ok(())
     }
 
