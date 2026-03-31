@@ -1,7 +1,7 @@
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::workflow::{TaskType, WorkflowInstanceStatus};
 use crate::shared::job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent};
-use crate::task::entity::TaskInstanceEntity;
+use crate::task::entity::{TaskInstanceEntity, TaskTemplate};
 use crate::task::service::TaskInstanceService;
 use crate::variable::service::VariableService;
 use crate::workflow::entity::{
@@ -500,9 +500,40 @@ impl PluginManager {
         }
 
         let now = chrono::Utc::now();
-        let mut task_instance: TaskInstanceEntity = instance.nodes[node_index].task_instance.clone();
+        let parent = &instance.nodes[node_index].task_instance;
+        let (child_template, child_task_type) = match &parent.task_template {
+            TaskTemplate::Parallel(pt) => {
+                let inner = (*pt.task_template).clone();
+                let tt = inner.task_type();
+                (inner, tt)
+            }
+            TaskTemplate::ForkJoin(fj) => {
+                let idx = job
+                    .caller_context
+                    .as_ref()
+                    .and_then(|c| c.item_index)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("ForkJoin dispatch job missing item_index in caller_context")
+                    })?;
+                let item = fj.tasks.get(idx).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "ForkJoin item_index {} out of range (len {})",
+                        idx,
+                        fj.tasks.len()
+                    )
+                })?;
+                let inner = item.task_template.clone();
+                let tt = inner.task_type();
+                (inner, tt)
+            }
+            _ => (parent.task_template.clone(), parent.task_type.clone()),
+        };
+
+        let mut task_instance: TaskInstanceEntity = parent.clone();
+        task_instance.task_template = child_template;
+        task_instance.task_type = child_task_type;
         task_instance.id = job.task_instance_id.clone();
-        task_instance.task_id = instance.nodes[node_index].task_instance.task_id.clone();
+        task_instance.task_id = parent.task_id.clone();
         task_instance.task_instance_id = job.task_instance_id.clone();
         task_instance.tenant_id = job.tenant_id.clone();
         task_instance.caller_context = job.caller_context.clone();

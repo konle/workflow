@@ -155,6 +155,22 @@ impl Display for TaskTemplate {
     }
 }
 
+impl TaskTemplate {
+    /// Task type of this template leaf (used when materializing child task instances, e.g. Parallel/ForkJoin).
+    pub fn task_type(&self) -> TaskType {
+        match self {
+            TaskTemplate::Http(_) => TaskType::Http,
+            TaskTemplate::Grpc => TaskType::Grpc,
+            TaskTemplate::Approval(_) => TaskType::Approval,
+            TaskTemplate::IfCondition(_) => TaskType::IfCondition,
+            TaskTemplate::ContextRewrite(_) => TaskType::ContextRewrite,
+            TaskTemplate::Parallel(_) => TaskType::Parallel,
+            TaskTemplate::ForkJoin(_) => TaskType::ForkJoin,
+            TaskTemplate::SubWorkflow(_) => TaskType::SubWorkflow,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskEntity {
     pub id: String,
