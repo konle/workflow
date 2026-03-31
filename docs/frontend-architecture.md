@@ -114,8 +114,15 @@ frontend/
 │   │   │   ├── meta/
 │   │   │   │   ├── list.vue         # 工作流 Meta 列表
 │   │   │   │   └── detail.vue       # 工作流 Meta 详情（含版本管理）
-│   │   │   ├── editor/
-│   │   │   │   └── index.vue        # 可视化工作流编排器 (核心页面)
+│   │   │   ├── editor/              # 可视化工作流编排器
+│   │   │   │   ├── index.vue        # 编排器主页面（Vue Flow + 属性面板）
+│   │   │   │   ├── workflow-node.vue
+│   │   │   │   ├── condition-node.vue
+│   │   │   │   ├── published-task-ref-fields.vue   # 已发布原子任务：选择 + 任务信息 + 运行参数
+│   │   │   │   ├── subworkflow-ref-fields.vue      # 子工作流：Meta / 版本 / 运行参数 / 超时
+│   │   │   │   ├── parallel-inner-task-panel.vue   # Parallel 子任务类型与子配置入口
+│   │   │   │   ├── workflow-editor-form-utils.ts   # 编排器表单字段 build / 序列化
+│   │   │   │   └── parallel-inner-task-utils.ts    # Parallel 内层 task_template 默认 / hydrate / 保存
 │   │   │   └── instance/
 │   │   │       ├── list.vue         # 工作流实例列表
 │   │   │       └── detail.vue       # 工作流实例详情（含节点状态）
@@ -667,6 +674,16 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 | `workflow-node.vue` | `workflow` | 所有普通节点 | 顶部 1 个 target + 底部 1 个 source |
 | `condition-node.vue` | `condition` | IfCondition 节点 | 顶部 1 个 target + 底部 2 个 source（`then` 绿色 / `else` 红色） |
 
+**属性面板复用子组件**（与 `index.vue` 同目录）：
+
+| 文件 | 职责 |
+|------|------|
+| `published-task-ref-fields.vue` | Http / Approval / Grpc 节点：已发布任务下拉、只读任务信息、运行参数编辑 |
+| `subworkflow-ref-fields.vue` | SubWorkflow 节点：工作流 Meta、版本、信息、运行参数、超时 |
+| `parallel-inner-task-panel.vue` | Parallel 节点：**子任务类型**（HTTP / gRPC / 子工作流）及对应配置区 |
+| `workflow-editor-form-utils.ts` | `EditorFormField`、模板 form 与编辑器行的双向转换 |
+| `parallel-inner-task-utils.ts` | 内层 `TaskTemplate` 默认值、从 API 回填编辑器状态、保存时写入 `config.Parallel.task_template` |
+
 **连线交互**：
 
 - 从节点底部 source handle 拖拽到另一节点顶部 target handle 创建边（`@connect` 事件处理）
@@ -692,6 +709,7 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 
 - 引用原子任务的节点（Http / Approval / gRPC）：选中任务后展示**任务名称**
 - **SubWorkflow**：展示**工作流名称 + 版本**
+- **Parallel**：在已配置内层子任务时，展示为 `node_id · 子任务名` 或 `node_id · 子工作流名 v{version}`；否则回退 `node_id (Parallel)`
 - **IfCondition** / **ContextRewrite**：展示配置中的 `name`（`config.name`）
 - 以上均不可用时，回退为 `node_id (类型)` 形式
 
@@ -707,13 +725,13 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 
 | 节点类型 | 交互模式 | 属性面板内容 |
 |----------|---------|-------------|
-| **Http** | **引用任务** | 1. 任务选择（搜索下拉，按 task_type=Http 过滤已发布任务）→ 2. 任务信息（只读：URL、Method、超时、重试）→ 3. 运行参数（根据 form 定义渲染，type 仅可选原始类型或 Variable） |
-| **Approval** | **引用任务** | 同上，按 task_type=Approval 过滤，信息展示：标题、审批模式，运行参数同 form |
-| **gRPC** | **引用任务** | 同上，按 task_type=Grpc 过滤 |
-| **SubWorkflow** | **引用工作流** | 1. 工作流选择（搜索下拉）→ 版本选择 → 2. 工作流信息（只读：名称、状态）→ 3. 运行参数（来自 WorkflowMeta.form，type 仅可选原始类型或 Variable）→ 超时 |
+| **Http** | **引用任务** | 由 `published-task-ref-fields.vue` 渲染：1. 任务选择（搜索下拉，按 task_type=Http 过滤已发布任务）→ 2. 任务信息（只读：URL、Method、超时、重试）→ 3. 运行参数（根据 form 定义渲染，type 仅可选原始类型或 Variable） |
+| **Approval** | **引用任务** | 同上组件，按 task_type=Approval 过滤，信息展示：标题、审批模式，运行参数同 form |
+| **gRPC** | **引用任务** | 同上组件，按 task_type=Grpc 过滤 |
+| **SubWorkflow** | **引用工作流** | 由 `subworkflow-ref-fields.vue` 渲染：1. 工作流选择（搜索下拉）→ 版本选择 → 2. 工作流信息（只读：名称、状态）→ 3. 运行参数（来自 WorkflowMeta.form，type 仅可选原始类型或 Variable）→ 超时 |
 | **IfCondition** | **内联配置** | 条件名称、Rhai 表达式、分支连接（Then/Else 目标节点由画布连线决定，属性面板只读显示） |
 | **ContextRewrite** | **内联配置** | 名称、Rhai 脚本、合并模式 (Merge / Replace) |
-| **Parallel** | **内联配置** | items_path、item_alias、子任务模板配置、concurrency、mode (Rolling / Batch)、max_failures |
+| **Parallel** | **内联 + 子任务引用** | 1. **数据与并发**：`items_path`、`item_alias`、`concurrency`、`mode` (Rolling / Batch)、`max_failures`。2. **子任务**（`parallel-inner-task-panel.vue`）：先选 **子任务类型** — **HTTP** / **gRPC** / **子工作流**（与架构文档约定一致：内层须为具备 TaskExecutor 的原子能力；子工作流用于嵌套编排）。HTTP/gRPC 路径复用与顶层原子节点相同的「已发布任务 + 任务信息 + 运行参数」交互（内嵌 `published-task-ref-fields.vue`）；子工作流路径复用「Meta + 版本 + 运行参数 + 超时」（内嵌 `subworkflow-ref-fields.vue`）。持久化字段为 `config.Parallel.task_template`（`TaskTemplate` 联合类型之一），节点级 `task_id` 仍为 `null`。编辑器在 `node.data` 上维护 `parallelInnerKind`、`parallelInnerTaskId`、`parallelInnerFormFields`、`parallelSubWorkflow*` 等仅用于 UI 与保存组装的辅助状态；加载模板后会对「子工作流 + 已选 Meta」补拉版本列表（`GET .../workflow/meta/{id}/template` 列表）。 |
 | **ForkJoin** | **内联配置** | 子任务列表（JSON）、concurrency、mode、max_failures |
 | **通用字段** | — | node_id (只读)、context (JSON 编辑器) |
 
@@ -738,7 +756,7 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
    - **SubWorkflow**：必须填写 `meta_id` 与 `version`
    - **IfCondition**：必须配置条件表达式，且 **Then / Else** 两路均已连线
    - **ContextRewrite**：必须填写脚本
-   - **Parallel**：必须填写 `items_path`
+   - **Parallel**：必须填写非空 `items_path`；且须完整配置**内层子任务**：HTTP 须选择已发布模板（或等价地具备非空 URL 的模板快照）；gRPC 须选择已发布模板；子工作流须选择 Meta 与版本
    - **ForkJoin**：子任务列表须为合法 **JSON** 且通过校验
    - 未满足上述条件的节点：**橙色边框 + 脉冲动画**，保存被阻止并提示
 
@@ -781,6 +799,23 @@ WorkflowEntity {
       context: {},
       next_node: null
     },
+    {
+      node_id: "node_6",
+      node_type: "Parallel",
+      task_id: null,
+      config: {
+        Parallel: {
+          items_path: "users",
+          item_alias: "user",
+          task_template: { Http: { url: "...", method: "Get", ... } },
+          concurrency: 10,
+          mode: "Rolling",
+          max_failures: 2
+        }
+      },
+      context: {},
+      next_node: "node_7"
+    },
     ...
   ]
 }
@@ -802,7 +837,7 @@ POST /api/v1/workflow/meta/{metaId}/template
 - **Ctrl+Z**：撤销；**Ctrl+Shift+Z**：重做（标准重做快捷键）
 - 基于**快照**：每次对 `nodes` + `edges` 做**深拷贝**入栈
 - 历史栈**最多保留 50 步**
-- 在以下操作后会推入新快照：添加节点、连线、删除节点/边、选择任务或子工作流、切换子工作流版本等
+- 在以下操作后会推入新快照：添加节点、连线、删除节点/边、选择任务或子工作流、切换子工作流版本、**Parallel 子任务类型/模板/子工作流或内层运行参数变更**等
 - 画布**左下角**展示快捷键提示文案
 
 #### 6.8.8 版本生命周期（编排器与 Meta 详情联动）

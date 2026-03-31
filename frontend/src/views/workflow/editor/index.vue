@@ -31,7 +31,7 @@
         <VueFlow
           v-model:nodes="nodes"
           v-model:edges="edges"
-          :node-types="customNodeTypes"
+          :node-types="customNodeTypes as any"
           @node-click="onNodeClick"
           @connect="onConnect"
           @edge-click="onEdgeClick"
@@ -62,105 +62,34 @@
 
             <!-- ===== 引用原子任务: Http / Approval / gRPC ===== -->
             <template v-if="isTaskRefNode(selectedNode.data.nodeType)">
-              <a-divider>任务选择</a-divider>
-              <a-form-item label="选择任务模板">
-                <a-select
-                  v-model="selectedNode.data.taskId"
-                  placeholder="搜索并选择已有任务"
-                  allow-search
-                  :disabled="readonly"
-                  @change="onTaskSelected(selectedNode)"
-                >
-                  <a-option
-                    v-for="t in getTasksForType(selectedNode.data.nodeType)"
-                    :key="t.id"
-                    :value="t.id"
-                  >{{ t.name }} ({{ t.status }})</a-option>
-                </a-select>
-              </a-form-item>
-
-              <template v-if="selectedNode.data.taskSnapshot">
-                <a-divider>任务信息</a-divider>
-                <div class="task-info">
-                  <template v-if="selectedNode.data.nodeType === 'Http' && selectedNode.data.taskSnapshot.Http">
-                    <a-descriptions :column="1" size="small" bordered>
-                      <a-descriptions-item label="URL">{{ selectedNode.data.taskSnapshot.Http.url }}</a-descriptions-item>
-                      <a-descriptions-item label="Method">{{ selectedNode.data.taskSnapshot.Http.method }}</a-descriptions-item>
-                      <a-descriptions-item label="超时">{{ selectedNode.data.taskSnapshot.Http.timeout }}s</a-descriptions-item>
-                      <a-descriptions-item label="重试">{{ selectedNode.data.taskSnapshot.Http.retry_count }}次</a-descriptions-item>
-                    </a-descriptions>
-                  </template>
-                  <template v-else-if="selectedNode.data.nodeType === 'Approval' && selectedNode.data.taskSnapshot.Approval">
-                    <a-descriptions :column="1" size="small" bordered>
-                      <a-descriptions-item label="标题">{{ selectedNode.data.taskSnapshot.Approval.title }}</a-descriptions-item>
-                      <a-descriptions-item label="模式">{{ selectedNode.data.taskSnapshot.Approval.approval_mode }}</a-descriptions-item>
-                    </a-descriptions>
-                  </template>
-                  <template v-else-if="selectedNode.data.nodeType === 'Grpc'">
-                    <a-descriptions :column="1" size="small" bordered>
-                      <a-descriptions-item label="类型">gRPC</a-descriptions-item>
-                    </a-descriptions>
-                  </template>
-                </div>
-
-                <template v-if="selectedNode.data.formFields?.length">
-                  <a-divider>运行参数</a-divider>
-                  <div class="form-list">
-                    <div v-for="(f, idx) in selectedNode.data.formFields" :key="idx" class="form-row">
-                      <a-input :model-value="f.key" disabled style="width: 120px" />
-                      <a-input v-model="f.value" :placeholder="f.description || '值'" style="flex: 1" :disabled="readonly" />
-                      <a-select v-model="f.type" style="width: 110px" :disabled="readonly">
-                        <a-option :value="f.originalType">{{ f.originalType }}</a-option>
-                        <a-option v-if="f.originalType !== 'Variable'" value="Variable">Variable</a-option>
-                      </a-select>
-                    </div>
-                  </div>
-                </template>
-              </template>
+              <PublishedTaskRefFields
+                v-model:task-id="selectedNode.data.taskId"
+                v-model:form-fields="selectedNode.data.formFields"
+                :task-type="selectedNode.data.nodeType"
+                :tasks="getTasksForType(selectedNode.data.nodeType)"
+                :task-snapshot="selectedNode.data.taskSnapshot"
+                :readonly="readonly"
+                @change="onTaskSelected(selectedNode)"
+                @update:form-fields="pushSnapshot"
+              />
             </template>
 
             <!-- ===== 引用工作流: SubWorkflow ===== -->
             <template v-else-if="selectedNode.data.nodeType === 'SubWorkflow'">
-              <a-divider>工作流选择</a-divider>
-              <a-form-item label="选择工作流">
-                <a-select
-                  v-model="selectedNode.data.subWorkflowMetaId"
-                  placeholder="搜索并选择已有工作流"
-                  allow-search
-                  :disabled="readonly"
-                  @change="onSubWorkflowMetaSelected(selectedNode)"
-                >
-                  <a-option v-for="m in workflowMetas" :key="m.workflow_meta_id" :value="m.workflow_meta_id">{{ m.name }} ({{ m.status }})</a-option>
-                </a-select>
-              </a-form-item>
-              <a-form-item v-if="selectedNode.data.subWorkflowVersions?.length" label="版本">
-                <a-select v-model="selectedNode.data.subWorkflowVersion" :disabled="readonly" @change="onSubWorkflowVersionSelected(selectedNode)">
-                  <a-option v-for="v in selectedNode.data.subWorkflowVersions" :key="v.version" :value="v.version">v{{ v.version }} ({{ v.nodes?.length || 0 }}节点)</a-option>
-                </a-select>
-              </a-form-item>
-              <template v-if="selectedNode.data.subWorkflowMeta">
-                <a-divider>工作流信息</a-divider>
-                <a-descriptions :column="1" size="small" bordered>
-                  <a-descriptions-item label="名称">{{ selectedNode.data.subWorkflowMeta.name }}</a-descriptions-item>
-                  <a-descriptions-item label="状态">{{ selectedNode.data.subWorkflowMeta.status }}</a-descriptions-item>
-                </a-descriptions>
-                <template v-if="selectedNode.data.formFields?.length">
-                  <a-divider>运行参数</a-divider>
-                  <div class="form-list">
-                    <div v-for="(f, idx) in selectedNode.data.formFields" :key="idx" class="form-row">
-                      <a-input :model-value="f.key" disabled style="width: 120px" />
-                      <a-input v-model="f.value" :placeholder="f.description || '值'" style="flex: 1" :disabled="readonly" />
-                      <a-select v-model="f.type" style="width: 110px" :disabled="readonly">
-                        <a-option :value="f.originalType">{{ f.originalType }}</a-option>
-                        <a-option v-if="f.originalType !== 'Variable'" value="Variable">Variable</a-option>
-                      </a-select>
-                    </div>
-                  </div>
-                </template>
-              </template>
-              <a-form-item label="超时(秒)">
-                <a-input-number v-model="selectedNode.data.config.timeout" :min="0" placeholder="不填则不超时" :disabled="readonly" />
-              </a-form-item>
+              <SubworkflowRefFields
+                v-model:meta-id="selectedNode.data.subWorkflowMetaId"
+                v-model:version="selectedNode.data.subWorkflowVersion"
+                v-model:timeout="selectedNode.data.config.timeout"
+                v-model:form-fields="selectedNode.data.formFields"
+                :sub-workflow-meta="selectedNode.data.subWorkflowMeta"
+                :sub-workflow-versions="selectedNode.data.subWorkflowVersions"
+                :workflow-metas="workflowMetas"
+                :readonly="readonly"
+                @meta-change="onSubWorkflowMetaSelected(selectedNode)"
+                @version-change="onSubWorkflowVersionSelected(selectedNode)"
+                @update:timeout="pushSnapshot"
+                @update:form-fields="pushSnapshot"
+              />
             </template>
 
             <!-- ===== IfCondition ===== -->
@@ -199,23 +128,30 @@
             <!-- ===== Parallel ===== -->
             <template v-else-if="selectedNode.data.nodeType === 'Parallel'">
               <a-form-item label="数据路径 (items_path)">
-                <a-input v-model="selectedNode.data.config.items_path" :disabled="readonly" />
+                <a-input v-model="selectedNode.data.config.items_path" :disabled="readonly" @change="pushSnapshot" />
               </a-form-item>
               <a-form-item label="迭代变量名 (item_alias)">
-                <a-input v-model="selectedNode.data.config.item_alias" :disabled="readonly" />
+                <a-input v-model="selectedNode.data.config.item_alias" :disabled="readonly" @change="pushSnapshot" />
               </a-form-item>
               <a-form-item label="并发度">
-                <a-input-number v-model="selectedNode.data.config.concurrency" :min="1" :disabled="readonly" />
+                <a-input-number v-model="selectedNode.data.config.concurrency" :min="1" :disabled="readonly" @change="pushSnapshot" />
               </a-form-item>
               <a-form-item label="模式">
-                <a-select v-model="selectedNode.data.config.mode" :disabled="readonly">
+                <a-select v-model="selectedNode.data.config.mode" :disabled="readonly" @change="pushSnapshot">
                   <a-option value="Rolling">Rolling</a-option>
                   <a-option value="Batch">Batch</a-option>
                 </a-select>
               </a-form-item>
               <a-form-item label="最大失败数">
-                <a-input-number v-model="selectedNode.data.config.max_failures" :min="0" :disabled="readonly" />
+                <a-input-number v-model="selectedNode.data.config.max_failures" :min="0" :disabled="readonly" @change="pushSnapshot" />
               </a-form-item>
+              <ParallelInnerTaskPanel
+                :node-data="selectedNode.data"
+                :task-cache="taskCache"
+                :workflow-metas="workflowMetas"
+                :readonly="readonly"
+                @change="onParallelInnerPanelChange"
+              />
             </template>
 
             <!-- ===== ForkJoin ===== -->
@@ -272,11 +208,21 @@ import { MiniMap } from '@vue-flow/minimap'
 import { workflowApi } from '../../../api/workflow'
 import { taskApi } from '../../../api/task'
 import { Notification, Modal } from '@arco-design/web-vue'
-import type { TaskEntity, FormField } from '../../../types/task'
+import type { TaskEntity } from '../../../types/task'
 import type { WorkflowMetaEntity } from '../../../types/workflow'
 import dagre from 'dagre'
 import WorkflowNode from './workflow-node.vue'
 import ConditionNode from './condition-node.vue'
+import PublishedTaskRefFields from './published-task-ref-fields.vue'
+import SubworkflowRefFields from './subworkflow-ref-fields.vue'
+import ParallelInnerTaskPanel from './parallel-inner-task-panel.vue'
+import { buildFormFields, formFieldsToFormArray, type EditorFormField } from './workflow-editor-form-utils'
+import {
+  buildParallelTaskTemplateForSave,
+  defaultParallelInnerTemplate,
+  detectParallelInnerKind,
+  hydrateParallelEditorState,
+} from './parallel-inner-task-utils'
 
 const customNodeTypes = {
   workflow: markRaw(WorkflowNode),
@@ -320,7 +266,20 @@ const nodeTypes = [
   { type: 'Approval', label: '审批', color: '#F77234' },
 ]
 
-interface EditorFormField { key: string; value: any; type: string; originalType: string; description: string }
+function parallelNodeDataDefaults() {
+  return {
+    parallelInnerKind: 'Http',
+    parallelInnerTaskId: null as string | null,
+    parallelInnerSnapshot: null as Record<string, unknown> | string | null,
+    parallelInnerFormFields: [] as EditorFormField[],
+    parallelSubWorkflowMetaId: null as string | null,
+    parallelSubWorkflowVersion: null as number | null,
+    parallelSubWorkflowMeta: null as WorkflowMetaEntity | null,
+    parallelSubWorkflowVersions: [] as { version: number; nodes?: unknown[] }[],
+    parallelSubWorkflowFormFields: [] as EditorFormField[],
+    parallelSubWorkflowTimeout: null as number | null,
+  }
+}
 
 function getDefaultConfig(type: string): any {
   switch (type) {
@@ -328,17 +287,21 @@ function getDefaultConfig(type: string): any {
     case 'SubWorkflow': return { timeout: null }
     case 'IfCondition': return { name: '', condition: '' }
     case 'ContextRewrite': return { name: '', script: '', merge_mode: 'Merge' }
-    case 'Parallel': return { items_path: '', item_alias: 'item', concurrency: 10, mode: 'Rolling', max_failures: null, task_template: null }
+    case 'Parallel':
+      return {
+        items_path: '',
+        item_alias: 'item',
+        concurrency: 10,
+        mode: 'Rolling',
+        max_failures: null,
+        task_template: defaultParallelInnerTemplate('Http'),
+      }
     case 'ForkJoin': return { concurrency: 5, mode: 'Rolling', max_failures: null, tasksJson: '[]' }
     default: return {}
   }
 }
 
 function getVueFlowNodeType(t: string) { return t === 'IfCondition' ? 'condition' : 'workflow' }
-
-function buildFormFields(formDef: FormField[]): EditorFormField[] {
-  return formDef.map(f => ({ key: f.key, value: f.value ?? '', type: f.type || 'String', originalType: f.type || 'String', description: f.description || '' }))
-}
 
 // ---- Node label ----
 
@@ -351,6 +314,17 @@ function resolveLabel(nodeId: string, nodeType: string, data: any): string {
     const ver = data.subWorkflowVersion ? ` v${data.subWorkflowVersion}` : ''
     return `${data.subWorkflowMeta.name}${ver}`
   }
+  if (nodeType === 'Parallel') {
+    const kind = data.parallelInnerKind || detectParallelInnerKind(data.config?.task_template)
+    if ((kind === 'Http' || kind === 'Grpc') && data.parallelInnerTaskId) {
+      const task = taskCache.value.find(t => t.id === data.parallelInnerTaskId)
+      if (task) return `${nodeId} · ${task.name}`
+    }
+    if (kind === 'SubWorkflow' && data.parallelSubWorkflowMeta) {
+      const ver = data.parallelSubWorkflowVersion != null ? ` v${data.parallelSubWorkflowVersion}` : ''
+      return `${nodeId} · ${data.parallelSubWorkflowMeta.name}${ver}`
+    }
+  }
   if (['IfCondition', 'ContextRewrite'].includes(nodeType) && data.config?.name) {
     return data.config.name
   }
@@ -358,18 +332,23 @@ function resolveLabel(nodeId: string, nodeType: string, data: any): string {
 }
 
 function updateNodeLabel(node: Node) {
-  node.data = { ...node.data, label: resolveLabel(node.id, node.data.nodeType, node.data) }
+  const d = node.data as Record<string, unknown>
+  d.label = resolveLabel(node.id, String(d.nodeType), d)
 }
 
 // ---- IfCondition edge helpers ----
 
 function getThenTarget(nodeId: string): string {
-  const e = edges.value.find(e => e.source === nodeId && e.sourceHandle === 'then')
-  return e ? e.target : '(未连接)'
+  for (const e of edges.value) {
+    if (e.source === nodeId && e.sourceHandle === 'then') return e.target
+  }
+  return '(未连接)'
 }
 function getElseTarget(nodeId: string): string {
-  const e = edges.value.find(e => e.source === nodeId && e.sourceHandle === 'else')
-  return e ? e.target : '(未连接)'
+  for (const e of edges.value) {
+    if (e.source === nodeId && e.sourceHandle === 'else') return e.target
+  }
+  return '(未连接)'
 }
 
 // ---- Task / SubWorkflow selection ----
@@ -399,6 +378,25 @@ async function onSubWorkflowMetaSelected(node: Node) {
   pushSnapshot()
 }
 function onSubWorkflowVersionSelected(node: Node) { updateNodeLabel(node); pushSnapshot() }
+
+function onParallelInnerPanelChange() {
+  const node = selectedNode.value as Node | null
+  if (!node) return
+  const d = node.data as Record<string, unknown>
+  d.label = resolveLabel(node.id, String(d.nodeType), d as any)
+  pushSnapshot()
+}
+
+async function refreshParallelSubWorkflowVersions(data: Record<string, unknown>) {
+  const id = data.parallelSubWorkflowMetaId as string | null
+  if (!id) return
+  try {
+    const res = await workflowApi.listTemplates(id)
+    data.parallelSubWorkflowVersions = res.data
+  } catch {
+    data.parallelSubWorkflowVersions = []
+  }
+}
 
 // ---- Undo / Redo ----
 
@@ -475,8 +473,11 @@ function onEdgeClick({ edge }: { edge: Edge }) { selectedEdge.value = edge; sele
 function onPaneClick() { selectedNode.value = null; selectedEdge.value = null }
 
 function deleteSelectedEdge() {
-  if (!selectedEdge.value || readonly.value) return
-  edges.value = edges.value.filter(e => e.id !== selectedEdge.value!.id)
+  const cur = selectedEdge.value
+  if (!cur || readonly.value) return
+  const dropId = cur.id
+  const next = (edges.value as unknown as Edge[]).filter(e => e.id !== dropId)
+  edges.value = next as typeof edges.value
   selectedEdge.value = null
   pushSnapshot()
 }
@@ -525,15 +526,20 @@ function onDrop(event: DragEvent) {
   const position = screenToFlowCoordinate({ x: event.clientX, y: event.clientY })
   const id = `node_${++nodeCounter}`
   const color = nodeTypes.find(n => n.type === type)?.color || '#86909C'
-  nodes.value.push({
-    id, type: getVueFlowNodeType(type), position,
-    data: {
-      label: `${id} (${type})`, nodeType: type, color, dangling: false, configError: false,
-      config: getDefaultConfig(type), contextJson: '{}',
-      taskId: null, taskSnapshot: null, formFields: [],
-      subWorkflowMetaId: null, subWorkflowVersion: null, subWorkflowMeta: null, subWorkflowVersions: [],
-    },
-  })
+  const baseData: Record<string, unknown> = {
+    label: `${id} (${type})`, nodeType: type, color, dangling: false, configError: false,
+    config: getDefaultConfig(type), contextJson: '{}',
+    taskId: null, taskSnapshot: null, formFields: [],
+    subWorkflowMetaId: null, subWorkflowVersion: null, subWorkflowMeta: null, subWorkflowVersions: [],
+  }
+  if (type === 'Parallel') Object.assign(baseData, parallelNodeDataDefaults())
+  const newNode = {
+    id,
+    type: getVueFlowNodeType(type),
+    position,
+    data: baseData as unknown as Node['data'],
+  }
+  ;(nodes.value as unknown as Node[]).push(newNode as Node)
   pushSnapshot()
 }
 
@@ -542,8 +548,13 @@ function onDrop(event: DragEvent) {
 function findDanglingNodes(): string[] {
   if (nodes.value.length <= 1) return []
   const connected = new Set<string>()
-  for (const e of edges.value) { connected.add(e.source); connected.add(e.target) }
-  return nodes.value.filter(n => !connected.has(n.id)).map(n => n.id)
+  const edgeList = edges.value as unknown as Edge[]
+  for (const e of edgeList) {
+    connected.add(e.source)
+    connected.add(e.target)
+  }
+  const nodeList = nodes.value as unknown as Node[]
+  return nodeList.filter(n => !connected.has(n.id)).map(n => n.id)
 }
 
 interface ValidationError { nodeId: string; message: string }
@@ -571,8 +582,25 @@ function validateNodeConfigs(): ValidationError[] {
     if (type === 'ContextRewrite' && !d.config?.script) {
       errors.push({ nodeId: n.id, message: `${n.id}: 脚本为空` })
     }
-    if (type === 'Parallel' && !d.config?.items_path) {
-      errors.push({ nodeId: n.id, message: `${n.id}: items_path 为空` })
+    if (type === 'Parallel') {
+      if (!d.config?.items_path?.trim()) {
+        errors.push({ nodeId: n.id, message: `${n.id}: items_path 为空` })
+      }
+      const innerKind = d.parallelInnerKind || detectParallelInnerKind(d.config?.task_template)
+      if (innerKind === 'Http') {
+        const url = d.config?.task_template?.Http?.url
+        if (!d.parallelInnerTaskId && (!url || String(url).trim() === '')) {
+          errors.push({ nodeId: n.id, message: `${n.id}: 请为并发容器选择 HTTP 子任务模板` })
+        }
+      } else if (innerKind === 'Grpc') {
+        if (!d.parallelInnerTaskId) {
+          errors.push({ nodeId: n.id, message: `${n.id}: 请为并发容器选择 gRPC 子任务模板` })
+        }
+      } else if (innerKind === 'SubWorkflow') {
+        if (!d.parallelSubWorkflowMetaId || d.parallelSubWorkflowVersion == null) {
+          errors.push({ nodeId: n.id, message: `${n.id}: 请为并发容器选择子工作流及版本` })
+        }
+      }
     }
     if (type === 'ForkJoin') {
       try { const t = JSON.parse(d.config?.tasksJson || '[]'); if (!Array.isArray(t) || t.length === 0) throw 0 }
@@ -632,23 +660,17 @@ function clearMarks() {
 
 // ---- Build & Save ----
 
-function formFieldsToFormArray(fields: EditorFormField[]): FormField[] {
-  return fields.filter(f => f.key.trim() !== '').map(f => {
-    const field: FormField = { key: f.key, value: f.value, type: f.type as any }
-    if (f.description) field.description = f.description
-    return field
-  })
-}
-
 function computeEntryNodeId(): string {
-  if (nodes.value.length === 0) return ''
+  const nodeList = nodes.value as unknown as Node[]
+  if (nodeList.length === 0) return ''
   const inDegree = new Map<string, number>()
-  for (const n of nodes.value) inDegree.set(n.id, 0)
-  for (const e of edges.value) {
+  for (const n of nodeList) inDegree.set(n.id, 0)
+  const edgeList = edges.value as unknown as Edge[]
+  for (const e of edgeList) {
     inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1)
   }
-  const candidate = nodes.value.find(n => (inDegree.get(n.id) || 0) === 0)
-  return candidate?.id || nodes.value[0].id
+  const candidate = nodeList.find(n => (inDegree.get(n.id) || 0) === 0)
+  return candidate?.id || nodeList[0].id
 }
 
 function buildWorkflowEntity(): any {
@@ -677,7 +699,17 @@ function buildWorkflowEntity(): any {
         case 'ContextRewrite':
           config = { ContextRewrite: { name: d.config.name, script: d.config.script, merge_mode: d.config.merge_mode || 'Merge' } }; break
         case 'Parallel':
-          config = { Parallel: { items_path: d.config.items_path, item_alias: d.config.item_alias, task_template: d.config.task_template || { Http: { url: '', method: 'Get', headers: [], body: [], form: [], retry_count: 0, retry_delay: 0, timeout: 30, success_condition: null } }, concurrency: d.config.concurrency || 10, mode: d.config.mode || 'Rolling', max_failures: d.config.max_failures } }; break
+          config = {
+            Parallel: {
+              items_path: d.config.items_path,
+              item_alias: d.config.item_alias,
+              task_template: buildParallelTaskTemplateForSave(d),
+              concurrency: d.config.concurrency || 10,
+              mode: d.config.mode || 'Rolling',
+              max_failures: d.config.max_failures,
+            },
+          }
+          break
         case 'ForkJoin': {
           let tasks: any[] = []; try { tasks = JSON.parse(d.config.tasksJson || '[]') } catch {}
           config = { ForkJoin: { tasks, concurrency: d.config.concurrency || 5, mode: d.config.mode || 'Rolling', max_failures: d.config.max_failures } }; break
@@ -739,7 +771,7 @@ async function handleSave() {
 
 // ---- Load from entity ----
 
-function loadFromEntity(entity: any) {
+async function loadFromEntity(entity: any) {
   const g = new dagre.graphlib.Graph()
   g.setGraph({ rankdir: 'LR', nodesep: 60, ranksep: 100 })
   g.setDefaultEdgeLabel(() => ({}))
@@ -788,15 +820,26 @@ function loadFromEntity(entity: any) {
       config = { concurrency: f.concurrency, mode: f.mode, max_failures: f.max_failures, tasksJson: JSON.stringify(f.tasks, null, 2) }
     }
 
-    const data = {
+    const data: Record<string, unknown> = {
       label: '', nodeType: type, color, dangling: false, configError: false, config,
       contextJson: JSON.stringify(n.context || {}, null, 2),
       taskId, taskSnapshot, formFields, subWorkflowMetaId, subWorkflowVersion, subWorkflowMeta, subWorkflowVersions: [],
+    }
+    if (type === 'Parallel') {
+      Object.assign(data, parallelNodeDataDefaults())
+      hydrateParallelEditorState(data, taskCache.value, workflowMetas.value)
     }
     data.label = resolveLabel(n.node_id, type, data)
 
     return { id: n.node_id, type: getVueFlowNodeType(type), position: { x: pos?.x || 0, y: pos?.y || 0 }, data }
   })
+
+  for (const n of nodes.value) {
+    const d = n.data as Record<string, unknown>
+    if (d.nodeType === 'Parallel' && d.parallelInnerKind === 'SubWorkflow' && d.parallelSubWorkflowMetaId) {
+      await refreshParallelSubWorkflowVersions(d)
+    }
+  }
 
   const loadedEdges: Edge[] = []
   for (const n of entity.nodes) {
@@ -827,7 +870,7 @@ onMounted(async () => {
     try {
       const res = await workflowApi.getTemplate(metaId, versionParam)
       versionStatus.value = res.data.status
-      loadFromEntity(res.data)
+      await loadFromEntity(res.data)
     } catch {}
   } else {
     try {
