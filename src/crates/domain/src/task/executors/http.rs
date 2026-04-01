@@ -6,8 +6,9 @@ use tracing::{debug, warn, error};
 
 use crate::shared::workflow::TaskType;
 use crate::task::entity::{HttpMethod, TaskInstanceEntity, TaskTemplate};
+use crate::task::http_template_resolve::effective_http_request;
 use crate::task::interface::{TaskExecutionResult, TaskExecutor};
-use crate::workflow::entity::{NodeExecutionStatus, NodeOutput};
+use crate::workflow::entity::NodeExecutionStatus;
 
 pub struct HttpTaskExecutor {
     client: Client,
@@ -35,50 +36,39 @@ impl TaskExecutor for HttpTaskExecutor {
             }
         };
 
-        let headers_map: serde_json::Map<String, serde_json::Value> = config
-            .headers
-            .iter()
-            .map(|f| (f.key.clone(), json!(f.value)))
-            .collect();
+        let empty_ctx = json!({});
+        let (input_snapshot, url, method, headers_obj, body_json) =
+            effective_http_request(task_instance, config, &empty_ctx);
 
-        let body_map: serde_json::Map<String, serde_json::Value> = config
-            .body
-            .iter()
-            .map(|f| (f.key.clone(), json!(f.value)))
-            .collect();
-        let body_json = if body_map.is_empty() {
-            None
-        } else {
-            Some(serde_json::Value::Object(body_map))
-        };
-
-        let input_data = json!({
-            "url": config.url,
-            "method": config.method,
-            "headers": headers_map,
-            "body": body_json,
-        });
+        if url.is_empty() {
+            return Err(anyhow::anyhow!("HTTP task has empty url after resolution"));
+        }
 
         let mut last_error: Option<String> = None;
         let attempts = config.retry_count + 1;
 
         for attempt in 0..attempts {
-            let mut request = match config.method {
-                HttpMethod::Get => self.client.get(&config.url),
-                HttpMethod::Post => self.client.post(&config.url),
-                HttpMethod::Put => self.client.put(&config.url),
-                HttpMethod::Delete => self.client.delete(&config.url),
-                HttpMethod::Head => self.client.head(&config.url),
+            let mut request = match method {
+                HttpMethod::Get => self.client.get(&url),
+                HttpMethod::Post => self.client.post(&url),
+                HttpMethod::Put => self.client.put(&url),
+                HttpMethod::Delete => self.client.delete(&url),
+                HttpMethod::Head => self.client.head(&url),
             };
 
-            for h in &config.headers {
-                if let crate::shared::form::FormValue::String(v) = &h.value {
-                    request = request.header(h.key.as_str(), v.as_str());
-                }
+            for (hk, hv) in &headers_obj {
+                let s = match hv {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Null => continue,
+                    other => other.to_string(),
+                };
+                request = request.header(hk.as_str(), s.as_str());
             }
 
             if let Some(ref bj) = body_json {
-                request = request.json(bj);
+                if !bj.is_null() && bj != &serde_json::Value::Object(serde_json::Map::new()) {
+                    request = request.json(bj);
+                }
             }
 
             if config.timeout > 0 {
@@ -99,29 +89,27 @@ impl TaskExecutor for HttpTaskExecutor {
                         "attempt": attempt + 1,
                     });
 
-                    let output = Some(NodeOutput { data: output_data });
-
                     if (200..300).contains(&status_code) {
                         debug!(
                             task_instance_id = %task_instance.task_instance_id,
-                            url = %config.url,
+                            url = %url,
                             status_code = status_code,
                             duration_ms = duration,
                             "HTTP request succeeded"
                         );
                         return Ok(TaskExecutionResult {
                             status: NodeExecutionStatus::Success,
-                            input: Some(input_data),
-                            output,
+                            input: Some(input_snapshot),
+                            output: Some(output_data),
                             error_message: None,
                         });
                     } else {
                         warn!(
                             task_instance_id = %task_instance.task_instance_id,
-                            url = %config.url,
+                            url = %url,
                             status_code = status_code,
                             attempt = attempt + 1,
-                            "HTTP request returned non-2xx status"
+                            "HTTP task returned non-2xx status"
                         );
                         last_error = Some(format!("HTTP {}: {}", status_code, resp_body));
                     }
@@ -129,7 +117,7 @@ impl TaskExecutor for HttpTaskExecutor {
                 Err(e) => {
                     warn!(
                         task_instance_id = %task_instance.task_instance_id,
-                        url = %config.url,
+                        url = %url,
                         attempt = attempt + 1,
                         error = %e,
                         "HTTP request failed"
@@ -149,15 +137,15 @@ impl TaskExecutor for HttpTaskExecutor {
         let error_msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
         error!(
             task_instance_id = %task_instance.task_instance_id,
-            url = %config.url,
+            url = %url,
             attempts = attempts,
             error = %error_msg,
             "HTTP task failed after all retries"
         );
-        
+
         Ok(TaskExecutionResult {
             status: NodeExecutionStatus::Failed,
-            input: Some(input_data),
+            input: Some(input_snapshot),
             output: None,
             error_message: Some(error_msg),
         })

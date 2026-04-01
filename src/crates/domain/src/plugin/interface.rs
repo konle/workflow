@@ -63,7 +63,6 @@ pub trait PluginInterface: Send + Sync {
         input: &Option<serde_json::Value>,
     ) -> anyhow::Result<ExecutionResult> {
         // 默认实现，如果是普通节点，子任务完成代表节点完成
-        node_instance.output = output.clone().map(|data| crate::workflow::entity::NodeOutput { data });
         node_instance.error_message = error_message.clone();
         node_instance.task_instance.input = input.clone();
         node_instance.task_instance.output = output.clone();

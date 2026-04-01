@@ -12,6 +12,8 @@ use super::PluginManager;
 use crate::plugin::interface::{ExecutionResult, PluginExecutor};
 use crate::shared::job::{ExecuteWorkflowJob, WorkflowEvent};
 use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
+use crate::task::entity::TaskTemplate;
+use crate::task::http_template_resolve::resolved_http_request_snapshot;
 use crate::workflow::entity::{NodeExecutionStatus, WorkflowInstanceEntity};
 use tracing::{debug, error, info, warn};
 
@@ -486,6 +488,10 @@ impl PluginManager {
                     "variable resolution failed, using raw context"
                 ),
             }
+        }
+
+        if let TaskTemplate::Http(ref tpl) = node.task_instance.task_template {
+            node.task_instance.input = Some(resolved_http_request_snapshot(tpl, &node.context));
         }
 
         let result = self.execute_node_instance(&mut node, instance).await;

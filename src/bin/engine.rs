@@ -71,7 +71,7 @@ async fn handle_task_job(
         domain::workflow::entity::NodeExecutionStatus::Failed => domain::shared::workflow::TaskInstanceStatus::Failed,
         _ => domain::shared::workflow::TaskInstanceStatus::Pending,
     };
-    task_instance_entity.output = exec_result.output.clone().map(|o| o.data);
+    task_instance_entity.output = exec_result.output.clone();
     task_instance_entity.input = exec_result.input.clone();
     task_instance_entity.error_message = exec_result.error_message.clone();
 
@@ -98,7 +98,7 @@ async fn handle_task_job(
                     node_id: caller.node_id,
                     child_task_id: job.task_instance_id.clone(),
                     status: exec_result.status,
-                    output: exec_result.output.map(|o| o.data),
+                    output: exec_result.output,
                     error_message: exec_result.error_message,
                     input: exec_result.input,
                 },

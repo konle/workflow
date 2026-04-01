@@ -71,6 +71,36 @@ impl PluginManager {
         task_instance.execution_duration = None;
         task_instance.task_status = TaskInstanceStatus::Pending;
 
+        if let TaskTemplate::Http(ref tpl) = task_instance.task_template {
+            match &parent.task_template {
+                TaskTemplate::Parallel(pt) => {
+                    let idx = job
+                        .caller_context
+                        .as_ref()
+                        .and_then(|c| c.item_index)
+                        .unwrap_or(0);
+                    let ctx = crate::task::http_template_resolve::context_with_parallel_item(
+                        &instance.context,
+                        &pt.items_path,
+                        &pt.item_alias,
+                        idx,
+                    );
+                    task_instance.input = Some(
+                        crate::task::http_template_resolve::resolved_http_request_snapshot(tpl, &ctx),
+                    );
+                }
+                TaskTemplate::ForkJoin(_) => {
+                    task_instance.input = Some(
+                        crate::task::http_template_resolve::resolved_http_request_snapshot(
+                            tpl,
+                            &instance.context,
+                        ),
+                    );
+                }
+                _ => {}
+            }
+        }
+
         task_svc
             .create_task_instance_entity(task_instance)
             .await

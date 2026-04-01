@@ -76,6 +76,8 @@ impl PluginInterface for SubWorkflowPlugin {
             }
         }
 
+        let child_context_snapshot = child_context.clone();
+
         let parent_ctx = WorkflowCallerContext {
             workflow_instance_id: workflow_instance.workflow_instance_id.clone(),
             node_id: node_instance.node_id.clone(),
@@ -101,6 +103,12 @@ impl PluginInterface for SubWorkflowPlugin {
             depth = child_depth,
             "sub-workflow created"
         );
+
+        node_instance.task_instance.input = Some(serde_json::json!({
+            "workflow_meta_id": template.workflow_meta_id,
+            "workflow_version": template.workflow_version,
+            "child_context": child_context_snapshot,
+        }));
 
         node_instance.task_instance.output = Some(serde_json::json!({
             "child_workflow_instance_id": child_instance.workflow_instance_id,

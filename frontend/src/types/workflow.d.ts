@@ -44,10 +44,6 @@ export interface WorkflowEntity {
   deleted_at: string | null
 }
 
-export interface NodeOutput {
-  data: JsonValue
-}
-
 export interface WorkflowNodeInstanceEntity {
   node_id: string
   node_type: TaskType
@@ -55,7 +51,6 @@ export interface WorkflowNodeInstanceEntity {
   context: JsonValue
   next_node: string | null
   status: NodeExecutionStatus
-  output: NodeOutput | null
   error_message: string | null
   created_at: string
   updated_at: string

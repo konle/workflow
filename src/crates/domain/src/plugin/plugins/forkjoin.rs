@@ -65,6 +65,13 @@ impl PluginInterface for ForkJoinPlugin {
             results_map.insert(item.task_key.clone(), JsonValue::Null);
         }
 
+        node_instance.task_instance.input = Some(serde_json::json!({
+            "task_keys": template.tasks.iter().map(|t| t.task_key.clone()).collect::<Vec<_>>(),
+            "concurrency": template.concurrency,
+            "mode": format!("{:?}", template.mode),
+            "max_failures": template.max_failures,
+        }));
+
         let state = serde_json::json!({
             "total_tasks": total_tasks,
             "dispatched_count": initial_dispatch,

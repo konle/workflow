@@ -55,8 +55,12 @@
                 <status-tag :status="selectedNode.status" :map="NODE_STATUS_MAP" />
               </a-descriptions-item>
             </a-descriptions>
+            <a-divider>Input</a-divider>
+            <json-viewer v-if="selectedNode.task_instance?.input != null" :data="selectedNode.task_instance.input" />
+            <a-empty v-else description="暂无执行入参" />
             <a-divider>Output</a-divider>
-            <json-viewer :data="selectedNode.output?.data" />
+            <json-viewer v-if="selectedNode.task_instance?.output != null" :data="selectedNode.task_instance.output" />
+            <a-empty v-else description="暂无输出" />
             <template v-if="selectedNode.error_message">
               <a-divider>Error</a-divider>
               <a-alert type="error" :title="selectedNode.error_message" />

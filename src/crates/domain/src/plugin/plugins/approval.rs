@@ -36,6 +36,12 @@ impl PluginInterface for ApprovalPlugin {
             }
         };
 
+        node_instance.task_instance.input = Some(serde_json::json!({
+            "title": template.title.clone(),
+            "name": template.name.clone(),
+            "description": template.description.clone(),
+        }));
+
         let approval = self
             .approval_svc
             .create_approval(
@@ -83,11 +89,8 @@ impl PluginInterface for ApprovalPlugin {
         error_message: &Option<String>,
         _input: &Option<serde_json::Value>,
     ) -> anyhow::Result<ExecutionResult> {
-        node_instance.output =
-            output
-                .clone()
-                .map(|data| crate::workflow::entity::NodeOutput { data });
         node_instance.error_message = error_message.clone();
+        node_instance.task_instance.input = _input.clone();
         node_instance.task_instance.output = output.clone();
         node_instance.task_instance.error_message = error_message.clone();
 

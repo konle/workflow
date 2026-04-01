@@ -74,6 +74,14 @@ impl PluginInterface for ParallelPlugin {
             "parallel: dispatching initial batch"
         );
 
+        node_instance.task_instance.input = Some(serde_json::json!({
+            "items_path": template.items_path,
+            "item_alias": template.item_alias,
+            "concurrency": template.concurrency,
+            "mode": format!("{:?}", template.mode),
+            "max_failures": template.max_failures,
+        }));
+
         let state = serde_json::json!({
             "total_items": total_items,
             "dispatched_count": initial_dispatch_count,

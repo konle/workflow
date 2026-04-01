@@ -97,11 +97,6 @@ pub enum NodeExecutionStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NodeOutput {
-    pub data: JsonValue,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowNodeInstanceEntity {
     pub node_id: String,
     pub node_type: TaskType,
@@ -109,7 +104,6 @@ pub struct WorkflowNodeInstanceEntity {
     pub context: JsonValue,
     pub next_node: Option<String>,
     pub status: NodeExecutionStatus,
-    pub output: Option<NodeOutput>,
     pub error_message: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

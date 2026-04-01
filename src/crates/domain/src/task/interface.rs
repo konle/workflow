@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use crate::shared::workflow::TaskType;
 use crate::task::entity::TaskInstanceEntity;
-use crate::workflow::entity::{NodeExecutionStatus, NodeOutput};
+use crate::workflow::entity::NodeExecutionStatus;
 
 pub struct TaskExecutionResult {
     pub status: NodeExecutionStatus,
     pub input: Option<serde_json::Value>,
-    pub output: Option<NodeOutput>,
+    pub output: Option<serde_json::Value>,
     pub error_message: Option<String>,
 }
 

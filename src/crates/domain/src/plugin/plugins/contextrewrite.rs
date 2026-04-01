@@ -81,6 +81,12 @@ impl PluginInterface for ContextRewritePlugin {
             "ContextRewrite applied"
         );
 
+        node_instance.task_instance.input = Some(serde_json::json!({
+            "name": template.name.clone(),
+            "script": template.script.clone(),
+            "merge_mode": format!("{:?}", template.merge_mode),
+        }));
+
         node_instance.task_instance.output = Some(serde_json::json!({
             "rewritten_keys": workflow_instance.context.as_object()
                 .map(|o| o.keys().cloned().collect::<Vec<_>>())

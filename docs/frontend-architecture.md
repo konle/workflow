@@ -882,7 +882,7 @@ POST /api/v1/workflow/meta/{metaId}/template
 |------|------|
 | 左侧面板 | 实例基础信息：状态、版本、创建时间、上下文 (JSON Viewer) |
 | 中央画布 | 只读 DAG 图，每个节点按 `NodeExecutionStatus` 实时着色 |
-| 右侧面板 | 点击节点后展示：节点状态、关联的 TaskInstance 详情、Input/Output/Error |
+| 右侧面板 | 点击节点后展示：节点状态、`task_instance.input`（解析后入参）、`task_instance.output`（结果）、Error；**不再**使用已移除的 `node.output` |
 
 **节点着色规则**：
 

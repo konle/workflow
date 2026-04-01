@@ -151,6 +151,19 @@ Parallel 借用了它自身的 `TaskInstanceEntity.output` 来充当状态机的
 
 通过这种“任务唤醒自己”的设计（Event-Driven Callback），系统不仅做到了完美解耦，而且拥有了抵抗海量数据冲击的弹性能力。
 
+### 3.3 节点可观测性（单一数据源）
+
+工作流节点**不再**使用 `WorkflowNodeInstanceEntity.output`。节点在运行时的**入参与出参**一律落在嵌套的 `TaskInstanceEntity` 上：
+
+| 字段 | 含义 |
+|------|------|
+| `task_instance.input` | **解析后**的执行入参快照（变量、`{{placeholder}}`、Variable 型表单已按合并上下文解析），供排障与审计；各插件在 `execute` / 默认或自定义 `handle_callback` 中写入。 |
+| `task_instance.output` | 节点/任务对外结果（HTTP 响应摘要、If 分支结果、Parallel 父节点状态 JSON、ContextRewrite 的 key 列表等）。 |
+
+**HTTP**：Workflow Worker 在 `run_node` 合并变量后调用 `resolved_http_request_snapshot` 写入 `input`；Parallel/ForkJoin 子任务在 `ensure_task_instance_for_job` 中按 `item_alias` + `items_path` 或工作流 `context` 生成解析后的 `input`；`HttpTaskExecutor` 优先使用该快照发请求，并在回调中回传同一快照。**禁止**在节点层再维护一份 `output`，避免双写不一致。
+
+**脱敏**：生产环境若需对 Secret 打码，在写入 `input`/`output` 前增加策略层（当前迭代未实现）。
+
 ---
 
 ## 4. 分布式锁与数据一致性 (CAS)

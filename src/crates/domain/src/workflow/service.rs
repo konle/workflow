@@ -128,7 +128,6 @@ impl WorkflowInstanceService {
                 context: node.context.clone(),
                 next_node: node.next_node.clone(),
                 status: NodeExecutionStatus::Pending,
-                output: None,
                 error_message: None,
                 created_at: now,
                 updated_at: now,
