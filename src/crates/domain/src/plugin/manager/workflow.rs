@@ -1,0 +1,563 @@
+//! Drive workflow instances: job handling, main execution loop, persistence, and async dispatch.
+//!
+//! **State machine (sketch)**  
+//! - `Start` job: ensure instance is Pending/Running, then run [`PluginManager::execute_workflow_loop`].  
+//! - `NodeCallback` job: if instance is Await/Suspended/Pending/Running, reactivate and reload as needed,
+//!   merge callback payload with persisted task row when present, then apply plugin callback + execution result,
+//!   optionally re-enter the loop.  
+//! - The loop reloads the instance from storage each iteration so concurrent updates are visible.
+
+use super::loop_action::LoopAction;
+use super::PluginManager;
+use crate::plugin::interface::{ExecutionResult, PluginExecutor};
+use crate::shared::job::{ExecuteWorkflowJob, WorkflowEvent};
+use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
+use crate::workflow::entity::{NodeExecutionStatus, WorkflowInstanceEntity};
+use tracing::{debug, error, info, warn};
+
+/// After reloading the workflow, whether the main loop should keep spinning.
+enum LoopOutcome {
+    Continue,
+    Stop,
+}
+
+/// Whether a node callback job should proceed after instance-status transitions.
+enum CallbackReadiness {
+    /// Instance status does not accept this callback; nothing to do.
+    Ignored,
+    /// Instance is ready; may have been reloaded from DB.
+    Ready(WorkflowInstanceEntity),
+}
+
+/// Merged callback fields after optional enrichment from `task_instances`.
+struct CallbackPayload {
+    status: NodeExecutionStatus,
+    output: Option<serde_json::Value>,
+    error_message: Option<String>,
+    input: Option<serde_json::Value>,
+}
+
+impl PluginManager {
+    pub async fn process_workflow_job(
+        &self,
+        job: ExecuteWorkflowJob,
+        worker_id: &str,
+    ) -> anyhow::Result<()> {
+        let mut instance = match self
+            .workflow_instance_svc
+            .acquire_lock(&job.workflow_instance_id, worker_id, 10000)
+            .await
+        {
+            Ok(inst) => inst,
+            Err(e) => {
+                warn!(
+                    workflow_instance_id = %job.workflow_instance_id,
+                    worker_id = %worker_id,
+                    error = %e,
+                    "failed to acquire lock, skipping"
+                );
+                return Ok(());
+            }
+        };
+
+        let result = match job.event {
+            WorkflowEvent::Start => self.on_workflow_start(&job.workflow_instance_id, &mut instance).await,
+            WorkflowEvent::NodeCallback {
+                node_id,
+                child_task_id,
+                status,
+                output,
+                error_message,
+                input,
+            } => {
+                self.on_node_callback(
+                    &job.workflow_instance_id,
+                    &mut instance,
+                    node_id,
+                    child_task_id,
+                    status,
+                    output,
+                    error_message,
+                    input,
+                )
+                .await
+            }
+        };
+
+        if result.is_ok() {
+            if let Err(e) = self.notify_parent_if_needed(&job.workflow_instance_id).await {
+                warn!(
+                    workflow_instance_id = %job.workflow_instance_id,
+                    error = %e,
+                    "failed to notify parent workflow"
+                );
+            }
+        }
+
+        if let Err(e) = self
+            .workflow_instance_svc
+            .release_lock(&job.workflow_instance_id, worker_id)
+            .await
+        {
+            warn!(
+                workflow_instance_id = %job.workflow_instance_id,
+                error = %e,
+                "failed to release lock"
+            );
+        }
+
+        result
+    }
+
+    async fn on_workflow_start(
+        &self,
+        workflow_instance_id: &str,
+        instance: &mut WorkflowInstanceEntity,
+    ) -> anyhow::Result<()> {
+        if !instance.is_pending() && !instance.is_running() {
+            debug!(
+                workflow_instance_id = %workflow_instance_id,
+                status = ?instance.status,
+                "start ignored: instance not in pending/running"
+            );
+            return Ok(());
+        }
+        info!(
+            workflow_instance_id = %workflow_instance_id,
+            "starting workflow execution"
+        );
+        self.execute_workflow(instance).await
+    }
+
+    async fn on_node_callback(
+        &self,
+        workflow_instance_id: &str,
+        instance: &mut WorkflowInstanceEntity,
+        node_id: String,
+        child_task_id: String,
+        status: NodeExecutionStatus,
+        output: Option<serde_json::Value>,
+        error_message: Option<String>,
+        input: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        let ready = self.prepare_instance_for_node_callback(instance).await?;
+        let mut instance = match ready {
+            CallbackReadiness::Ignored => return Ok(()),
+            CallbackReadiness::Ready(i) => i,
+        };
+
+        debug!(
+            workflow_instance_id = %workflow_instance_id,
+            node_id = %node_id,
+            child_task_id = %child_task_id,
+            callback_status = ?status,
+            "processing node callback"
+        );
+
+        let payload = self
+            .enrich_callback_from_task_store(
+                &child_task_id,
+                CallbackPayload {
+                    status,
+                    output,
+                    error_message,
+                    input,
+                },
+            )
+            .await;
+
+        let Some(node_index) = instance.nodes.iter().position(|n| n.node_id == node_id) else {
+            return Ok(());
+        };
+
+        instance.current_node = node_id.clone();
+        let mut node = instance.nodes[node_index].clone();
+
+        let exec_result = match self
+            .handle_node_callback(
+                &mut node,
+                &mut instance,
+                &child_task_id,
+                &payload.status,
+                &payload.output,
+                &payload.error_message,
+                &payload.input,
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                error!(
+                    workflow_instance_id = %workflow_instance_id,
+                    node_id = %node_id,
+                    error = %e,
+                    "node callback handling failed"
+                );
+                return Err(e);
+            }
+        };
+
+        instance.nodes[node_index] = node;
+        let action = self.apply_exec_result(&mut instance, node_index, exec_result).await?;
+
+        match action {
+            LoopAction::Advance | LoopAction::Retry => self.execute_workflow_loop(&mut instance).await,
+            LoopAction::Done => Ok(()),
+        }
+    }
+
+    /// Transitions workflow instance from Await/Suspended/Pending into a state where callbacks apply; reloads when needed.
+    async fn prepare_instance_for_node_callback(
+        &self,
+        instance: &mut WorkflowInstanceEntity,
+    ) -> anyhow::Result<CallbackReadiness> {
+        let id = instance.workflow_instance_id.clone();
+        match instance.status {
+            WorkflowInstanceStatus::Await => {
+                self.workflow_instance_svc
+                    .wake_from_await(&id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                self.workflow_instance_svc
+                    .start_instance(&id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                *instance = self
+                    .workflow_instance_svc
+                    .get_workflow_instance(id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                Ok(CallbackReadiness::Ready(instance.clone()))
+            }
+            WorkflowInstanceStatus::Suspended => {
+                self.workflow_instance_svc
+                    .resume_instance(&id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                self.workflow_instance_svc
+                    .start_instance(&id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                *instance = self
+                    .workflow_instance_svc
+                    .get_workflow_instance(id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                Ok(CallbackReadiness::Ready(instance.clone()))
+            }
+            WorkflowInstanceStatus::Pending => {
+                self.workflow_instance_svc
+                    .start_instance(&id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                *instance = self
+                    .workflow_instance_svc
+                    .get_workflow_instance(id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                Ok(CallbackReadiness::Ready(instance.clone()))
+            }
+            WorkflowInstanceStatus::Running => Ok(CallbackReadiness::Ready(instance.clone())),
+            _ => {
+                debug!(
+                    workflow_instance_id = %instance.workflow_instance_id,
+                    status = ?instance.status,
+                    "node callback ignored: instance not in await/suspended/running/pending"
+                );
+                Ok(CallbackReadiness::Ignored)
+            }
+        }
+    }
+
+    /// If the queue payload omits fields, backfill from the persisted task instance (source of truth for terminal state).
+    async fn enrich_callback_from_task_store(
+        &self,
+        child_task_id: &str,
+        mut payload: CallbackPayload,
+    ) -> CallbackPayload {
+        let Some(task_svc) = &self.task_instance_svc else {
+            return payload;
+        };
+        let Ok(task_inst) = task_svc
+            .get_task_instance_entity(child_task_id.to_string())
+            .await
+        else {
+            return payload;
+        };
+
+        if payload.input.is_none() {
+            payload.input = task_inst.input.clone();
+        }
+        if payload.output.is_none() {
+            payload.output = task_inst.output.clone();
+        }
+        if payload.error_message.is_none() {
+            payload.error_message = task_inst.error_message.clone();
+        }
+        payload.status = match task_inst.task_status {
+            TaskInstanceStatus::Completed => NodeExecutionStatus::Success,
+            TaskInstanceStatus::Failed => NodeExecutionStatus::Failed,
+            TaskInstanceStatus::Running => NodeExecutionStatus::Running,
+            TaskInstanceStatus::Canceled => NodeExecutionStatus::Failed,
+            _ => payload.status,
+        };
+        payload
+    }
+
+    pub async fn execute_workflow(
+        &self,
+        workflow_instance: &mut WorkflowInstanceEntity,
+    ) -> anyhow::Result<()> {
+        let latest = self
+            .workflow_instance_svc
+            .get_workflow_instance(workflow_instance.workflow_instance_id.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        match latest.status {
+            WorkflowInstanceStatus::Pending => {
+                self.workflow_instance_svc
+                    .start_instance(&workflow_instance.workflow_instance_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
+            WorkflowInstanceStatus::Running => {
+                // Idempotent Start: retried Start jobs may see Running already — continue the loop.
+            }
+            _ => {
+                debug!(
+                    workflow_instance_id = %workflow_instance.workflow_instance_id,
+                    status = ?latest.status,
+                    "start event ignored for non-actionable workflow status"
+                );
+                return Ok(());
+            }
+        }
+
+        self.execute_workflow_loop(workflow_instance).await
+    }
+
+    /// Runs forward until the instance is no longer Running, a node yields (async dispatch / suspend), or the workflow ends.
+    ///
+    /// Each iteration reloads from storage so we do not execute stale graph state under concurrent writers.
+    pub async fn execute_workflow_loop(
+        &self,
+        workflow_instance: &mut WorkflowInstanceEntity,
+    ) -> anyhow::Result<()> {
+        loop {
+            debug!(
+                workflow_instance_id = %workflow_instance.workflow_instance_id,
+                "executing workflow loop iteration"
+            );
+
+            let Some(mut instance) = self
+                .reload_workflow_if_running(&workflow_instance.workflow_instance_id)
+                .await?
+            else {
+                return Ok(());
+            };
+
+            let current_node_id = instance.get_current_node();
+            let node_index = Self::node_index_for_id(&instance, &current_node_id)?;
+            let node_status = instance.nodes[node_index].status.clone();
+
+            match self
+                .workflow_loop_tick(&mut instance, node_index, &current_node_id, node_status)
+                .await?
+            {
+                LoopOutcome::Continue => continue,
+                LoopOutcome::Stop => return Ok(()),
+            }
+        }
+    }
+
+    async fn reload_workflow_if_running(
+        &self,
+        workflow_instance_id: &str,
+    ) -> anyhow::Result<Option<WorkflowInstanceEntity>> {
+        let instance = self
+            .workflow_instance_svc
+            .get_workflow_instance(workflow_instance_id.to_string())
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        if !instance.is_running() {
+            debug!(
+                workflow_instance_id = %workflow_instance_id,
+                status = ?instance.status,
+                "instance not in running state, exiting loop"
+            );
+            return Ok(None);
+        }
+        Ok(Some(instance))
+    }
+
+    fn node_index_for_id(
+        instance: &WorkflowInstanceEntity,
+        node_id: &str,
+    ) -> anyhow::Result<usize> {
+        instance
+            .nodes
+            .iter()
+            .position(|n| n.node_id == node_id)
+            .ok_or_else(|| {
+                error!(
+                    workflow_instance_id = %instance.workflow_instance_id,
+                    node_id = %node_id,
+                    "node not found in instance"
+                );
+                anyhow::anyhow!("node not found: {}", node_id)
+            })
+    }
+
+    async fn workflow_loop_tick(
+        &self,
+        instance: &mut WorkflowInstanceEntity,
+        node_index: usize,
+        current_node_id: &str,
+        node_status: NodeExecutionStatus,
+    ) -> anyhow::Result<LoopOutcome> {
+        match node_status {
+            NodeExecutionStatus::Success => {
+                if let Some(next) = instance.nodes[node_index].next_node.clone() {
+                    instance.current_node = next;
+                    self.save_instance_and_bump_epoch(instance).await?;
+                    Ok(LoopOutcome::Continue)
+                } else {
+                    info!(
+                        workflow_instance_id = %instance.workflow_instance_id,
+                        "workflow completed"
+                    );
+                    self.workflow_instance_svc
+                        .complete_instance(&instance.workflow_instance_id)
+                        .await
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    Ok(LoopOutcome::Stop)
+                }
+            }
+            NodeExecutionStatus::Failed => {
+                error!(
+                    workflow_instance_id = %instance.workflow_instance_id,
+                    node_id = %current_node_id,
+                    "workflow failed at node"
+                );
+                self.workflow_instance_svc
+                    .fail_instance(&instance.workflow_instance_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                Ok(LoopOutcome::Stop)
+            }
+            NodeExecutionStatus::Suspended | NodeExecutionStatus::Running => Ok(LoopOutcome::Stop),
+            NodeExecutionStatus::Pending => {
+                instance.nodes[node_index].status = NodeExecutionStatus::Running;
+                self.save_instance_and_bump_epoch(instance).await?;
+
+                match self.run_node(instance, node_index).await? {
+                    LoopAction::Advance | LoopAction::Retry => Ok(LoopOutcome::Continue),
+                    LoopAction::Done => Ok(LoopOutcome::Stop),
+                }
+            }
+            _ => Ok(LoopOutcome::Stop),
+        }
+    }
+
+    async fn run_node(
+        &self,
+        instance: &mut WorkflowInstanceEntity,
+        node_index: usize,
+    ) -> anyhow::Result<LoopAction> {
+        let mut node = instance.nodes[node_index].clone();
+
+        if let Some(ref var_svc) = self.variable_svc {
+            match var_svc
+                .resolve_variables(
+                    &instance.tenant_id,
+                    &instance.workflow_meta_id,
+                    &instance.context,
+                    &node.context,
+                )
+                .await
+            {
+                Ok(merged) => node.context = merged,
+                Err(e) => warn!(
+                    workflow_instance_id = %instance.workflow_instance_id,
+                    node_id = %node.node_id,
+                    error = %e,
+                    "variable resolution failed, using raw context"
+                ),
+            }
+        }
+
+        let result = self.execute_node_instance(&mut node, instance).await;
+        instance.nodes[node_index] = node;
+
+        let exec_result = match result {
+            Ok(r) => {
+                debug!(
+                    workflow_instance_id = %instance.workflow_instance_id,
+                    node_id = %instance.nodes[node_index].node_id,
+                    "node execution finished"
+                );
+                r
+            }
+            Err(e) => {
+                error!(
+                    workflow_instance_id = %instance.workflow_instance_id,
+                    node_id = %instance.nodes[node_index].node_id,
+                    error = %e,
+                    "node execution failed"
+                );
+                instance.nodes[node_index].error_message = Some(e.to_string());
+                ExecutionResult::failed()
+            }
+        };
+
+        self.apply_exec_result(instance, node_index, exec_result).await
+    }
+
+    async fn notify_parent_if_needed(&self, workflow_instance_id: &str) -> anyhow::Result<()> {
+        let instance = self
+            .workflow_instance_svc
+            .get_workflow_instance(workflow_instance_id.to_string())
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        let is_terminal = matches!(
+            instance.status,
+            WorkflowInstanceStatus::Completed | WorkflowInstanceStatus::Failed
+        );
+
+        if !is_terminal {
+            return Ok(());
+        }
+
+        if let Some(parent_ctx) = &instance.parent_context {
+            let status = match instance.status {
+                WorkflowInstanceStatus::Completed => NodeExecutionStatus::Success,
+                _ => NodeExecutionStatus::Failed,
+            };
+            info!(
+                child_workflow_id = %workflow_instance_id,
+                parent_workflow_id = %parent_ctx.workflow_instance_id,
+                status = ?status,
+                "notifying parent workflow"
+            );
+            self.dispatcher
+                .dispatch_workflow(ExecuteWorkflowJob {
+                    workflow_instance_id: parent_ctx.workflow_instance_id.clone(),
+                    tenant_id: instance.tenant_id.clone(),
+                    event: WorkflowEvent::NodeCallback {
+                        node_id: parent_ctx.node_id.clone(),
+                        child_task_id: instance.workflow_instance_id.clone(),
+                        status,
+                        output: Some(instance.context.clone()),
+                        error_message: None,
+                        input: None,
+                    },
+                })
+                .await?;
+        }
+
+        Ok(())
+    }
+}
