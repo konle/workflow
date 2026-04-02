@@ -35,7 +35,7 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionRepositoryImpl {
 
     async fn list_workflow_entities(&self, workflow_meta_id: &str) -> Result<Vec<WorkflowEntity>, RepositoryError> {
         let cursor = self.collection
-            .find(doc! {"workflow_meta_id": workflow_meta_id})
+            .find(doc! {"workflow_meta_id": workflow_meta_id, "status":{"$ne": WorkflowStatus::Deleted.to_string()}})
             .await?;
         let results: Vec<WorkflowEntity> = cursor.try_collect().await?;
         Ok(results)
@@ -79,32 +79,33 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionRepositoryImpl {
         Ok(())
     }
 
-    async fn publish_workflow_entity(&self, workflow_meta_id: &str, version: u32) -> Result<(), RepositoryError> {
-        let filter = doc! {
-            "workflow_meta_id": workflow_meta_id,
-            "version": version as i64,
-            "status": mongodb::bson::to_bson(&WorkflowStatus::Draft).map_err(|e| format!("serialize status: {}", e))?,
-        };
-        let update = doc! {
-            "$set": {
-                "status": mongodb::bson::to_bson(&WorkflowStatus::Published).map_err(|e| format!("serialize status: {}", e))?,
-                "updated_at": mongodb::bson::to_bson(&chrono::Utc::now()).map_err(|e| format!("serialize: {}", e))?,
-            }
-        };
-        let result = self.collection.update_one(filter, update).await?;
-        if result.matched_count == 0 {
-            return Err(format!(
-                "cannot publish workflow version {}: not found or not in Draft status",
-                version
-            ).into());
-        }
-        Ok(())
-    }
+    // async fn publish_workflow_entity(&self, workflow_meta_id: &str, version: u32) -> Result<(), RepositoryError> {
+    //     let filter = doc! {
+    //         "workflow_meta_id": workflow_meta_id,
+    //         "version": version as i64,
+    //         "status": mongodb::bson::to_bson(&WorkflowStatus::Draft).map_err(|e| format!("serialize status: {}", e))?,
+    //     };
+    //     let update = doc! {
+    //         "$set": {
+    //             "status": mongodb::bson::to_bson(&WorkflowStatus::Published).map_err(|e| format!("serialize status: {}", e))?,
+    //             "updated_at": mongodb::bson::to_bson(&chrono::Utc::now()).map_err(|e| format!("serialize: {}", e))?,
+    //         }
+    //     };
+    //     let result = self.collection.update_one(filter, update).await?;
+    //     if result.matched_count == 0 {
+    //         return Err(format!(
+    //             "cannot publish workflow version {}: not found or not in Draft status",
+    //             version
+    //         ).into());
+    //     }
+    //     Ok(())
+    // }
 
-    async fn delete_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<(), RepositoryError> {
-        self.collection.delete_one(doc! {"workflow_meta_id": &workflow_meta_id, "version": &version}).await?;
-        Ok(())
-    }
+    // async fn delete_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<(), RepositoryError> {
+    //     let workflow_status = WorkflowStatus::Archived.to_string();
+    //     self.collection.update_one(doc! {"workflow_meta_id": &workflow_meta_id, "version": &version, "status": &workflow_status}, doc! {"$set": {"status": &WorkflowStatus::Deleted.to_string()}}).await?;
+    //     Ok(())
+    // }
 
     async fn get_workflow_meta_entity(&self, workflow_meta_id: String) -> Result<WorkflowMetaEntity, RepositoryError> {
         let workflow_meta_entity = self.workflow_meta_collection
@@ -161,9 +162,33 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionRepositoryImpl {
         Ok(())
     }
 
+    async fn transition_status(&self, workflow_meta_id: String, version: u32, from_status: &WorkflowStatus, to_status: &WorkflowStatus) -> Result<(), RepositoryError> {
+        let from_str = format!("{:?}", from_status);
+        let to_str = format!("{:?}", to_status);
+        let result = self.collection.update_one(doc! {"workflow_meta_id": &workflow_meta_id, "version": &version, "status": &from_str}, doc! {"$set": {"status": &to_str, "updated_at": mongodb::bson::to_bson(&chrono::Utc::now()).map_err(|e| format!("serialize updated_at: {}", e))?}}).await?;
+        if result.matched_count == 0 {
+            return Err(format!(
+                "cannot transition workflow version {}: not found or not in expected status",
+                version
+            ).into());
+        }
+        if result.modified_count == 0 {
+            return Err(format!(
+                "cannot transition workflow version {}: not modified",
+                version
+            ).into());
+        }
+        Ok(())
+    }
+
     async fn create_workflow_meta_entity(&self, workflow_meta_entity: &WorkflowMetaEntity) -> Result<WorkflowMetaEntity, RepositoryError> {
         self.workflow_meta_collection.insert_one(workflow_meta_entity).await?;
         Ok(workflow_meta_entity.clone())
+    }
+    async fn max_version(&self, workflow_meta_id: String) -> Result<u32, RepositoryError> {
+        let result = self.collection.find_one(doc! {"workflow_meta_id": &workflow_meta_id}).await?;
+        let max_version = result.map(|entity| entity.version).unwrap_or(0);
+        Ok(max_version)
     }
 }
 

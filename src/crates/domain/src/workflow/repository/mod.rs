@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::error::Error;
-use crate::shared::workflow::WorkflowInstanceStatus;
+use crate::shared::workflow::{WorkflowInstanceStatus, WorkflowStatus};
 use crate::workflow::entity::{WorkflowEntity, WorkflowInstanceEntity};
 use crate::workflow::entity::WorkflowMetaEntity;
 pub type RepositoryError = Box<dyn Error + Send + Sync>;
@@ -10,8 +10,10 @@ pub trait WorkflowDefinitionRepository: Send + Sync {
     async fn get_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<WorkflowEntity, RepositoryError>;
     async fn list_workflow_entities(&self, workflow_meta_id: &str) -> Result<Vec<WorkflowEntity>, RepositoryError>;
     async fn save_workflow_entity(&self, entity: &WorkflowEntity) -> Result<(), RepositoryError>;
-    async fn publish_workflow_entity(&self, workflow_meta_id: &str, version: u32) -> Result<(), RepositoryError>;
-    async fn delete_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<(), RepositoryError>;
+    //async fn publish_workflow_entity(&self, workflow_meta_id: &str, version: u32) -> Result<(), RepositoryError>;
+    //async fn delete_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<(), RepositoryError>;
+    async fn max_version(&self, workflow_meta_id: String) -> Result<u32, RepositoryError>;
+    async fn transition_status(&self, workflow_meta_id: String, version: u32, from_status: &WorkflowStatus, to_status: &WorkflowStatus) -> Result<(), RepositoryError>;
 
     async fn get_workflow_meta_entity(&self, workflow_meta_id: String) -> Result<WorkflowMetaEntity, RepositoryError>;
     async fn get_workflow_meta_entity_scoped(&self, tenant_id: &str, workflow_meta_id: &str) -> Result<WorkflowMetaEntity, RepositoryError>;

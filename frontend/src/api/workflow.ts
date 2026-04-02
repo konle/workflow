@@ -35,6 +35,12 @@ export const workflowApi = {
   publishTemplate: (metaId: string, version: number) =>
     request.post<any, { data: void }>(`/workflow/meta/${metaId}/template/${version}/publish`),
 
+  archiveTemplate: (metaId: string, version: number) =>
+    request.post<any, { data: void }>(`/workflow/meta/${metaId}/template/${version}/archive`),
+
+  copyTemplate: (metaId: string, version: number) =>
+    request.post<any, { data: void }>(`/workflow/meta/${metaId}/template/${version}/copy`),
+
   createInstance: (data: CreateWorkflowInstanceRequest) =>
     request.post<any, { data: WorkflowInstanceEntity }>('/workflow/instance', data),
 

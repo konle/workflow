@@ -3,7 +3,7 @@ use chrono::Utc;
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 use crate::shared::job::WorkflowCallerContext;
-use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
+use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus, WorkflowStatus};
 use crate::task::entity::TaskInstanceEntity;
 use crate::workflow::entity::{
     NodeExecutionStatus, WorkflowEntity, WorkflowInstanceEntity,
@@ -38,11 +38,46 @@ impl WorkflowDefinitionService {
     }
 
     pub async fn publish_workflow_entity(&self, workflow_meta_id: &str, version: u32) -> Result<(), RepositoryError> {
-        self.repository.publish_workflow_entity(workflow_meta_id, version).await
+        self.transition_status(workflow_meta_id.to_string(), version, &WorkflowStatus::Draft, &WorkflowStatus::Published).await
+    }
+
+    async fn transition_status(&self, workflow_meta_id: String, version: u32, from_status: &WorkflowStatus, to_status: &WorkflowStatus) -> Result<(), RepositoryError> {
+        if !from_status.can_transition_to(to_status) {
+            return Err(format!(
+                "invalid workflow status transition: {} -> {}",
+                from_status, to_status
+            ).into());
+        }
+        self.repository.transition_status(workflow_meta_id, version, from_status, to_status).await
+    }
+
+    pub async fn copy_workflow_entity(&self, workflow_meta_id: &str, version: u32) -> Result<(), RepositoryError> {
+        let max_version = self.repository.max_version(workflow_meta_id.to_string()).await?;
+        let workflow_entity = self.get_workflow_entity(workflow_meta_id.to_string(), version).await?;
+        if workflow_entity.status != WorkflowStatus::Published {
+            return Err(format!(
+                "cannot copy workflow template: workflow template is not published",
+            ).into());
+        }
+        let new_workflow_entity = WorkflowEntity {
+            workflow_meta_id: workflow_entity.workflow_meta_id.clone(),
+            version: max_version + 1,
+            status: WorkflowStatus::Draft,
+            nodes: workflow_entity.nodes.clone(),
+            entry_node: workflow_entity.entry_node.clone(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            deleted_at: None,
+        };
+        self.repository.save_workflow_entity(&new_workflow_entity).await
     }
 
     pub async fn delete_workflow_entity(&self, workflow_meta_id: String, version: u32) -> Result<(), RepositoryError> {
-        self.repository.delete_workflow_entity(workflow_meta_id, version).await
+        self.transition_status(workflow_meta_id.to_string(), version, &WorkflowStatus::Archived, &WorkflowStatus::Deleted).await
+    }
+
+    pub async fn archive_workflow_entity(&self, workflow_meta_id: &str, version: u32) -> Result<(), RepositoryError> {
+        self.transition_status(workflow_meta_id.to_string(), version, &WorkflowStatus::Published, &WorkflowStatus::Archived).await
     }
 
     pub async fn get_workflow_meta_entity(&self, workflow_meta_id: String) -> Result<WorkflowMetaEntity, RepositoryError> {

@@ -20,8 +20,21 @@ impl WorkflowStatus {
             "draft" => Some(WorkflowStatus::Draft),
             "published" => Some(WorkflowStatus::Published),
             "deleted" => Some(WorkflowStatus::Deleted),
+            "archived" => Some(WorkflowStatus::Archived),
             _ => None,
         }
+    }
+    /// State machine transition rules:
+    ///   Draft   -> Published
+    ///   Published -> Archived
+    ///   Archived -> Deleted
+    pub fn can_transition_to(&self, target: &WorkflowStatus) -> bool {
+        matches!(
+            (self, target),
+            (WorkflowStatus::Draft, WorkflowStatus::Published)
+            | (WorkflowStatus::Published, WorkflowStatus::Archived)
+            | (WorkflowStatus::Archived, WorkflowStatus::Deleted)
+        )
     }
 }
 

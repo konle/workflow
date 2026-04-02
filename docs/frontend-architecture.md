@@ -252,6 +252,10 @@ export const workflowApi = {
     request.delete(`/workflow/meta/${metaId}/template/${version}`),
   publishTemplate: (metaId: string, version: number) =>
     request.post(`/workflow/meta/${metaId}/template/${version}/publish`),
+  archiveTemplate: (metaId: string, version: number) =>
+    request.post(`/workflow/meta/${metaId}/template/${version}/archive`),
+  copyTemplate: (metaId: string, version: number) =>
+    request.post(`/workflow/meta/${metaId}/template/${version}/copy`),
 
   // Instance
   createInstance: (data: CreateWorkflowInstanceReq) =>
@@ -610,10 +614,13 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 - 保存时仅提交 `{ name, description, status, form }` 字段（对应后端 `UpdateWorkflowMetaRequest`）
 
 **Tab 2: 版本管理**
-- 列出该 Meta 下所有版本（`WorkflowEntity`）
-- 每个版本卡片展示：version 号、节点数量、状态、创建时间
-- 操作：查看/编辑（跳转编排器）、删除、基于此版本创建实例
-- "发起实例"弹窗根据 `meta.form` 动态渲染用户输入表单
+- 列出该 Meta 下所有版本（`WorkflowEntity`，按 version 降序；已标记删除的版本由后端列表过滤）
+- 每个版本条目展示：version 号、状态标签（草稿 / 已发布 / 已归档）、节点数量、创建时间
+- 操作（与后端状态机一致）：
+  - **草稿**：编辑（编排器）、**发布**（`POST .../publish`）
+  - **已发布**：查看（只读编排器）、**复制**（`POST .../copy` → 新草稿、`max_version+1`）、**归档**（`POST .../archive`）、**发起实例**
+  - **已归档**：查看、**删除**（`DELETE .../template/{version}`，仅归档后可删）
+- "发起实例"弹窗根据 `meta.form` 动态渲染用户输入表单（仅已发布版本显示入口）
 
 **Tab 3: 模板变量**
 - 嵌入 `variable/meta-list.vue`，管理该 Meta 的工作流模板级变量
@@ -1196,9 +1203,12 @@ DELETE /workflow/meta/{workflow_meta_id}
 
 # 工作流版本模板
 POST   /workflow/meta/{workflow_meta_id}/template
+GET    /workflow/meta/{workflow_meta_id}/template
 GET    /workflow/meta/{workflow_meta_id}/template/{version}
 DELETE /workflow/meta/{workflow_meta_id}/template/{version}
 POST   /workflow/meta/{workflow_meta_id}/template/{version}/publish
+POST   /workflow/meta/{workflow_meta_id}/template/{version}/archive
+POST   /workflow/meta/{workflow_meta_id}/template/{version}/copy
 
 # 工作流模板变量
 POST   /workflow/meta/{meta_id}/variables

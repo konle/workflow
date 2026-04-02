@@ -63,13 +63,16 @@
           <template #extra>
             <a-button v-if="canWrite" type="primary" size="small" @click="$router.push(`/workflows/${metaId}/editor`)">新建版本</a-button>
           </template>
+          <a-alert type="info" show-icon style="margin-bottom: 12px">
+            草稿可编辑并发布；已发布只读，可复制为新草稿、归档或发起实例；仅<strong>已归档</strong>版本可删除。
+          </a-alert>
           <a-list :data="versions" :loading="versionsLoading">
             <template #item="{ item }">
               <a-list-item>
                 <a-list-item-meta>
                   <template #title>
                     版本 {{ item.version }}
-                    <a-tag :color="item.status === 'Draft' ? 'gray' : item.status === 'Published' ? 'green' : 'orange'" size="small" style="margin-left: 8px">{{ item.status }}</a-tag>
+                    <a-tag :color="versionStatusColor(item.status)" size="small" style="margin-left: 8px">{{ versionStatusLabel(item.status) }}</a-tag>
                   </template>
                   <template #description>
                     {{ item.nodes?.length || 0 }} 个节点 · {{ formatDate(item.created_at) }}
@@ -79,11 +82,41 @@
                   <a-button type="text" size="small" @click="$router.push(`/workflows/${metaId}/editor/${item.version}`)">
                     {{ item.status === 'Draft' ? '编辑' : '查看' }}
                   </a-button>
-                  <a-popconfirm v-if="canWrite && item.status === 'Draft'" content="确定发布此版本？发布后不可编辑。" @ok="handlePublishVersion(item.version)">
+                  <a-popconfirm
+                    v-if="canWrite && item.status === 'Draft'"
+                    content="确定发布此版本？发布后不可再编辑，需复制为新草稿才能修改。"
+                    @ok="handlePublishVersion(item.version)"
+                  >
                     <a-button type="text" size="small" status="success">发布</a-button>
                   </a-popconfirm>
-                  <a-button type="text" size="small" status="success" @click="openLaunch(item.version)">发起实例</a-button>
-                  <a-popconfirm v-if="canWrite" content="确定删除此版本？" @ok="handleDeleteVersion(item.version)">
+                  <a-popconfirm
+                    v-if="canWrite && item.status === 'Published'"
+                    content="将基于该已发布版本复制为新草稿（新版本号），是否继续？"
+                    @ok="handleCopyVersion(item.version)"
+                  >
+                    <a-button type="text" size="small">复制</a-button>
+                  </a-popconfirm>
+                  <a-popconfirm
+                    v-if="canWrite && item.status === 'Published'"
+                    content="归档后不可再发起新实例；需先归档才能删除该版本。确定归档？"
+                    @ok="handleArchiveVersion(item.version)"
+                  >
+                    <a-button type="text" size="small" status="warning">归档</a-button>
+                  </a-popconfirm>
+                  <a-button
+                    v-if="item.status === 'Published'"
+                    type="text"
+                    size="small"
+                    status="success"
+                    @click="openLaunch(item.version)"
+                  >
+                    发起实例
+                  </a-button>
+                  <a-popconfirm
+                    v-if="canWrite && item.status === 'Archived'"
+                    content="删除为终态标记，确定删除此版本？"
+                    @ok="handleDeleteVersion(item.version)"
+                  >
                     <a-button type="text" size="small" status="danger">删除</a-button>
                   </a-popconfirm>
                 </template>
@@ -127,7 +160,7 @@ import { formatDate } from '../../../utils/format'
 import { Notification } from '@arco-design/web-vue'
 import { IconDelete } from '@arco-design/web-vue/es/icon'
 import MetaVariableList from '../../variable/meta-list.vue'
-import type { WorkflowMetaEntity, WorkflowEntity, FormField } from '../../../types/workflow'
+import type { WorkflowMetaEntity, WorkflowEntity, FormField, WorkflowStatus } from '../../../types/workflow'
 
 const route = useRoute()
 const router = useRouter()
@@ -195,8 +228,39 @@ async function fetchVersions() {
   versionsLoading.value = true
   try {
     const res = await workflowApi.listTemplates(metaId)
-    versions.value = res.data
+    const list = [...res.data].sort((a, b) => b.version - a.version)
+    versions.value = list
   } catch {} finally { versionsLoading.value = false }
+}
+
+function versionStatusColor(status: WorkflowStatus): string {
+  switch (status) {
+    case 'Draft':
+      return 'gray'
+    case 'Published':
+      return 'green'
+    case 'Archived':
+      return 'orange'
+    case 'Deleted':
+      return 'red'
+    default:
+      return 'gray'
+  }
+}
+
+function versionStatusLabel(status: WorkflowStatus): string {
+  switch (status) {
+    case 'Draft':
+      return '草稿'
+    case 'Published':
+      return '已发布'
+    case 'Archived':
+      return '已归档'
+    case 'Deleted':
+      return '已删除'
+    default:
+      return status
+  }
 }
 
 const versionsLoaded = ref(false)
@@ -232,6 +296,22 @@ async function handlePublishVersion(version: number) {
   try {
     await workflowApi.publishTemplate(metaId, version)
     Notification.success({ content: `版本 ${version} 已发布` })
+    fetchVersions()
+  } catch {}
+}
+
+async function handleArchiveVersion(version: number) {
+  try {
+    await workflowApi.archiveTemplate(metaId, version)
+    Notification.success({ content: `版本 ${version} 已归档` })
+    fetchVersions()
+  } catch {}
+}
+
+async function handleCopyVersion(version: number) {
+  try {
+    await workflowApi.copyTemplate(metaId, version)
+    Notification.success({ content: `已基于版本 ${version} 复制为新草稿，请在列表中打开编辑` })
     fetchVersions()
   } catch {}
 }
