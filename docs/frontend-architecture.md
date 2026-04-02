@@ -541,7 +541,9 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 
 **FormField.type（FormValueType）语义**：
 - `String` / `Number` / `Bool` / `Json`：字面量，原样使用，不做模板渲染
-- `Variable`：模板字符串，引擎执行时渲染 `{{}}` 占位符
+- `Variable`：模板字符串，引擎执行时渲染 `{{}}` 占位符（点路径解析，与后端 `http_template_resolve` 一致）
+
+**占位符路径（与 `docs/architecture.md` 8.6 对齐）**：除合并后的实例/变量键外，已成功前置节点的落盘结果可通过 `nodes.<node_id>.output` 引用（例如 URL 或 Body 的 Variable 字段填写 `nodes.http_1.output.data.id`）。Parallel/ForkJoin 的**子任务**不在 `nodes` 下单独占键；仅容器节点自身有一条 `nodes.<容器节点 id>.output`。
 
 > 注意：`IfCondition`、`ContextRewrite`、`Parallel`、`ForkJoin`、`SubWorkflow` 是编排层节点类型，不作为独立原子任务模板暴露在此页面。它们只在**工作流可视化编排器**中作为节点类型使用。
 
@@ -882,7 +884,7 @@ POST /api/v1/workflow/meta/{metaId}/template
 |------|------|
 | 左侧面板 | 实例基础信息：状态、版本、创建时间、上下文 (JSON Viewer) |
 | 中央画布 | 只读 DAG 图，每个节点按 `NodeExecutionStatus` 实时着色 |
-| 右侧面板 | 点击节点后展示：节点状态、`task_instance.input`（解析后入参）、`task_instance.output`（结果）、Error；**不再**使用已移除的 `node.output` |
+| 右侧面板 | 点击节点后展示：节点状态、`task_instance.input`（解析后入参）、`task_instance.output`（结果）、Error；并展示 **`WorkflowNodeInstanceEntity.context`**（`resolve_variables` 之后、含引擎注入的 `nodes` 的执行前解析快照，便于对照模板/Rhai 与 input）；**不再**使用已移除的 `node.output` |
 
 **节点着色规则**：
 

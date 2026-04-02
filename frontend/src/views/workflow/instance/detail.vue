@@ -55,6 +55,11 @@
                 <status-tag :status="selectedNode.status" :map="NODE_STATUS_MAP" />
               </a-descriptions-item>
             </a-descriptions>
+            <a-divider>节点上下文</a-divider>
+            <p class="node-context-hint">
+              执行本节点前用于模板 / Rhai 解析的合并上下文（含变量合并与系统注入的 <code>nodes</code>）。
+            </p>
+            <json-viewer :data="selectedNode.context ?? {}" />
             <a-divider>Input</a-divider>
             <json-viewer v-if="selectedNode.task_instance?.input != null" :data="selectedNode.task_instance.input" />
             <a-empty v-else description="暂无执行入参" />
@@ -198,6 +203,21 @@ onMounted(async () => {
   }
 })
 </script>
+
+<style scoped>
+.node-context-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--color-text-3);
+  line-height: 1.5;
+}
+.node-context-hint code {
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: var(--color-fill-2);
+}
+</style>
 
 <style>
 @import '@vue-flow/core/dist/style.css';

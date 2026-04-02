@@ -15,6 +15,7 @@ use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
 use crate::task::entity::TaskTemplate;
 use crate::task::http_template_resolve::resolved_http_request_snapshot;
 use crate::workflow::entity::{NodeExecutionStatus, WorkflowInstanceEntity};
+use crate::workflow::resolution_context::augment_merged_context_with_nodes;
 use tracing::{debug, error, info, warn};
 
 /// After reloading the workflow, whether the main loop should keep spinning.
@@ -489,6 +490,12 @@ impl PluginManager {
                 ),
             }
         }
+
+        node.context = augment_merged_context_with_nodes(
+            instance,
+            &node.node_id,
+            node.context.clone(),
+        );
 
         if let TaskTemplate::Http(ref tpl) = node.task_instance.task_template {
             node.task_instance.input = Some(resolved_http_request_snapshot(tpl, &node.context));

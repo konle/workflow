@@ -35,7 +35,7 @@ impl PluginInterface for IfConditionPlugin {
         let engine = rhai_engine::create_engine();
         let mut scope = Scope::new();
 
-        rhai_engine::inject_context_flat(&mut scope, &workflow_instance.context);
+        // `node_instance.context` is resolve_variables + `nodes` (see `run_node`); single source of truth.
         rhai_engine::inject_context_flat(&mut scope, &node_instance.context);
 
         let result: bool = engine.eval_with_scope(&mut scope, &template.condition)

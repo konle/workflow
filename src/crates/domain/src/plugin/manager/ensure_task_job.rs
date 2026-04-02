@@ -26,6 +26,7 @@ impl PluginManager {
         }
 
         let now = chrono::Utc::now();
+        let parent_node_ctx = &instance.nodes[node_index].context;
         let parent = &instance.nodes[node_index].task_instance;
         let (child_template, child_task_type) = match &parent.task_template {
             TaskTemplate::Parallel(pt) => {
@@ -80,7 +81,7 @@ impl PluginManager {
                         .and_then(|c| c.item_index)
                         .unwrap_or(0);
                     let ctx = crate::task::http_template_resolve::context_with_parallel_item(
-                        &instance.context,
+                        parent_node_ctx,
                         &pt.items_path,
                         &pt.item_alias,
                         idx,
@@ -93,7 +94,7 @@ impl PluginManager {
                     task_instance.input = Some(
                         crate::task::http_template_resolve::resolved_http_request_snapshot(
                             tpl,
-                            &instance.context,
+                            parent_node_ctx,
                         ),
                     );
                 }

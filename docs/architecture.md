@@ -469,9 +469,10 @@ SuperAdmin 可通过 `X-Tenant-Id` Header 代入任意租户上下文。
 | 1 (最低) | **租户变量** | `tenant_id` | 全租户共享的基础配置 | `VariableEntity (scope=Tenant)` |
 | 2 | **工作流模板变量** | `workflow_meta_id` | 某个工作流的默认配置 | `VariableEntity (scope=WorkflowMeta)` |
 | 3 | **工作流实例变量** | `workflow_instance_id` | 运行时传入的上下文 | `WorkflowInstanceEntity.context` |
-| 4 (最高) | **节点上下文** | `node_id` | 单节点的局部覆盖 | `WorkflowNodeInstanceEntity.context` |
+| 4 | **节点上下文** | `node_id` | 单节点的局部覆盖（模板拷贝 + 运行期合并结果） | `WorkflowNodeInstanceEntity.context`（初值来自 `WorkflowNodeEntity.context`） |
+| 5 (执行期最高) | **系统 `nodes`** | — | 仅保留字顶层键 `nodes`：已完成节点的输出引用 | 由引擎在 `resolve_variables` **之后**注入，**覆盖**合并结果中与 `nodes` 同名的用户键 |
 
-> 优先级 3、4 已存在于现有实体的 `context` 字段中，无需额外建模。变量系统仅为优先级 1、2 新增持久化实体。
+> 优先级 1～4 由 `VariableService::resolve_variables` 合并；**越靠近执行代码越高**。优先级 5 仅作用于顶层键 `nodes`：编排者不应在实例 `context` 中依赖自定义 `nodes` 键（会被系统覆盖）。变量系统为优先级 1、2 新增持久化实体；3、4 来自现有实体字段。
 
 ### 8.3 变量实体
 
@@ -530,9 +531,26 @@ resolve_variables(tenant_id, workflow_meta_id, instance_context, node_context):
     return merged
 ```
 
-Rhai 表达式（IfCondition）和模板渲染（HTTP URL/Body）均基于此 `merged` 上下文执行。Secret 类型的变量在解析阶段解密注入，但**绝不写入** `TaskInstanceEntity.output`，防止凭证泄漏到持久化层。
+随后 `PluginManager::run_node` 调用 `augment_merged_context_with_nodes`，在合并结果上**写入/覆盖**顶层键 `nodes`（见下节）。**节点执行前、用于 Rhai 与 `{{}}` 模板解析的最终 JSON** = `merged` + 系统 `nodes`。
 
-### 8.6 权限矩阵
+Secret 类型的变量在解析阶段解密注入，但**绝不写入** `TaskInstanceEntity.output`，防止凭证泄漏到持久化层。
+
+### 8.6 执行期节点输出命名空间 (`nodes`)
+
+引擎在**每个节点**进入插件逻辑前，在 `resolve_variables` 产物之上注入只读结构的顶层键 `nodes`，供 **IfCondition、ContextRewrite（`ctx`）、HTTP/gRPC 等模板中的 `{{path}}`、Parallel 的 `items_path`（经 `WorkflowNodeInstanceEntity.context` 解析）** 统一引用。
+
+| 规则 | 说明 |
+|------|------|
+| 形状 | `nodes.<node_id>.output` → 与该 `node_id` 对应的 `TaskInstanceEntity.output`（JSON） |
+| 收录条件 | 仅 **非当前节点**、**`NodeExecutionStatus::Success`** 且 **`task_instance.output` 已落盘** 的图节点 |
+| 当前节点 | **不包含**当前正在执行的节点（执行前尚无本次 output，避免自引用） |
+| Parallel / ForkJoin | **子任务**（队列子 `TaskInstance`）**不**作为 `nodes` 中的独立条目；仅**容器节点**自身有一条 `nodes.<容器node_id>.output`（如状态机 JSON） |
+| 优先级 | 系统构造的 `nodes` **覆盖**合并上下文中同名顶层键 `nodes`（用户不应占用该保留字） |
+| 快照语义 | 与「节点级解析上下文」一致：`resolve_variables` 之后的合并结果再注入 `nodes`，再用于生成 `task_instance.input` 快照与 Rhai `ctx` |
+
+实现位于 `domain/workflow/resolution_context.rs`（`build_nodes_object`、`augment_merged_context_with_nodes`）。Parallel/ForkJoin **内层** HTTP 子任务在 `ensure_task_instance_for_job` 中使用**父节点**已持久化的 `WorkflowNodeInstanceEntity.context` 作为模板解析基底，从而同样可引用 `nodes.*`。
+
+### 8.7 权限矩阵
 
 | 操作 | SuperAdmin | TenantAdmin | Developer | Operator | Viewer |
 |------|:---:|:---:|:---:|:---:|:---:|
@@ -541,7 +559,7 @@ Rhai 表达式（IfCondition）和模板渲染（HTTP URL/Body）均基于此 `m
 | 模板变量 CRUD | ✅ | ✅ | ✅ | 仅读 | 仅读 |
 | 模板 Secret 变量 创建/改值 | ✅ | ✅ | ✅ | ❌ | ❌ |
 
-### 8.7 API 路由
+### 8.8 API 路由
 
 ```
 # 租户变量
@@ -559,17 +577,18 @@ PUT    /api/v1/workflow/meta/{meta_id}/variables/{id}        # 更新
 DELETE /api/v1/workflow/meta/{meta_id}/variables/{id}        # 删除
 ```
 
-### 8.8 涉及代码变更
+### 8.9 涉及代码变更
 
 | 层级 | 变更 |
 |------|------|
 | `domain/variable/entity` | 新增 `VariableEntity`、`VariableScope`、`VariableType` |
 | `domain/variable/repository` | `VariableRepository` trait |
 | `domain/variable/service` | `VariableService`（CRUD + AES 加解密 + `resolve_variables`） |
+| `domain/workflow/resolution_context` | `nodes` 注入与合并上下文增强 |
 | `infrastructure/mongodb/variable` | MongoDB 实现 |
 | `api/handler/variable` | Handler + 权限守卫 |
 | `api/router` | 路由挂载 |
-| `domain/plugin/manager` | 执行节点前调用 `resolve_variables` 合并上下文 |
+| `domain/plugin/manager` | `run_node`：`resolve_variables` 后 `augment_merged_context_with_nodes`；`ensure_task_instance_for_job` 内层 HTTP 使用父节点 `context` |
 
 ---
 
@@ -606,7 +625,7 @@ pub enum MergeMode {
 
 ### 9.3 Rhai 脚本规范
 
-引擎将合并后的变量上下文（`resolve_variables` 结果）注入 Rhai 作用域为 `ctx` 变量。脚本最后一行返回 `#{ ... }` Map 对象。
+引擎将 **节点执行前解析上下文** 注入 Rhai 作用域为 `ctx`：即 `resolve_variables` 合并结果再经 **8.6 节** 注入顶层 `nodes` 后的 JSON（与 IfCondition、HTTP 模板同源）。脚本中可通过 `ctx["nodes"]["<node_id>"]["output"]` 读取已成功前置节点的落盘输出。脚本最后一行返回 `#{ ... }` Map 对象。
 
 ```rhai
 // 示例：字段提取
@@ -630,13 +649,14 @@ let tier = if ctx["amount"] > 1000 { "premium" } else { "standard" };
 
 ```
 Workflow Worker 命中 ContextRewrite 节点
-  ├─ 1. resolve_variables() 合并四层上下文 → merged_ctx
-  ├─ 2. 将 merged_ctx 注入 Rhai Scope 为 `ctx`
-  ├─ 3. 执行 script，获取返回的 Map
-  ├─ 4. Merge 模式 → context.extend(result)
+  ├─ 1. resolve_variables() 合并变量层级 → merged_ctx
+  ├─ 2. augment_merged_context_with_nodes → 写入系统 `nodes`
+  ├─ 3. 将上述 JSON 注入 Rhai Scope 为 `ctx`
+  ├─ 4. 执行 script，获取返回的 Map
+  ├─ 5. Merge 模式 → context.extend(result)
   │     Replace 模式 → context = result
-  ├─ 5. 写回 workflow_instance.context
-  └─ 6. 返回 ExecutionResult::success()，同步推进
+  ├─ 6. 写回 workflow_instance.context
+  └─ 7. 返回 ExecutionResult::success()，同步推进
 ```
 
 ### 9.5 安全约束
