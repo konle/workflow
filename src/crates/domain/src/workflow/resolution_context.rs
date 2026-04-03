@@ -1,13 +1,13 @@
-//! Execution-time JSON context: merged variables plus `nodes` (prior successful outputs).
+//! Execution-time JSON context: merged variables plus `nodes` (prior successful or skipped outputs).
 //!
 //! After `VariableService::resolve_variables`, call [`augment_merged_context_with_nodes`]
-//! so templates and Rhai see `nodes.<node_id>.output` for completed nodes.
+//! so templates and Rhai see `nodes.<node_id>.output` for completed or skipped nodes.
 
 use crate::workflow::entity::{NodeExecutionStatus, WorkflowInstanceEntity};
 use serde_json::{json, Map, Value as JsonValue};
 
 /// Build the `nodes` object: only **other** nodes (not `current_node_id`) that are
-/// `Success` and have a persisted `task_instance.output`.
+/// `Success` or **`Skipped` with persisted `task_instance.output`** (including `{}`).
 ///
 /// Parallel/ForkJoin **child** task rows are not workflow graph nodes; they do not appear here.
 /// Container nodes appear as a single entry with their own `task_instance.output`.
@@ -17,7 +17,11 @@ pub fn build_nodes_object(instance: &WorkflowInstanceEntity, current_node_id: &s
         if n.node_id == current_node_id {
             continue;
         }
-        if n.status != NodeExecutionStatus::Success {
+        let include = matches!(
+            n.status,
+            NodeExecutionStatus::Success | NodeExecutionStatus::Skipped
+        );
+        if !include {
             continue;
         }
         let Some(output) = &n.task_instance.output else {
@@ -147,6 +151,37 @@ mod tests {
         assert!(!obj.contains_key("c"));
         assert_eq!(obj["a"]["output"]["x"], json!(1));
     }
+    #[test]
+    fn skipped_with_output_in_nodes() {
+        let instance = WorkflowInstanceEntity {
+            workflow_instance_id: "wf1".into(),
+            tenant_id: "t1".into(),
+            workflow_meta_id: "m1".into(),
+            workflow_version: 1,
+            status: crate::shared::workflow::WorkflowInstanceStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            deleted_at: None,
+            context: JsonValue::Object(Map::new()),
+            entry_node: "a".into(),
+            current_node: "b".into(),
+            nodes: vec![node(
+                "a",
+                NodeExecutionStatus::Skipped,
+                Some(json!({})),
+            )],
+            epoch: 0,
+            locked_by: None,
+            locked_duration: None,
+            locked_at: None,
+            parent_context: None,
+            depth: 0,
+        };
+
+        let nodes = build_nodes_object(&instance, "b");
+        assert_eq!(nodes["a"]["output"], json!({}));
+    }
+
 
     #[test]
     fn augment_overwrites_nodes_key() {

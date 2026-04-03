@@ -272,6 +272,8 @@ export const workflowApi = {
     request.post<WorkflowInstance>(`/workflow/instance/${id}/retry`),
   resumeInstance: (id: string) =>
     request.post<WorkflowInstance>(`/workflow/instance/${id}/resume`),
+  skipNode: (id: string, body: { node_id: string; output: Record<string, unknown> }) =>
+    request.post<WorkflowInstance>(`/workflow/instance/${id}/skip-node`, body),
 }
 ```
 
@@ -317,11 +319,13 @@ interface FormField {
 
 // HTTP 任务模板
 interface TaskHttpTemplate {
-  url: string                       // 支持 {{变量}} 模板，约定始终做模板渲染
+  url: string                       // 对 effective_ctx 做 {{变量}} 模板渲染（见下）
   method: HttpMethod
-  headers: FormField[]              // 请求头列表，Variable 类型支持 {{变量}}
-  body: FormField[]                 // 请求体字段列表，每条构成 body JSON 的一个 key
-  form: FormField[]                 // 用户输入表单定义，运行时渲染到 URL/Headers/Body
+  headers: FormField[]              // 对 effective_ctx 解析；Variable 行写 {{path}}
+  body: FormField[]                 // 请求体字段列表，每条构成 body JSON 的一个 key；解析上下文为 effective_ctx
+  // 任务级「表单默认值」：先在合并后的工作流/实例上下文中解析每一行，再覆盖合并进上下文；
+  // url / headers / body 的 Variable 与占位符使用合并后的 effective_ctx（同名键以本 form 为准）。
+  form: FormField[]
   retry_count: number
   retry_delay: number
   timeout: number
@@ -540,12 +544,12 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 **HTTP 任务编辑器分为三个区块**：
 
 1. **请求配置**（任务设计者填写）：URL、Method、Headers（FormField[] 动态 KV 编辑器 + 常用 Header 快捷标签）、Body（FormField[] 字段编辑器，每行 key+value+type+description）
-2. **用户表单定义**（定义最终用户看到的输入表单）：Form（FormField[] 编辑器），此处定义的字段在工作流实例创建时展示给用户填写，值通过 `{{key}}` 在 URL/Headers/Body 中引用
+2. **任务级 Form（FormField[]）**：双重角色——(a) 可作为**任务设计时的默认绑定**：引擎先将本区块各行按**工作流合并上下文**（租户/工作流变量、实例 `context`、`nodes.*` 等）解析成键值，再**覆盖**到该上下文中，得到 **effective_ctx**，随后 **URL / Headers / Body** 中的 `Variable` 与 `{{}}` 均按 **effective_ctx** 解析（**同名键以本区块为准**，例如 Body 写 `{{password}}`、此处 `password` 为 String `123` 时即发送 `123`）；(b) 若工作流 Meta 在编排里引用该任务并要求最终用户填表，用户填写值仍会进入实例 `context`，但若与本区块同名，仍以任务模板 **form** 行为准（与后端 `http_template_resolve` 一致，详见 `docs/architecture.md` §3.3）。
 3. **运行参数**：timeout、retry_count、retry_delay、success_condition
 
 **FormField.type（FormValueType）语义**：
 - `String` / `Number` / `Bool` / `Json`：字面量，原样使用，不做模板渲染
-- `Variable`：模板字符串，引擎执行时渲染 `{{}}` 占位符（点路径解析，与后端 `http_template_resolve` 一致）
+- `Variable`：模板字符串，引擎对当前解析上下文渲染 `{{}}` 占位符（在 **form** 行上为合并后的工作流上下文；在 **headers/body** 上为 **effective_ctx**，与后端 `http_template_resolve` 一致）
 
 **占位符路径（与 `docs/architecture.md` 8.6 对齐）**：除合并后的实例/变量键外，已成功前置节点的落盘结果可通过 `nodes.<node_id>.output` 引用（例如 URL 或 Body 的 Variable 字段填写 `nodes.http_1.output.data.id`）。Parallel/ForkJoin 的**子任务**不在 `nodes` 下单独占键；仅容器节点自身有一条 `nodes.<容器节点 id>.output`。
 
@@ -576,7 +580,8 @@ SuperAdmin 登录后，`tenant_id` 字段为默认管理租户；进入系统后
 
 | 区域 | 内容 |
 |------|------|
-| 基础信息卡片 | 实例ID、任务名、类型、状态、耗时、创建/更新时间 |
+| 基础信息卡片 | 实例ID、任务名、类型、状态、耗时、创建/更新时间；若 `caller_context` 存在，展示 **所属工作流实例** 与 **节点 ID** 的可点击链接（跳转 `/workflows/instances/:id`） |
+| 操作区 | **执行 / 重试 / 取消** 与列表规则一致；重试前若存在父工作流，可展示简短说明（与架构 §1.4.4 级联一致） |
 | Input 区域 | JSON Viewer 展示 `input`（渲染后的实际请求） |
 | Output 区域 | JSON Viewer 展示 `output`（执行结果） |
 | Error 区域 | 仅在 `error_message` 非空时展示，红色告警卡片 |
@@ -870,16 +875,25 @@ POST /api/v1/workflow/meta/{metaId}/template
 | 状态 | `status` | 带色彩标签 |
 | 当前节点 | `current_node` | 显示正在执行的节点 |
 | 创建时间 | `created_at` | |
-| 操作 | — | 执行 / 取消 / 重试 / 恢复 |
+| 操作 | — | 执行 / 取消 / 重试 / 恢复；跳过节点主要在 **详情页**（`skip-node` + `NodeCallback`） |
 
-**操作按钮状态机约束** (对应后端 `WorkflowInstanceStatus::can_transition_to`)：
+**操作按钮状态机约束** (对应后端 `WorkflowInstanceStatus::can_transition_to`，与 `docs/architecture.md` **§1.3、§1.4** 一致)：
 
-| 操作 | 可用状态 |
-|------|----------|
-| 执行 (execute) | Pending |
-| 取消 (cancel) | Failed, Suspended |
-| 重试 (retry) | Failed |
-| 恢复 (resume) | Suspended |
+- **重试 / 恢复**：仅 `→ Pending` 落库，**不**投递编排；要继续跑需用户或产品再调 **`POST .../execute`**（`WorkflowEvent::Start`）。
+- **跳过节点**：**阶段 1** 落库（节点 `Skipped`、`task_instance.output`、实例 `Failed|Suspended → Pending` 等，见架构 **§1.4.5**）；**阶段 2** 后端投递 **`ExecuteWorkflowJob { event: NodeCallback, status: Skipped, ... }`**（与 Task Worker 回调同形，**方案 A**）。编排器在 Worker 内吸收回调并继续主循环，**一般无需用户再点 execute**。
+- **执行 (execute)**：仅当实例为 `Pending` 时，`Pending→Running` 并投递 **`Start`**。
+
+| 操作 | 可用状态 | 说明 |
+|------|----------|------|
+| 执行 (execute) | `Pending` | `POST .../execute`：进入 `Running` 并投递编排 Job（`Start`，整实例调度入口）。 |
+| 取消 (cancel) | `Failed`, `Suspended` | `POST .../cancel` → `Canceled`。 |
+| 重试 (retry) | `Failed` | `POST .../retry` → `Pending` **仅**；要继续跑需再调 **execute**。 |
+| 恢复 (resume) | `Suspended` | `POST .../resume` → `Pending` **仅**；同上。 |
+| 跳过节点 | `Failed` / `Suspended`（安全窗口） | `POST .../skip-node`，Body：`{ "node_id", "output" }`，**`output` 须为 JSON 对象，允许 `{}`**；与架构 **§1.4.5** 一致，**不**使用 `synthetic_output` 等别名。一期可拒绝 **Parallel / ForkJoin / SubWorkflow** 等容器类节点。 |
+
+**UX**：可提供「重试并运行」（`retry` 再 `execute`）；**跳过**成功后可提示「已投递编排，实例将自动继续」，无需捆绑 execute。
+
+**级联提示**：任务页 **retry** 可能只把父实例拉回 `Pending`；是否再对父调 **execute** 见架构 **§1.4.4**。
 
 #### 6.9.2 详情页 (`/workflows/instances/:id`)
 
@@ -892,6 +906,7 @@ POST /api/v1/workflow/meta/{metaId}/template
 | 左侧面板 | 实例基础信息：状态、版本、创建时间、上下文 (JSON Viewer) |
 | 中央画布 | 只读 DAG 图，每个节点按 `NodeExecutionStatus` 实时着色 |
 | 右侧面板 | 点击节点后展示：节点状态、`task_instance.input`（解析后入参）、`task_instance.output`（结果）、Error；并展示 **`WorkflowNodeInstanceEntity.context`**（`resolve_variables` 之后、含引擎注入的 `nodes` 的执行前解析快照，便于对照模板/Rhai 与 input）；**不再**使用已移除的 `node.output` |
+| 运维操作 | 顶栏或侧栏：**重试 / 恢复 / 取消**（按实例状态）；选中 **当前节点** 且节点为 `Failed`/`Suspended`、且非容器类节点时，可提供 **跳过**：弹窗编辑 **`output` JSON 对象**（默认 `{}`），提示下游 `nodes.<本节点>.output` 形状；提交 **`POST .../skip-node`** 后由后端投递 **`NodeCallback`**，一般无需再点 execute |
 
 **节点着色规则**：
 
@@ -1225,4 +1240,5 @@ POST   /workflow/instance/{id}/execute
 POST   /workflow/instance/{id}/cancel
 POST   /workflow/instance/{id}/retry
 POST   /workflow/instance/{id}/resume
+POST   /workflow/instance/{id}/skip-node   # body: { "node_id": "...", "output": { } }  — 见 architecture.md §1.4.5，投递 NodeCallback
 ```

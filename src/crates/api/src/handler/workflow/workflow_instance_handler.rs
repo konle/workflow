@@ -6,8 +6,8 @@ use axum::{
 use tracing::{info, error};
 use domain::shared::job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent};
 use domain::workflow::{
-    entity::WorkflowInstanceEntity,
-    service::{WorkflowDefinitionService, WorkflowInstanceService},
+    entity::{NodeExecutionStatus, WorkflowInstanceEntity},
+    service::{node_callback_child_task_id, WorkflowDefinitionService, WorkflowInstanceService},
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -15,6 +15,12 @@ use crate::error::ApiError;
 use crate::middleware::auth::AuthContext;
 use crate::response::response::Response;
 use std::sync::Arc;
+
+#[derive(Deserialize)]
+pub struct SkipWorkflowNodeRequest {
+    pub node_id: String,
+    pub output: JsonValue,
+}
 
 #[derive(Deserialize)]
 pub struct CreateWorkflowInstanceRequest {
@@ -49,6 +55,7 @@ pub fn routes(handler: Arc<WorkflowInstanceHandler>) -> Router {
         .route("/{id}/cancel", post(cancel_instance))
         .route("/{id}/retry", post(retry_instance))
         .route("/{id}/resume", post(resume_instance))
+        .route("/{id}/skip-node", post(skip_node))
         .with_state(handler)
 }
 
@@ -149,3 +156,54 @@ async fn resume_instance(
     info!(workflow_instance_id = %id, "workflow instance resumed");
     Ok(Json(Response::success(result)))
 }
+
+async fn skip_node(
+    State(handler): State<Arc<WorkflowInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Json(req): Json<SkipWorkflowNodeRequest>,
+) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
+    handler
+        .instance_service
+        .get_workflow_instance_scoped(&auth.tenant_id, &id)
+        .await?;
+
+    let updated = handler
+        .instance_service
+        .skip_workflow_node(&auth.tenant_id, &id, &req.node_id, req.output.clone())
+        .await
+        .map_err(ApiError::bad_request)?;
+
+    let node = updated
+        .nodes
+        .iter()
+        .find(|n| n.node_id == req.node_id)
+        .ok_or_else(|| ApiError::internal("skipped node missing after save"))?;
+
+    let out = node.task_instance.output.clone().unwrap_or(req.output);
+
+    handler
+        .dispatcher
+        .dispatch_workflow(ExecuteWorkflowJob {
+            workflow_instance_id: updated.workflow_instance_id.clone(),
+            tenant_id: auth.tenant_id.clone(),
+            event: WorkflowEvent::NodeCallback {
+                node_id: req.node_id.clone(),
+                child_task_id: node_callback_child_task_id(&updated, node),
+                status: NodeExecutionStatus::Skipped,
+                output: Some(out),
+                error_message: None,
+                input: None,
+            },
+        })
+        .await
+        .map_err(|e| {
+            error!(workflow_instance_id = %id, error = %e, "failed to dispatch skip NodeCallback");
+            ApiError::internal(e.to_string())
+        })?;
+
+    info!(workflow_instance_id = %id, node_id = %req.node_id, "skip-node persisted and NodeCallback dispatched");
+
+    Ok(Json(Response::success(updated)))
+}
+

@@ -28,6 +28,15 @@ impl ExecutionResult {
         Self { status: NodeExecutionStatus::Pending, dispatch_jobs: vec![], dispatch_workflow_jobs: vec![], jump_to_node: None }
     }
 
+    pub fn skipped(jump_to_node: Option<String>) -> Self {
+        Self {
+            status: NodeExecutionStatus::Skipped,
+            dispatch_jobs: vec![],
+            dispatch_workflow_jobs: vec![],
+            jump_to_node,
+        }
+    }
+
     pub fn async_dispatch(job: ExecuteTaskJob) -> Self {
         Self { status: NodeExecutionStatus::Suspended, dispatch_jobs: vec![job], dispatch_workflow_jobs: vec![], jump_to_node: None }
     }
@@ -70,6 +79,7 @@ pub trait PluginInterface: Send + Sync {
         
         match status {
             NodeExecutionStatus::Success => Ok(ExecutionResult::success(None)),
+            NodeExecutionStatus::Skipped => Ok(ExecutionResult::skipped(None)),
             NodeExecutionStatus::Failed => Ok(ExecutionResult::failed()),
             _ => Ok(ExecutionResult::pending()),
         }

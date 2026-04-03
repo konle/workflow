@@ -1,4 +1,14 @@
-//! Resolve HTTP task templates against a merged JSON context (`{{key}}` and Variable-typed forms).
+//! Resolve HTTP task templates against a merged JSON context.
+//!
+//! - **Task template `form`** (HTTP task designer defaults): each row is resolved **only** against
+//!   the incoming `ctx` (tenant / workflow / instance / node merge). The resulting key-value map
+//!   is merged **on top of** `ctx` (same keys **overwritten**) to form `effective_ctx`.
+//! - **`url` / `headers` / `body`**: resolved against `effective_ctx`, so `Variable` rows can bind
+//!   keys supplied only via task `form` (e.g. body `{{password}}` + form `password: "123"`).
+//! - **Snapshot `form` field**: still the task-`form` rows evaluated against **base `ctx` only**
+//!   (the overlay map), not `effective_ctx`, so it does not reflect keys invented only by overlay.
+//! - **Per-row types** (`headers` / `body` / `form` rows): `String` / `Number` / `Bool` / `Json` are
+//!   literal; only `Variable` runs `{{path}}` template substitution (including mixed text).
 
 use crate::shared::form::{Form, FormValue, FormValueType};
 use crate::task::entity::{HttpMethod, TaskHttpTemplate};
@@ -50,15 +60,14 @@ pub fn resolve_template_placeholders(s: &str, ctx: &JsonValue) -> String {
 
 fn resolve_form_to_json(form: &Form, ctx: &JsonValue) -> JsonValue {
     match form.value_type {
-        FormValueType::Variable => {
-            let path = match &form.value {
-                FormValue::String(s) => s.as_str(),
-                _ => return JsonValue::Null,
-            };
-            get_by_path(ctx, path).unwrap_or(JsonValue::Null)
-        }
+        FormValueType::Variable => match &form.value {
+            FormValue::String(s) => {
+                JsonValue::String(resolve_template_placeholders(s, ctx))
+            }
+            _ => JsonValue::Null,
+        },
         FormValueType::String => match &form.value {
-            FormValue::String(s) => JsonValue::String(resolve_template_placeholders(s, ctx)),
+            FormValue::String(s) => JsonValue::String(s.clone()),
             FormValue::Number(n) => JsonValue::Number(serde_json::Number::from_f64(*n).unwrap_or(0.into())),
             FormValue::Bool(b) => JsonValue::Bool(*b),
             FormValue::Json(j) => j.clone(),
@@ -69,39 +78,59 @@ fn resolve_form_to_json(form: &Form, ctx: &JsonValue) -> JsonValue {
                 if let Ok(n) = s.parse::<f64>() {
                     JsonValue::Number(serde_json::Number::from_f64(n).unwrap_or(0.into()))
                 } else {
-                    JsonValue::String(resolve_template_placeholders(s, ctx))
+                    JsonValue::String(s.clone())
                 }
             }
             _ => JsonValue::Null,
         },
         FormValueType::Bool => match &form.value {
             FormValue::Bool(b) => JsonValue::Bool(*b),
-            FormValue::String(s) => JsonValue::String(resolve_template_placeholders(s, ctx)),
+            FormValue::String(s) => JsonValue::String(s.clone()),
             _ => JsonValue::Null,
         },
         FormValueType::Json => match &form.value {
             FormValue::Json(j) => j.clone(),
-            FormValue::String(s) => JsonValue::String(resolve_template_placeholders(s, ctx)),
+            FormValue::String(s) => JsonValue::String(s.clone()),
             _ => JsonValue::Null,
         },
     }
 }
 
+/// `base` object extended with `layer` entries; **layer overwrites** existing keys (task `form` wins).
+fn merge_ctx_with_task_form_layer(base: &JsonValue, layer: &Map<String, JsonValue>) -> JsonValue {
+    if layer.is_empty() {
+        return base.clone();
+    }
+    let mut map = base.as_object().cloned().unwrap_or_default();
+    for (k, v) in layer {
+        map.insert(k.clone(), v.clone());
+    }
+    JsonValue::Object(map)
+}
+
 /// Build the canonical **resolved** HTTP request snapshot: `url`, `method`, `headers`, `body`, optional `form`.
 pub fn resolved_http_request_snapshot(template: &TaskHttpTemplate, ctx: &JsonValue) -> JsonValue {
-    let url = resolve_template_placeholders(&template.url, ctx);
+    let form_layer: Map<String, JsonValue> = template
+        .form
+        .iter()
+        .map(|f| (f.key.clone(), resolve_form_to_json(f, ctx)))
+        .collect();
+
+    let effective_ctx = merge_ctx_with_task_form_layer(ctx, &form_layer);
+
+    let url = resolve_template_placeholders(&template.url, &effective_ctx);
     let method_str = format!("{:?}", template.method);
 
     let headers: Map<String, JsonValue> = template
         .headers
         .iter()
-        .map(|f| (f.key.clone(), resolve_form_to_json(f, ctx)))
+        .map(|f| (f.key.clone(), resolve_form_to_json(f, &effective_ctx)))
         .collect();
 
     let body: Map<String, JsonValue> = template
         .body
         .iter()
-        .map(|f| (f.key.clone(), resolve_form_to_json(f, ctx)))
+        .map(|f| (f.key.clone(), resolve_form_to_json(f, &effective_ctx)))
         .collect();
     let body_v = if body.is_empty() {
         JsonValue::Null
@@ -109,15 +138,10 @@ pub fn resolved_http_request_snapshot(template: &TaskHttpTemplate, ctx: &JsonVal
         JsonValue::Object(body)
     };
 
-    let form: Map<String, JsonValue> = template
-        .form
-        .iter()
-        .map(|f| (f.key.clone(), resolve_form_to_json(f, ctx)))
-        .collect();
-    let form_v = if form.is_empty() {
+    let form_v = if form_layer.is_empty() {
         JsonValue::Null
     } else {
-        JsonValue::Object(form)
+        JsonValue::Object(form_layer)
     };
 
     json!({
@@ -217,4 +241,113 @@ pub fn effective_http_request(
     };
 
     (snapshot, url, method, headers_obj, body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::form::{Form, FormValue, FormValueType};
+    use crate::task::entity::{HttpMethod, TaskHttpTemplate};
+
+    fn form(key: &str, value: FormValue, value_type: FormValueType) -> Form {
+        Form {
+            key: key.to_string(),
+            value,
+            value_type,
+            description: None,
+        }
+    }
+
+    fn tpl(body: Vec<Form>) -> TaskHttpTemplate {
+        tpl_with_form(body, vec![])
+    }
+
+    fn tpl_with_form(body: Vec<Form>, form: Vec<Form>) -> TaskHttpTemplate {
+        TaskHttpTemplate {
+            url: "http://example.test/x".to_string(),
+            method: HttpMethod::Post,
+            headers: vec![],
+            body,
+            form,
+            retry_count: 0,
+            retry_delay: 0,
+            timeout: 0,
+            success_condition: None,
+        }
+    }
+
+    #[test]
+    fn variable_row_substitutes_braced_placeholders() {
+        let template = tpl(vec![form(
+            "name",
+            FormValue::String("{{name}}".into()),
+            FormValueType::Variable,
+        )]);
+        let ctx = json!({ "name": "WOAA2" });
+        let snap = resolved_http_request_snapshot(&template, &ctx);
+        assert_eq!(snap["body"]["name"], json!("WOAA2"));
+    }
+
+    #[test]
+    fn variable_row_supports_mixed_template_text() {
+        let template = tpl(vec![form(
+            "greeting",
+            FormValue::String("my name is {{name}}".into()),
+            FormValueType::Variable,
+        )]);
+        let ctx = json!({ "name": "Ada" });
+        let snap = resolved_http_request_snapshot(&template, &ctx);
+        assert_eq!(snap["body"]["greeting"], json!("my name is Ada"));
+    }
+
+    #[test]
+    fn string_row_is_literal_and_does_not_resolve_placeholders() {
+        let template = tpl(vec![form(
+            "raw",
+            FormValue::String("{{name}}".into()),
+            FormValueType::String,
+        )]);
+        let ctx = json!({ "name": "WOAA2" });
+        let snap = resolved_http_request_snapshot(&template, &ctx);
+        assert_eq!(snap["body"]["raw"], json!("{{name}}"));
+    }
+
+    #[test]
+    fn body_variable_fills_from_task_form_when_missing_in_base_ctx() {
+        let template = tpl_with_form(
+            vec![form(
+                "password",
+                FormValue::String("{{password}}".into()),
+                FormValueType::Variable,
+            )],
+            vec![form(
+                "password",
+                FormValue::String("123".into()),
+                FormValueType::String,
+            )],
+        );
+        let ctx = json!({ "name": "u1" });
+        let snap = resolved_http_request_snapshot(&template, &ctx);
+        assert_eq!(snap["body"]["password"], json!("123"));
+        assert_eq!(snap["form"]["password"], json!("123"));
+    }
+
+    #[test]
+    fn task_form_overrides_base_ctx_for_body_resolution() {
+        let template = tpl_with_form(
+            vec![form(
+                "password",
+                FormValue::String("{{password}}".into()),
+                FormValueType::Variable,
+            )],
+            vec![form(
+                "password",
+                FormValue::String("from_form".into()),
+                FormValueType::String,
+            )],
+        );
+        let ctx = json!({ "password": "from_instance" });
+        let snap = resolved_http_request_snapshot(&template, &ctx);
+        assert_eq!(snap["body"]["password"], json!("from_form"));
+    }
 }
