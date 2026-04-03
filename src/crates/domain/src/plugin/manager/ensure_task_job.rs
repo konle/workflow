@@ -1,4 +1,6 @@
 //! Materialize `task_instances` rows for async jobs (Parallel / ForkJoin children use inner template + type).
+//! Graph HTTP nodes: copy `WorkflowNodeInstanceEntity.task_instance.input` from `run_node` so the task
+//! worker does not re-resolve HTTP templates with an empty context.
 
 use super::PluginManager;
 use crate::shared::job::ExecuteTaskJob;
@@ -98,7 +100,35 @@ impl PluginManager {
                         ),
                     );
                 }
-                _ => {}
+                TaskTemplate::Http(_) => {
+                    // Graph HTTP node: `run_node` already wrote the resolved snapshot on the embedded
+                    // `task_instance` in the workflow document. The task worker loads this separate
+                    // `task_instances` row (id = `{workflow_id}-{node_id}`), which must carry the same
+                    // input — otherwise `HttpTaskExecutor` sees `input == None` and re-resolves with
+                    // an empty context, leaving `{{placeholders}}` untouched.
+                    let has_resolved_url = parent
+                        .input
+                        .as_ref()
+                        .and_then(|i| i.get("url"))
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|s| !s.is_empty());
+                    task_instance.input = if has_resolved_url {
+                        parent.input.clone()
+                    } else {
+                        Some(
+                            crate::task::http_template_resolve::resolved_http_request_snapshot(
+                                tpl, parent_node_ctx,
+                            ),
+                        )
+                    };
+                }
+                _ => {
+                    task_instance.input = Some(
+                        crate::task::http_template_resolve::resolved_http_request_snapshot(
+                            tpl, parent_node_ctx,
+                        ),
+                    );
+                }
             }
         }
 

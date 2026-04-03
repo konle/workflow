@@ -68,6 +68,108 @@ sequenceDiagram
 2. `Suspended -> Pending`（禁止 `Suspended -> Running`）
 3. `Pending` 是统一安全边界，只有 Worker 持锁执行时才进入 `Running`
 
+### 1.4 工作流/任务实例：重试、取消、级联通知与跳过节点（规划）
+
+本节在 **§1.3 状态表** 与现有 `WorkflowInstanceStatus` / `TaskInstanceStatus` / `NodeExecutionStatus` 之上，约定**可落地方案**（含与当前实现的差距），用于统一后端、API 与前端产品行为。
+
+#### 编排驱动的统一事件入口（定案：方案 A）
+
+工作流 Worker **只做编排**；正常路径是执行器 / 子工作流完成后投递 **`ExecuteWorkflowJob { event: NodeCallback, ... }`**，经 **`process_workflow_job`** 进入各插件 **`handle_callback`**，再推进图与派发下一批任务。
+
+**方案 A（已定）**：凡属于「**某节点在持久化侧已有终态结论，需与执行器回调走同一套合并与推进逻辑**」的人工操作（典型：**跳过节点**、以及需与回调同路径处理的其它节点级干预），在 **API 完成 CAS 落库** 之后，应 **`dispatch_workflow(ExecuteWorkflowJob { event: NodeCallback, ... })`**，**与 Task Worker 使用同一事件形态、同一 Worker 入口**，不得在 HTTP Handler 内直接跑引擎循环。
+
+**与 `Start` 的分工**：**`WorkflowEvent::Start`** 仍用于实例处于 **`Pending`** 时**进入主循环**（创建后首次执行、`Failed` / `Suspended` 经 **retry / resume** 回到 `Pending` 后的**整实例再调度**）。`Start` 与 `NodeCallback` **并列**，均属 **Redis/Apalis 上的 `ExecuteWorkflowJob`**，仅事件变体不同；**禁止**在 API 线程内内联执行 `run_loop`。
+
+#### 持久化与队列的两阶段（强制）
+
+| 阶段 | 职责 | 说明 |
+|------|------|------|
+| **1. 持久化** | 状态机迁移 + 节点/图数据与执行器结果**对齐**（如 skip 写入 `Skipped` + `output`、`current_node`） | 可由独立 API 或单接口内**先**完成写库。 |
+| **2. 投递** | **`dispatch_workflow`** 或 **`dispatch_task`** | 仅发 Job，**不**在 Handler 内执行编排逻辑。 |
+
+单接口内允许 **「写库 → 投递」** 顺序实现，但**语义上**仍分两阶段；前端也可拆成两个 API。**禁止**绕过队列直接调插件。
+
+#### 1.4.1 术语与目标
+
+| 维度 | 说明 |
+|------|------|
+| **工作流实例** | **retry** / **resume**：`→ Pending` 后投递 **`Start`**（与创建后 **execute** 对称）。**跳过**等节点级结论：落库后投递 **`NodeCallback`（方案 A）**。**取消**：`Failed` / `Suspended` → `Canceled`（一般不再投递编排 Job；若需唤醒父链，另议）。 |
+| **原子任务实例** | **retry** `Failed→Pending` 后由 **`ExecuteTaskJob`**（**execute**）触发；嵌在工作流内时，父侧延续见 §1.4.4。 |
+| **级联** | 父/子状态在**阶段 1** 修正后，**阶段 2** 对父投递 **`NodeCallback` 或 `Start`**（与执行器回调同级），保持「**事件流转通知工作流**」一致。 |
+| **跳过节点** | 仅在 **§1.4.5** 安全窗口内；**`output` 由用户填写，允许 `{}`**，见下。 |
+
+#### 1.4.2 工作流实例：后端能力（与 §1.3 对齐）
+
+| 操作 | 状态前置 | 持久化 | 阶段 2 投递（约定） |
+|------|----------|--------|---------------------|
+| **execute** | `Pending` | `→ Running` | **`WorkflowEvent::Start`**（已有）。 |
+| **retry** | `Failed` | `→ Pending` | **`Start`**（整实例从安全边界再跑）。 |
+| **resume** | `Suspended` | `→ Pending` | **`Start`**。 |
+| **cancel** | `Failed` / `Suspended` | `→ Canceled` | 通常无；若需通知父子链，可用 **`NodeCallback`** 表达终态（实现期定）。 |
+
+**`Await` 下用户取消**：§1.3 表已列；若实现，需扩展状态机，并对滞留队列回调 **幂等丢弃**。
+
+#### 1.4.3 原子任务实例：后端能力
+
+| 操作 | 前置 | 持久化 | 阶段 2 |
+|------|------|--------|--------|
+| **execute** | `Pending` | `→ Running` | **`dispatch_task`**。 |
+| **retry** | `Failed` | `→ Pending` | 由 **execute** 或级联后的父 **`Start`/`NodeCallback`** 触发子任务再投；级联写库见 §1.4.4。 |
+| **cancel** | `Pending` / `Failed` | `→ Canceled` | 一般无 Task Job。 |
+
+#### 1.4.4 `NodeCallback`（方案 A）字段约定与级联
+
+与 **§1.2 架构交互图**、`ExecuteWorkflowJob` / `WorkflowEvent` 一致，人工注入与 Task Worker **共用**下列字段语义（实现上 **`handle_callback` 须幂等**，重复投递不破坏状态）：
+
+| 字段 | 约定 |
+|------|------|
+| `node_id` | 工作流图中节点；跳过 / 重放结论所指向的节点。 |
+| `child_task_id` | **优先**使用该节点当前嵌套 **`task_instance.task_instance_id`**，与真实回调对齐，便于插件复用合并逻辑；若尚无任务行，可用租户内约定占位 id，插件需分支处理。 |
+| `status` | `NodeExecutionStatus`；**跳过**建议 **`Skipped`**（或 **`Success`** + `output` 与 **`Skipped` 节点态** 二选一，全项目统一一种）。 |
+| `output` / `error_message` / `input` | 与 **阶段 1 已写入 DB** 的内容一致，避免回调与库双源不一致。 |
+
+**级联（任务实例页重试、子工作流等）**：
+
+1. **阶段 1**：按失败点修正 **子 `task_instance`、父 `WorkflowNodeInstanceEntity`、父 `WorkflowInstanceEntity`**（如父 `Failed→Pending`、`current_node` 等）。  
+2. **阶段 2**：对**应继续的实例** `dispatch_workflow`：**父** 上投递 **`Start`**（若整父已 Pending）或 **`NodeCallback`**（若等价于「某父节点收到子结果」）；**子** 再跑则 **`dispatch_task`**。  
+3. **子工作流完成通知父**：仍走现有 **子终态 → `NodeCallback` 父**（不变）。  
+
+**禁止**：在 API 中伪造不完整 `NodeCallback` 导致 `handle_callback` 与锁/epoch/子任务 id 冲突；**必须**与持久化视图一致。
+
+#### 1.4.5 跳过节点（Skip）
+
+**目标**：不执行该节点逻辑，但将其视为在数据面上**已有输出**（可为空对象），以便下游 **`nodes.<id>.output`**（§8.6）继续解析。
+
+**`output`（统一字段，无额外别名）**
+
+- Body 提供 **`node_id`** 与 **`output`**（JSON 对象）。**用户须提交 `output`，允许为 `{}`**。  
+- 持久化：节点 **`Skipped`**，该节点 **`task_instance.output = output`**（与成功节点一样占用同一字段，**不**引入 `synthetic_output` 等额外名）。  
+- **`build_nodes_object`**：`Skipped` 且 **`output` 已落盘**（含 `{}`）→ 生成 **`nodes.<id>.output`**，复用现有模板解析链。
+
+**允许跳过的工作流实例状态**（安全窗口）：**`Failed`**、**`Suspended`**（一期规则可再收紧）；**`Parallel` / `ForkJoin` 父节点** 一期建议禁止或单独规则。
+
+**算法要点**：
+
+1. **阶段 1**：校验租户与状态窗口；写 **`Skipped`** + **`output`**；按模板更新 **`current_node`**（If 分支需产品约定）；实例若需回到 **`Pending`** 以便后续 **`Start`**，一并写入。  
+2. **阶段 2**：**`dispatch_workflow(ExecuteWorkflowJob { event: NodeCallback, node_id, child_task_id, status: Skipped, output: … })`**（字段与库一致），由 **`handle_callback`** 与执行器回调**同路径**推进（具体由插件实现吸收 `Skipped`）。  
+
+**审计（二期）**：`skipped_at`、`skipped_by`、`reason` 可选字段。
+
+#### 1.4.6 前端（与 `docs/frontend-architecture.md` 对齐）
+
+| 页面 | 行为 |
+|------|------|
+| **工作流实例** | **execute** 对应 **`Start`**；跳过在 UI 收集 **`output`（默认 `{}`）** 后提交；可提供「提交后由后端写库并投递」的单按钮。 |
+| **任务实例** | 重试/级联后父侧依赖 **`Start`/`NodeCallback`** 的，提示与架构 §1.4.4 一致。 |
+
+#### 1.4.7 实施阶段建议
+
+| 阶段 | 内容 |
+|------|------|
+| **P0** | **`build_nodes_object`** 支持 `Skipped`+`output`；skip API **阶段1+2**；**`handle_callback`** 对人工 **`NodeCallback`** 幂等；retry/resume 后 **`Start`** 路径与现网对齐。 |
+| **P1** | 任务页级联写库 + 父 **`Start`/`NodeCallback`**；子工作流与父一致性；`Await` 取消。 |
+| **P2** | 容器 skip、队列补偿、审计。 |
+
 ---
 
 ## 2. 插件化系统 (Plugin System)
@@ -157,10 +259,19 @@ Parallel 借用了它自身的 `TaskInstanceEntity.output` 来充当状态机的
 
 | 字段 | 含义 |
 |------|------|
-| `task_instance.input` | **解析后**的执行入参快照（变量、`{{placeholder}}`、Variable 型表单已按合并上下文解析），供排障与审计；各插件在 `execute` / 默认或自定义 `handle_callback` 中写入。 |
+| `task_instance.input` | **解析后**的执行入参快照。对 HTTP 任务：`url` 与 `headers`/`body`/`form` 各行按下文规则解析后写入；其它插件各自定义形状。供排障与审计；各插件在 `execute` / 默认或自定义 `handle_callback` 中写入。 |
 | `task_instance.output` | 节点/任务对外结果（HTTP 响应摘要、If 分支结果、Parallel 父节点状态 JSON、ContextRewrite 的 key 列表等）。 |
 
-**HTTP**：Workflow Worker 在 `run_node` 合并变量后调用 `resolved_http_request_snapshot` 写入 `input`；Parallel/ForkJoin 子任务在 `ensure_task_instance_for_job` 中按 `item_alias` + `items_path` 或工作流 `context` 生成解析后的 `input`；`HttpTaskExecutor` 优先使用该快照发请求，并在回调中回传同一快照。**禁止**在节点层再维护一份 `output`，避免双写不一致。
+**HTTP**：Workflow Worker 在 `run_node` 合并变量后调用 `resolved_http_request_snapshot` 写入**嵌套在流程实例节点上的** `task_instance.input`；投递异步任务前，`ensure_task_instance_for_job` 在 `task_instances` 集合中创建（或复用）与 `task_instance_id = {workflow_instance_id}-{node_id}` 对应的行。**图上的 HTTP 节点**必须把同一份已解析 `input` 写入该行：任务 Worker 只读 `task_instances`，若此处 `input` 为空，`HttpTaskExecutor` 会用空上下文重算，导致 `Variable` 模板中的 `{{}}` 无法替换。Parallel/ForkJoin 子任务在该函数内按 `item_alias` + `items_path` 或父节点 `context` 生成解析后的 `input`。执行器优先使用快照发请求，并在回调中回传同一快照。**禁止**在节点层再维护一份 `output`，避免双写不一致。
+
+**HTTP 模板中 `FormValueType`（`headers` / `body` / `form` 每一行）**（实现：`domain::task::http_template_resolve`）：
+
+- **任务级 `form` 与 `url`/`headers`/`body` 的先后**：先将模板 **`form` 数组**的每一行按 **base 上下文**（租户 / 工作流 / 实例 / 节点合并结果，见 §8.5–8.6）解析为键值对象，再将其 **覆盖合并** 到 base 上得到 **effective_ctx**（**同名键以任务 `form` 为准**）。**`url`、`headers`、`body`** 中的占位符与 `Variable` 行均按 **effective_ctx** 解析。快照 JSON 里的 **`form` 字段**仍为各 `form` 行在 **base 上下文**下的解析结果（任务级绑定层本身），便于对照设计态默认值。
+- **`String` / `Number` / `Bool` / `Json`**：字面量。字符串中的 `{{...}}` **不会**被解析，便于需要原样传输占位符文案的场景。
+- **`Variable`**：对字符串值做 **`{{点路径}}` 模板替换**（可整段为 `{{name}}`，也可混写为 `prefix {{name}} suffix`）；查找路径在 **effective_ctx** 上解析（故可由任务 `form` 提供 `body` 中引用的键）。
+- **`url` 字段**（非表单行）：整段 URL 对 **effective_ctx** 做 `{{点路径}}` 占位符解析。
+
+**破坏性说明**：曾依赖「`type: String` + 值里写 `{{key}}`」实现动态 Headers/Body 的旧数据，需改为 **`type: Variable`** 后才会继续解析。
 
 **脱敏**：生产环境若需对 Secret 打码，在写入 `input`/`output` 前增加策略层（当前迭代未实现）。
 
@@ -301,7 +412,7 @@ pub struct SubWorkflowTemplate {
 }
 ```
 
-> `form` 替代了原 `input_mapping`。发起子工作流等同于发起工作流实例：指定 meta_id + version，填写 form 参数作为初始上下文。Form 字段值支持字面量或 `{{变量}}` 引用父工作流上下文。
+> `form` 替代了原 `input_mapping`。发起子工作流等同于发起工作流实例：指定 meta_id + version，填写 form 参数并**按存储的 `Form` 值合并进子实例初始上下文**（当前实现为序列化后的字面量合并，**不经** HTTP 任务同款 `Variable`/`{{}}` 解析）。若需从父上下文映射字段，应在编排或其它层显式建模。
 
 ### 6.2 实体扩展
 
@@ -531,24 +642,24 @@ resolve_variables(tenant_id, workflow_meta_id, instance_context, node_context):
     return merged
 ```
 
-随后 `PluginManager::run_node` 调用 `augment_merged_context_with_nodes`，在合并结果上**写入/覆盖**顶层键 `nodes`（见下节）。**节点执行前、用于 Rhai 与 `{{}}` 模板解析的最终 JSON** = `merged` + 系统 `nodes`。
+随后 `PluginManager::run_node` 调用 `augment_merged_context_with_nodes`，在合并结果上**写入/覆盖**顶层键 `nodes`（见下节）。**节点执行前、用于 Rhai 与 HTTP `Variable` 行 / `url` 字段中 `{{}}` 模板解析的最终 JSON** = `merged` + 系统 `nodes`。
 
 Secret 类型的变量在解析阶段解密注入，但**绝不写入** `TaskInstanceEntity.output`，防止凭证泄漏到持久化层。
 
 ### 8.6 执行期节点输出命名空间 (`nodes`)
 
-引擎在**每个节点**进入插件逻辑前，在 `resolve_variables` 产物之上注入只读结构的顶层键 `nodes`，供 **IfCondition、ContextRewrite（`ctx`）、HTTP/gRPC 等模板中的 `{{path}}`、Parallel 的 `items_path`（经 `WorkflowNodeInstanceEntity.context` 解析）** 统一引用。
+引擎在**每个节点**进入插件逻辑前，在 `resolve_variables` 产物之上注入只读结构的顶层键 `nodes`，供 **IfCondition、ContextRewrite（`ctx`）、HTTP 任务中 `Variable` 类型表单行与 `url` 字段的 `{{path}}`、Parallel 的 `items_path`（经 `WorkflowNodeInstanceEntity.context` 解析）** 等统一引用。
 
 | 规则 | 说明 |
 |------|------|
 | 形状 | `nodes.<node_id>.output` → 与该 `node_id` 对应的 `TaskInstanceEntity.output`（JSON） |
-| 收录条件 | 仅 **非当前节点**、**`NodeExecutionStatus::Success`** 且 **`task_instance.output` 已落盘** 的图节点 |
+| 收录条件 | 仅 **非当前节点**、**`task_instance.output` 已落盘**，且节点为 **`Success`**，或 **`Skipped`**（用户填写的 **`output`**，可为 `{}`，见 **§1.4.5**）的图节点 |
 | 当前节点 | **不包含**当前正在执行的节点（执行前尚无本次 output，避免自引用） |
 | Parallel / ForkJoin | **子任务**（队列子 `TaskInstance`）**不**作为 `nodes` 中的独立条目；仅**容器节点**自身有一条 `nodes.<容器node_id>.output`（如状态机 JSON） |
 | 优先级 | 系统构造的 `nodes` **覆盖**合并上下文中同名顶层键 `nodes`（用户不应占用该保留字） |
 | 快照语义 | 与「节点级解析上下文」一致：`resolve_variables` 之后的合并结果再注入 `nodes`，再用于生成 `task_instance.input` 快照与 Rhai `ctx` |
 
-实现位于 `domain/workflow/resolution_context.rs`（`build_nodes_object`、`augment_merged_context_with_nodes`）。Parallel/ForkJoin **内层** HTTP 子任务在 `ensure_task_instance_for_job` 中使用**父节点**已持久化的 `WorkflowNodeInstanceEntity.context` 作为模板解析基底，从而同样可引用 `nodes.*`。
+实现位于 `domain/workflow/resolution_context.rs`（`build_nodes_object`、`augment_merged_context_with_nodes`）。**`Skipped` + `output`** 纳入 `nodes` 的规则以本文与 **§1.4.5** 为准；代码演进时需与上表「收录条件」对齐。Parallel/ForkJoin **内层** HTTP 子任务在 `ensure_task_instance_for_job` 中使用**父节点**已持久化的 `WorkflowNodeInstanceEntity.context` 作为模板解析基底，从而同样可引用 `nodes.*`。
 
 ### 8.7 权限矩阵
 
@@ -837,6 +948,8 @@ POST /api/v1/workflow/meta/{workflow_meta_id}/template/{version}/publish
 ## 12. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
+
+**实例运维补充**：重试/取消/跳过节点与级联通知的完整约定见 **§1.4**（**方案 A**：与执行器共用 **`NodeCallback`** 形态进入编排；**`Start`** 用于 `Pending` 整实例重入）。
 
 未来的扩展方案：
 1. **延迟节点**：通过向 Apalis 推送定时消息，延时触发。

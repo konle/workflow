@@ -16,7 +16,7 @@ impl PluginManager {
     ) -> anyhow::Result<LoopAction> {
         instance.nodes[node_index].status = exec_result.status.clone();
         let action = match exec_result.status {
-            NodeExecutionStatus::Success => {
+            NodeExecutionStatus::Success | NodeExecutionStatus::Skipped => {
                 if let Some(jump_to_node) = exec_result.jump_to_node {
                     instance.current_node = jump_to_node.clone();
                     instance.nodes[node_index].next_node = Some(jump_to_node);

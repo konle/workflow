@@ -297,13 +297,15 @@ impl PluginManager {
         if payload.error_message.is_none() {
             payload.error_message = task_inst.error_message.clone();
         }
-        payload.status = match task_inst.task_status {
-            TaskInstanceStatus::Completed => NodeExecutionStatus::Success,
-            TaskInstanceStatus::Failed => NodeExecutionStatus::Failed,
-            TaskInstanceStatus::Running => NodeExecutionStatus::Running,
-            TaskInstanceStatus::Canceled => NodeExecutionStatus::Failed,
-            _ => payload.status,
-        };
+        if !matches!(payload.status, NodeExecutionStatus::Skipped) {
+            payload.status = match task_inst.task_status {
+                TaskInstanceStatus::Completed => NodeExecutionStatus::Success,
+                TaskInstanceStatus::Failed => NodeExecutionStatus::Failed,
+                TaskInstanceStatus::Running => NodeExecutionStatus::Running,
+                TaskInstanceStatus::Canceled => NodeExecutionStatus::Failed,
+                _ => payload.status,
+            };
+        }
         payload
     }
 
@@ -421,7 +423,7 @@ impl PluginManager {
         node_status: NodeExecutionStatus,
     ) -> anyhow::Result<LoopOutcome> {
         match node_status {
-            NodeExecutionStatus::Success => {
+            NodeExecutionStatus::Success | NodeExecutionStatus::Skipped => {
                 if let Some(next) = instance.nodes[node_index].next_node.clone() {
                     instance.current_node = next;
                     self.save_instance_and_bump_epoch(instance).await?;
@@ -460,7 +462,6 @@ impl PluginManager {
                     LoopAction::Done => Ok(LoopOutcome::Stop),
                 }
             }
-            _ => Ok(LoopOutcome::Stop),
         }
     }
 

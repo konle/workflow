@@ -7,9 +7,15 @@
           <a-button v-if="instance?.status === 'Failed' && canExecute" @click="handleRetry">重试</a-button>
           <a-button v-if="instance?.status === 'Suspended' && canExecute" @click="handleResume">恢复</a-button>
           <a-button v-if="['Failed','Suspended'].includes(instance?.status || '') && canExecute" status="danger" @click="handleCancel">取消</a-button>
+          <a-button v-if="canSkipNode" @click="openSkipModal">跳过当前节点</a-button>
         </a-space>
       </template>
     </a-page-header>
+
+    <a-modal v-model:visible="skipModalVisible" title="跳过节点" @ok="submitSkip" @cancel="closeSkipModal">
+      <p class="skip-hint">须为当前失败/挂起节点填写 <code>output</code> JSON 对象（可为空对象 <code>{}</code>），供下游 <code>nodes.&lt;node_id&gt;.output</code> 引用。提交后将投递编排回调，一般无需再点「执行」。</p>
+      <a-textarea v-model="skipOutputText" :auto-size="{ minRows: 6, maxRows: 16 }" placeholder="{}" />
+    </a-modal>
 
     <a-row :gutter="16">
       <a-col :span="6">
@@ -101,6 +107,22 @@ const instanceId = route.params.id as string
 const instance = ref<WorkflowInstanceEntity | null>(null)
 const loading = ref(false)
 const selectedNode = ref<WorkflowNodeInstanceEntity | null>(null)
+const skipModalVisible = ref(false)
+const skipOutputText = ref('{}')
+
+const UNSKIPPABLE_TYPES = new Set(['Parallel', 'ForkJoin', 'SubWorkflow'])
+
+const canSkipNode = computed(() => {
+  if (!canExecute.value || !instance.value) return false
+  const st = instance.value.status
+  if (st !== 'Failed' && st !== 'Suspended') return false
+  const cur = instance.value.current_node
+  const n = instance.value.nodes.find(x => x.node_id === cur)
+  if (!n) return false
+  if (n.status !== 'Failed' && n.status !== 'Suspended') return false
+  if (UNSKIPPABLE_TYPES.has(n.node_type)) return false
+  return true
+})
 
 const NODE_COLORS: Record<string, string> = {
   Pending: '#C9CDD4',
@@ -194,6 +216,42 @@ async function handleCancel() {
   fetchInstance()
 }
 
+
+function openSkipModal() {
+  skipOutputText.value = '{}'
+  skipModalVisible.value = true
+}
+
+function closeSkipModal() {
+  skipModalVisible.value = false
+}
+
+async function submitSkip() {
+  if (!instance.value) return
+  let output: Record<string, unknown>
+  try {
+    const parsed = JSON.parse(skipOutputText.value || '{}')
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      Notification.error({ content: 'output 须为 JSON 对象' })
+      return
+    }
+    output = parsed as Record<string, unknown>
+  } catch {
+    Notification.error({ content: 'output 不是合法 JSON' })
+    return
+  }
+  const nodeId = instance.value.current_node
+  try {
+    await workflowApi.skipNode(instanceId, { node_id: nodeId, output })
+    Notification.success({ content: '已跳过并投递编排' })
+    skipModalVisible.value = false
+    fetchInstance()
+  } catch {
+    /* axios 拦截器已提示 */
+  }
+}
+
+
 onMounted(async () => {
   loading.value = true
   await fetchInstance()
@@ -212,6 +270,19 @@ onMounted(async () => {
   line-height: 1.5;
 }
 .node-context-hint code {
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: var(--color-fill-2);
+}
+
+.skip-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--color-text-3);
+  line-height: 1.5;
+}
+.skip-hint code {
   font-size: 11px;
   padding: 0 4px;
   border-radius: 2px;

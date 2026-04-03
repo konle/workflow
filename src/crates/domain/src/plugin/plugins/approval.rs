@@ -96,6 +96,7 @@ impl PluginInterface for ApprovalPlugin {
 
         match status {
             NodeExecutionStatus::Success => Ok(ExecutionResult::success(None)),
+            NodeExecutionStatus::Skipped => Ok(ExecutionResult::skipped(None)),
             NodeExecutionStatus::Failed => Ok(ExecutionResult::failed()),
             _ => Ok(ExecutionResult::pending()),
         }

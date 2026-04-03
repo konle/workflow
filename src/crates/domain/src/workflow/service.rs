@@ -1,15 +1,16 @@
 use std::sync::Arc;
 use chrono::Utc;
 use serde_json::Value as JsonValue;
+use tracing::info;
 use uuid::Uuid;
 use crate::shared::job::WorkflowCallerContext;
-use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus, WorkflowStatus};
+use crate::shared::workflow::{TaskInstanceStatus, TaskType, WorkflowInstanceStatus, WorkflowStatus};
 use crate::task::entity::TaskInstanceEntity;
 use crate::workflow::entity::{
     NodeExecutionStatus, WorkflowEntity, WorkflowInstanceEntity,
     WorkflowMetaEntity, WorkflowNodeInstanceEntity,
 };
-use crate::workflow::repository::{WorkflowDefinitionRepository, WorkflowInstanceRepository, RepositoryError};
+use crate::workflow::repository::{RepositoryError, WorkflowDefinitionRepository, WorkflowInstanceRepository};
 
 #[derive(Clone)]
 pub struct WorkflowDefinitionService {
@@ -59,6 +60,7 @@ impl WorkflowDefinitionService {
                 "cannot copy workflow template: workflow template is not published",
             ).into());
         }
+        info!("max_version: {}", max_version);
         let new_workflow_entity = WorkflowEntity {
             workflow_meta_id: workflow_entity.workflow_meta_id.clone(),
             version: max_version + 1,
@@ -350,5 +352,104 @@ impl WorkflowInstanceService {
                 other
             ).into()),
         }
+    }
+
+    /// Skip the **current** node after `Failed` / `Suspended`: mark `Skipped`, persist `output` on the node task row,
+    /// transition instance to `Pending`. Caller should then dispatch `WorkflowEvent::NodeCallback` (architecture §1.4.5).
+    pub async fn skip_workflow_node(
+        &self,
+        tenant_id: &str,
+        workflow_instance_id: &str,
+        node_id: &str,
+        output: JsonValue,
+    ) -> Result<WorkflowInstanceEntity, String> {
+        if !output.is_object() {
+            return Err("output must be a JSON object".to_string());
+        }
+
+        let mut inst = self
+            .get_workflow_instance_scoped(tenant_id, workflow_instance_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !matches!(
+            inst.status,
+            WorkflowInstanceStatus::Failed | WorkflowInstanceStatus::Suspended
+        ) {
+            return Err(format!(
+                "workflow instance must be Failed or Suspended, got {:?}",
+                inst.status
+            ));
+        }
+
+        if inst.get_current_node() != node_id {
+            return Err("node_id must match current_node".to_string());
+        }
+
+        let idx = inst
+            .nodes
+            .iter()
+            .position(|n| n.node_id == node_id)
+            .ok_or_else(|| format!("node not found: {}", node_id))?;
+
+        let node = &inst.nodes[idx];
+        if matches!(
+            node.node_type,
+            TaskType::Parallel | TaskType::ForkJoin | TaskType::SubWorkflow
+        ) {
+            // TODO: support skipping Parallel, ForkJoin, and SubWorkflow nodes
+            return Err(
+                "skipping Parallel, ForkJoin, or SubWorkflow nodes is not supported".to_string(),
+            );
+        }
+
+        if !matches!(
+            node.status,
+            NodeExecutionStatus::Failed | NodeExecutionStatus::Suspended
+        ) {
+            return Err(format!(
+                "node must be Failed or Suspended to skip, got {:?}",
+                node.status
+            ));
+        }
+
+        inst.nodes[idx].status = NodeExecutionStatus::Skipped;
+        inst.nodes[idx].task_instance.output = Some(output);
+        inst.nodes[idx].task_instance.task_status = TaskInstanceStatus::Completed;
+        inst.nodes[idx].task_instance.error_message = None;
+        inst.nodes[idx].error_message = None;
+        inst.nodes[idx].updated_at = Utc::now();
+        inst.nodes[idx].task_instance.updated_at = Utc::now();
+
+        if !inst
+            .status
+            .can_transition_to(&WorkflowInstanceStatus::Pending)
+        {
+            return Err(format!(
+                "cannot transition workflow status {:?} to Pending",
+                inst.status
+            ));
+        }
+        inst.status = WorkflowInstanceStatus::Pending;
+        inst.updated_at = Utc::now();
+
+        self.save_workflow_instance(&inst)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        self.get_workflow_instance(workflow_instance_id.to_string())
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// `child_task_id` for [`crate::shared::job::WorkflowEvent::NodeCallback`]: match HTTP executor jobs (`{workflow}-{node}`).
+pub fn node_callback_child_task_id(
+    instance: &WorkflowInstanceEntity,
+    node: &WorkflowNodeInstanceEntity,
+) -> String {
+    match node.node_type {
+        TaskType::Http => format!("{}-{}", instance.workflow_instance_id, node.node_id),
+        _ => node.task_instance.task_instance_id.clone(),
     }
 }
