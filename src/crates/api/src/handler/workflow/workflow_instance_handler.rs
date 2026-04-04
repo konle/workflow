@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
 };
 use tracing::{info, error};
-use domain::shared::job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent};
+use domain::{shared::{job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent}, workflow::WorkflowStatus}, user::entity::TenantRole};
 use domain::workflow::{
     entity::{NodeExecutionStatus, WorkflowInstanceEntity},
     service::{node_callback_child_task_id, WorkflowDefinitionService, WorkflowInstanceService},
@@ -50,6 +50,7 @@ impl WorkflowInstanceHandler {
 pub fn routes(handler: Arc<WorkflowInstanceHandler>) -> Router {
     Router::new()
         .route("/", post(create_instance).get(list_instances))
+        // .route("/test", post(create_draft_instance)) // for test，租户开发者和管理员可以对草稿发起运行开发期间的测试
         .route("/{id}", get(get_instance))
         .route("/{id}/execute", post(execute_instance))
         .route("/{id}/cancel", post(cancel_instance))
@@ -72,6 +73,20 @@ async fn create_instance(
         .get_workflow_entity(req.workflow_meta_id, req.version)
         .await?;
 
+    match workflow_entity.status {
+        WorkflowStatus::Draft => {
+            if auth.role != Some(TenantRole::Developer) && auth.role != Some(TenantRole::TenantAdmin) {
+                return Err(ApiError::bad_request("only developer and tenant admin can create draft instance"));
+            }
+        }
+        WorkflowStatus::Published => {
+            
+        }
+        _ => {
+            return Err(ApiError::bad_request("workflow is not a draft or published"));
+        }
+    }
+
     let instance = handler.instance_service
         .create_instance(&auth.tenant_id, &workflow_entity, req.context, None, 0)
         .await?;
@@ -84,6 +99,8 @@ async fn create_instance(
 
     Ok(Json(Response::success(instance)))
 }
+
+
 
 async fn list_instances(
     State(handler): State<Arc<WorkflowInstanceHandler>>,

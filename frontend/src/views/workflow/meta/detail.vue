@@ -64,7 +64,7 @@
             <a-button v-if="canWrite" type="primary" size="small" @click="$router.push(`/workflows/${metaId}/editor`)">新建版本</a-button>
           </template>
           <a-alert type="info" show-icon style="margin-bottom: 12px">
-            草稿可编辑并发布；已发布只读，可复制为新草稿、归档或发起实例；仅<strong>已归档</strong>版本可删除。
+            草稿可编辑并发布以及测试运行(仅开发者以上权限）；已发布只读，可复制为新草稿、归档或发起实例；仅<strong>已归档</strong>版本可删除。
           </a-alert>
           <a-list :data="versions" :loading="versionsLoading">
             <template #item="{ item }">
@@ -111,6 +111,15 @@
                     @click="openLaunch(item.version)"
                   >
                     发起实例
+                  </a-button>
+                  <a-button
+                    v-if="item.status === 'Draft'"
+                    type="text"
+                    size="small"
+                    status="success"
+                    @click="openLaunch(item.version)"
+                  >
+                    测试
                   </a-button>
                   <a-popconfirm
                     v-if="canWrite && item.status === 'Archived'"
