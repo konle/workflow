@@ -67,8 +67,8 @@ async fn handle_task_job(
         })?;
 
     task_instance_entity.task_status = match exec_result.status {
-        domain::workflow::entity::NodeExecutionStatus::Success => domain::shared::workflow::TaskInstanceStatus::Completed,
-        domain::workflow::entity::NodeExecutionStatus::Failed => domain::shared::workflow::TaskInstanceStatus::Failed,
+        domain::workflow::entity::workflow_definition::NodeExecutionStatus::Success => domain::shared::workflow::TaskInstanceStatus::Completed,
+        domain::workflow::entity::workflow_definition::NodeExecutionStatus::Failed => domain::shared::workflow::TaskInstanceStatus::Failed,
         _ => domain::shared::workflow::TaskInstanceStatus::Pending,
     };
     task_instance_entity.output = exec_result.output.clone();

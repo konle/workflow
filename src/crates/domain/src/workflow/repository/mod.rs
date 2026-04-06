@@ -1,8 +1,10 @@
 use async_trait::async_trait;
 use std::error::Error;
+use common::pagination::PaginatedData;
 use crate::shared::workflow::{WorkflowInstanceStatus, WorkflowStatus};
-use crate::workflow::entity::{WorkflowEntity, WorkflowInstanceEntity};
-use crate::workflow::entity::WorkflowMetaEntity;
+use crate::workflow::entity::workflow_definition::{WorkflowEntity, WorkflowInstanceEntity};
+use crate::workflow::entity::workflow_definition::WorkflowMetaEntity;
+use crate::workflow::entity::query::WorkflowInstanceQuery;
 pub type RepositoryError = Box<dyn Error + Send + Sync>;
 
 #[async_trait]
@@ -27,7 +29,11 @@ pub trait WorkflowDefinitionRepository: Send + Sync {
 pub trait WorkflowInstanceRepository: Send + Sync {
     async fn get_workflow_instance(&self, id: String) -> Result<WorkflowInstanceEntity, RepositoryError>;
     async fn get_workflow_instance_scoped(&self, tenant_id: &str, id: &str) -> Result<WorkflowInstanceEntity, RepositoryError>;
-    async fn list_workflow_instances(&self, tenant_id: &str) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError>;
+    async fn list_workflow_instances(
+        &self,
+        tenant_id: &str,
+        query: &WorkflowInstanceQuery,
+    ) -> Result<PaginatedData<WorkflowInstanceEntity>, RepositoryError>;
 
     async fn transfer_status(
         &self,

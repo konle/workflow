@@ -3,7 +3,7 @@
 //! After `VariableService::resolve_variables`, call [`augment_merged_context_with_nodes`]
 //! so templates and Rhai see `nodes.<node_id>.output` for completed or skipped nodes.
 
-use crate::workflow::entity::{NodeExecutionStatus, WorkflowInstanceEntity};
+use crate::workflow::entity::workflow_definition::{NodeExecutionStatus, WorkflowInstanceEntity};
 use serde_json::{json, Map, Value as JsonValue};
 
 /// Build the `nodes` object: only **other** nodes (not `current_node_id`) that are
@@ -57,7 +57,7 @@ mod tests {
     use super::*;
     use crate::shared::workflow::TaskType;
     use crate::task::entity::TaskInstanceEntity;
-    use crate::workflow::entity::WorkflowNodeInstanceEntity;
+    use crate::workflow::entity::workflow_definition::WorkflowNodeInstanceEntity;
     use chrono::Utc;
 
     fn minimal_task_instance(node_id: &str, output: Option<JsonValue>) -> TaskInstanceEntity {

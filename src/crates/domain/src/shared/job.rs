@@ -7,7 +7,7 @@ pub enum WorkflowEvent {
     NodeCallback {
         node_id: String,
         child_task_id: String,
-        status: crate::workflow::entity::NodeExecutionStatus,
+        status: crate::workflow::entity::workflow_definition::NodeExecutionStatus,
         output: Option<serde_json::Value>,
         error_message: Option<String>,
         input: Option<serde_json::Value>,

@@ -8,7 +8,7 @@ use crate::shared::workflow::TaskType;
 use crate::task::entity::{HttpMethod, TaskInstanceEntity, TaskTemplate};
 use crate::task::http_template_resolve::effective_http_request;
 use crate::task::interface::{TaskExecutionResult, TaskExecutor};
-use crate::workflow::entity::NodeExecutionStatus;
+use crate::workflow::entity::workflow_definition::NodeExecutionStatus;
 
 pub struct HttpTaskExecutor {
     client: Client,

@@ -6,7 +6,7 @@ use super::PluginManager;
 use crate::shared::job::ExecuteTaskJob;
 use crate::shared::workflow::TaskInstanceStatus;
 use crate::task::entity::{TaskInstanceEntity, TaskTemplate};
-use crate::workflow::entity::WorkflowInstanceEntity;
+use crate::workflow::entity::workflow_definition::WorkflowInstanceEntity;
 
 impl PluginManager {
     pub(super) async fn ensure_task_instance_for_job(

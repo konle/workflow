@@ -1,34 +1,21 @@
 use axum::{
-    extract::{Extension, Path, State},
-    routing::{get, post},
-    Json, Router,
+    Json, Router, extract::{Extension, Path, Query, State}, routing::{get, post}
 };
 use tracing::{info, error};
-use domain::{shared::{job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent}, workflow::WorkflowStatus}, user::entity::TenantRole};
+use domain::{shared::{job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent}, workflow::WorkflowStatus}, user::entity::TenantRole, workflow::entity::query::WorkflowInstanceQuery};
 use domain::workflow::{
-    entity::{NodeExecutionStatus, WorkflowInstanceEntity},
+    entity::workflow_definition::{NodeExecutionStatus, WorkflowInstanceEntity},
     service::{node_callback_child_task_id, WorkflowDefinitionService, WorkflowInstanceService},
 };
-use serde::Deserialize;
-use serde_json::Value as JsonValue;
+
+use common::pagination::PaginatedData;
+
 use crate::error::ApiError;
 use crate::middleware::auth::AuthContext;
 use crate::response::response::Response;
+use crate::handler::workflow::workflow_instance_request::{CreateWorkflowInstanceRequest, SkipWorkflowNodeRequest, ListWorkflowInstancesRequest};
 use std::sync::Arc;
 
-#[derive(Deserialize)]
-pub struct SkipWorkflowNodeRequest {
-    pub node_id: String,
-    pub output: JsonValue,
-}
-
-#[derive(Deserialize)]
-pub struct CreateWorkflowInstanceRequest {
-    pub workflow_meta_id: String,
-    pub version: u32,
-    #[serde(default)]
-    pub context: JsonValue,
-}
 
 #[derive(Clone)]
 pub struct WorkflowInstanceHandler {
@@ -105,8 +92,11 @@ async fn create_instance(
 async fn list_instances(
     State(handler): State<Arc<WorkflowInstanceHandler>>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Response<Vec<WorkflowInstanceEntity>>>, ApiError> {
-    let result = handler.instance_service.list_workflow_instances(&auth.tenant_id).await?;
+    Query(req): Query<ListWorkflowInstancesRequest>,
+) -> Result<Json<Response<PaginatedData<WorkflowInstanceEntity>>>, ApiError> {
+    let mut query = WorkflowInstanceQuery::from(req);
+    query.tenant_id = auth.tenant_id.clone();
+    let result = handler.instance_service.list_workflow_instances(&auth.tenant_id, &query).await?;
     Ok(Json(Response::success(result)))
 }
 

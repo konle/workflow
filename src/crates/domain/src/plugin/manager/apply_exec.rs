@@ -4,7 +4,7 @@ use super::loop_action::LoopAction;
 use super::PluginManager;
 use crate::plugin::interface::ExecutionResult;
 use crate::shared::workflow::WorkflowInstanceStatus;
-use crate::workflow::entity::{NodeExecutionStatus, WorkflowInstanceEntity};
+use crate::workflow::entity::workflow_definition::{NodeExecutionStatus, WorkflowInstanceEntity};
 use tracing::error;
 
 impl PluginManager {

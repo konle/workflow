@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crate::shared::workflow::TaskType;
 use crate::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob};
-use crate::workflow::entity::{WorkflowNodeInstanceEntity, WorkflowInstanceEntity, NodeExecutionStatus};
+use crate::workflow::entity::workflow_definition::{WorkflowNodeInstanceEntity, WorkflowInstanceEntity, NodeExecutionStatus};
 
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {

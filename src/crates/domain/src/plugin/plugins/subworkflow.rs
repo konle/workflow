@@ -5,7 +5,7 @@ use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface}
 use crate::shared::job::{ExecuteWorkflowJob, WorkflowCallerContext, WorkflowEvent};
 use crate::shared::workflow::TaskType;
 use crate::task::entity::TaskTemplate;
-use crate::workflow::entity::{WorkflowInstanceEntity, WorkflowNodeInstanceEntity};
+use crate::workflow::entity::workflow_definition::{WorkflowInstanceEntity, WorkflowNodeInstanceEntity};
 use crate::workflow::service::{WorkflowDefinitionService, WorkflowInstanceService};
 
 const MAX_SUB_WORKFLOW_DEPTH: u32 = 10;

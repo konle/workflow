@@ -10,6 +10,7 @@ members = [
     "src/crates/api",
     "src/crates/domain",
     "src/crates/infrastructure",
+    "src/crates/common",
 ]
 
 [dependencies]
@@ -19,16 +20,16 @@ serde_json = "1.0.146"
 domain = { path = "src/crates/domain" }
 api = { path = "src/crates/api" }
 infrastructure = { path = "src/crates/infrastructure" }
-tokio = { version = "1.49.0", features = ["full"] }
+tokio = { version = "1.51.0", features = ["full"] }
 apalis = "0.7.4"
 apalis-redis = "0.7.4"
-mongodb = "3.4.1"
+mongodb = "3.5.2"
 async-trait = "0.1.89"
 anyhow = "1.0.102"
-toml = "0.8"
-clap = { version = "4", features = ["derive"] }
-bcrypt = "0.17"
+toml = "1.1.2+spec-1.1.0"
+clap = { version = "4.6.0", features = ["derive"] }
+bcrypt = "0.19.0"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4"] }
-tracing = "0.1"
+uuid = { version = "1.23.0", features = ["v4"] }
+tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

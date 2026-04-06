@@ -16,4 +16,6 @@ uuid = { version = "1", features = ["v4"] }
 aes-gcm = "0.10"
 base64 = "0.22"
 tracing = "0.1"
+common = { path = "../common" }
+mongodb = "3.5.2"
 

@@ -6,7 +6,7 @@ use axum::{
 use domain::shared::form::Form;
 use domain::shared::workflow::WorkflowStatus;
 use domain::workflow::{
-    entity::{WorkflowEntity, WorkflowMetaEntity, WorkflowNodeEntity},
+    entity::workflow_definition::{WorkflowEntity, WorkflowMetaEntity, WorkflowNodeEntity},
     service::WorkflowDefinitionService,
 };
 use crate::error::ApiError;

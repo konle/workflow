@@ -10,7 +10,7 @@ use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface}
 use crate::shared::workflow::TaskType;
 use crate::task::service::TaskInstanceService;
 use crate::variable::service::VariableService;
-use crate::workflow::entity::{WorkflowInstanceEntity, WorkflowNodeInstanceEntity};
+use crate::workflow::entity::workflow_definition::{WorkflowInstanceEntity, WorkflowNodeInstanceEntity};
 use crate::workflow::service::WorkflowInstanceService;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -90,7 +90,7 @@ impl PluginExecutor for PluginManager {
         node_instance: &mut WorkflowNodeInstanceEntity,
         workflow_instance: &mut WorkflowInstanceEntity,
         child_task_id: &str,
-        status: &crate::workflow::entity::NodeExecutionStatus,
+        status: &crate::workflow::entity::workflow_definition::NodeExecutionStatus,
         output: &Option<serde_json::Value>,
         error_message: &Option<String>,
         input: &Option<serde_json::Value>,

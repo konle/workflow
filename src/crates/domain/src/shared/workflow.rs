@@ -55,6 +55,20 @@ impl Display for WorkflowInstanceStatus {
     }
 }
 
+impl From<&WorkflowInstanceStatus> for mongodb::bson::Bson {
+    fn from(status: &WorkflowInstanceStatus) -> Self {
+        match status {
+            WorkflowInstanceStatus::Pending => mongodb::bson::Bson::String("pending".to_string()),
+            WorkflowInstanceStatus::Running => mongodb::bson::Bson::String("running".to_string()),
+            WorkflowInstanceStatus::Await => mongodb::bson::Bson::String("await".to_string()),
+            WorkflowInstanceStatus::Completed => mongodb::bson::Bson::String("completed".to_string()),
+            WorkflowInstanceStatus::Failed => mongodb::bson::Bson::String("failed".to_string()),
+            WorkflowInstanceStatus::Canceled => mongodb::bson::Bson::String("canceled".to_string()),
+            WorkflowInstanceStatus::Suspended => mongodb::bson::Bson::String("suspended".to_string()),
+        }
+    }
+}
+
 impl WorkflowInstanceStatus {
     pub fn from_str(status: &str) -> Option<Self> {
         match status {

@@ -1,12 +1,14 @@
 use async_trait::async_trait;
+use common::pagination::PaginatedData;
 use domain::shared::workflow::{WorkflowInstanceStatus, WorkflowStatus};
-use domain::workflow::entity::{WorkflowEntity, WorkflowInstanceEntity, WorkflowMetaEntity};
+use domain::workflow::entity::query::WorkflowInstanceQuery;
+use domain::workflow::entity::workflow_definition::{WorkflowEntity, WorkflowInstanceEntity, WorkflowMetaEntity};
 use domain::workflow::repository::{
     RepositoryError, WorkflowDefinitionRepository, WorkflowInstanceRepository,
 };
 use futures::TryStreamExt;
-use mongodb::bson::doc;
-use mongodb::options::FindOneOptions;
+use mongodb::bson::{Bson, Document, doc};
+use mongodb::options::{FindOneOptions, FindOptions};
 use mongodb::{Client, Collection, Database};
 
 pub struct WorkflowDefinitionRepositoryImpl {
@@ -273,6 +275,25 @@ impl WorkflowInstanceRepositoryImpl {
     }
 }
 
+
+
+
+impl WorkflowInstanceRepositoryImpl{
+    fn build_filter(&self, query: &WorkflowInstanceQuery) -> Document {
+        let mut filter = doc! {"tenant_id": &query.tenant_id};
+        if let Some(workflow_meta_id) = &query.filter.workflow_meta_id {
+            filter.insert("workflow_meta_id", workflow_meta_id);
+        }
+        if let Some(version) = &query.filter.version {
+            filter.insert("workflow_version", version);
+        }
+        if let Some(status) = &query.filter.status {
+            filter.insert("status", Bson::from(&status));
+        }
+        filter
+    }
+}
+
 #[async_trait]
 impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
     async fn get_workflow_instance(
@@ -305,16 +326,39 @@ impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
         Ok(instance)
     }
 
+
     async fn list_workflow_instances(
         &self,
-        tenant_id: &str,
-    ) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError> {
+        _tenant_id: &str,
+        query: &WorkflowInstanceQuery,
+    ) -> Result<PaginatedData<WorkflowInstanceEntity>, RepositoryError> {
+        let filter = self.build_filter(query);
+        let page = query.pagination.page;
+        let page_size = query.pagination.page_size;
+        let skip = (page - 1) * page_size;
+
+        let total = self
+            .workflow_instance_collection
+            .count_documents(filter.clone())
+            .await?;
+
+        let find_options = FindOptions::builder()
+            .skip(skip as u64)
+            .limit(page_size as i64)
+            .build();
         let cursor = self
             .workflow_instance_collection
-            .find(doc! {"tenant_id": tenant_id})
+            .find(filter)
+            .with_options(find_options)
             .await?;
-        let results: Vec<WorkflowInstanceEntity> = cursor.try_collect().await?;
-        Ok(results)
+        let items: Vec<WorkflowInstanceEntity> = cursor.try_collect().await?;
+
+        Ok(PaginatedData {
+            items,
+            total,
+            page,
+            page_size,
+        })
     }
 
     async fn transfer_status(

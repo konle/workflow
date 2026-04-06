@@ -1,5 +1,6 @@
 pub mod workflow_handler;
 pub mod workflow_instance_handler;
+pub mod workflow_instance_request;
 
 use axum::Router;
 use std::sync::Arc;

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::workflow::TaskType;
 use crate::shared::job::{ExecuteTaskJob, WorkflowCallerContext};
-use crate::workflow::entity::{
+use crate::workflow::entity::workflow_definition::{
     WorkflowInstanceEntity, WorkflowNodeInstanceEntity,
 };
 

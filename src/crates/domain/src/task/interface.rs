@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crate::shared::workflow::TaskType;
 use crate::task::entity::TaskInstanceEntity;
-use crate::workflow::entity::NodeExecutionStatus;
+use crate::workflow::entity::workflow_definition::NodeExecutionStatus;
 
 pub struct TaskExecutionResult {
     pub status: NodeExecutionStatus,

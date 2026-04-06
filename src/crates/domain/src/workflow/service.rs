@@ -6,10 +6,12 @@ use uuid::Uuid;
 use crate::shared::job::WorkflowCallerContext;
 use crate::shared::workflow::{TaskInstanceStatus, TaskType, WorkflowInstanceStatus, WorkflowStatus};
 use crate::task::entity::TaskInstanceEntity;
-use crate::workflow::entity::{
+use crate::workflow::entity::query::WorkflowInstanceQuery;
+use crate::workflow::entity::workflow_definition::{
     NodeExecutionStatus, WorkflowEntity, WorkflowInstanceEntity,
     WorkflowMetaEntity, WorkflowNodeInstanceEntity,
 };
+use common::pagination::PaginatedData;
 use crate::workflow::repository::{RepositoryError, WorkflowDefinitionRepository, WorkflowInstanceRepository};
 
 #[derive(Clone)]
@@ -121,8 +123,12 @@ impl WorkflowInstanceService {
         self.repository.get_workflow_instance_scoped(tenant_id, id).await
     }
 
-    pub async fn list_workflow_instances(&self, tenant_id: &str) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError> {
-        self.repository.list_workflow_instances(tenant_id).await
+    pub async fn list_workflow_instances(
+        &self,
+        tenant_id: &str,
+        query: &WorkflowInstanceQuery,
+    ) -> Result<PaginatedData<WorkflowInstanceEntity>, RepositoryError> {
+        self.repository.list_workflow_instances(tenant_id, query).await
     }
 
     /// Expand a workflow template into a runnable instance (Pending, epoch=0).
