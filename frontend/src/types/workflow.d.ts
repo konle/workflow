@@ -103,3 +103,14 @@ export interface CreateWorkflowInstanceRequest {
   version: number
   context: JsonValue
 }
+
+/** GET /workflow/instance 查询参数，与后端 ListWorkflowInstancesRequest 对齐 */
+export interface ListWorkflowInstancesParams {
+  page?: number
+  page_size?: number
+  workflow_meta_id?: string
+  version?: number
+  status?: WorkflowInstanceStatus
+  sort_by?: string
+  sort_order?: string
+}

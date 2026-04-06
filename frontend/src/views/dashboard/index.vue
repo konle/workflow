@@ -63,16 +63,18 @@ const columns = [
 
 onMounted(async () => {
   try {
-    const [tasks, metas, instances] = await Promise.all([
+    const [tasks, metas, runningRes, failedRes, failedPage] = await Promise.all([
       taskApi.list(),
       workflowApi.listMeta(),
-      workflowApi.listInstances(),
+      workflowApi.listInstances({ page: 1, page_size: 1, status: 'Running' }),
+      workflowApi.listInstances({ page: 1, page_size: 1, status: 'Failed' }),
+      workflowApi.listInstances({ page: 1, page_size: 5, status: 'Failed' }),
     ])
     stats.taskCount = tasks.data.length
     stats.workflowCount = metas.data.length
-    stats.runningCount = instances.data.filter(i => i.status === 'Running').length
-    stats.failedCount = instances.data.filter(i => i.status === 'Failed').length
-    failedInstances.value = instances.data.filter(i => i.status === 'Failed').slice(0, 5)
+    stats.runningCount = Number(runningRes.data.total)
+    stats.failedCount = Number(failedRes.data.total)
+    failedInstances.value = failedPage.data.items
   } catch { /* handled by interceptor */ }
 })
 </script>

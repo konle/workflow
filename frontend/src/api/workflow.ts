@@ -2,7 +2,9 @@ import request from './request'
 import type {
   WorkflowMetaEntity, WorkflowEntity, WorkflowInstanceEntity,
   CreateWorkflowMetaRequest, UpdateWorkflowMetaRequest, CreateWorkflowInstanceRequest,
+  ListWorkflowInstancesParams,
 } from '../types/workflow'
+import type { PaginatedData } from '../types/pagination'
 
 export const workflowApi = {
   createMeta: (data: CreateWorkflowMetaRequest) =>
@@ -44,8 +46,11 @@ export const workflowApi = {
   createInstance: (data: CreateWorkflowInstanceRequest) =>
     request.post<any, { data: WorkflowInstanceEntity }>('/workflow/instance', data),
 
-  listInstances: () =>
-    request.get<any, { data: WorkflowInstanceEntity[] }>('/workflow/instance'),
+  listInstances: (params?: ListWorkflowInstancesParams) =>
+    request.get<any, { data: PaginatedData<WorkflowInstanceEntity> }>(
+      '/workflow/instance',
+      params ? { params } : {},
+    ),
 
   getInstance: (id: string) =>
     request.get<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}`),
