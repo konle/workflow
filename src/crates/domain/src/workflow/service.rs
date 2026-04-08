@@ -295,16 +295,31 @@ impl WorkflowInstanceService {
         ).await
     }
 
-    /// Failed -> Pending (user chooses to retry)
+    /// Failed -> Pending (user chooses to retry).
+    /// Also resets the current (failed) node back to Pending so the
+    /// execution loop will re-execute it instead of short-circuiting.
     pub async fn retry_instance(
         &self,
         workflow_instance_id: &str,
     ) -> Result<WorkflowInstanceEntity, RepositoryError> {
-        self.transfer_status(
+        let mut instance = self.transfer_status(
             workflow_instance_id,
             &WorkflowInstanceStatus::Failed,
             &WorkflowInstanceStatus::Pending,
-        ).await
+        ).await?;
+
+        let current_node_id = instance.get_current_node();
+        if let Some(node) = instance.nodes.iter_mut().find(|n| n.node_id == current_node_id) {
+            if node.status == NodeExecutionStatus::Failed {
+                node.status = NodeExecutionStatus::Pending;
+                node.error_message = None;
+                node.task_instance.output = None;
+                node.task_instance.error_message = None;
+            }
+        }
+
+        self.repository.save_workflow_instance(&instance).await?;
+        Ok(instance)
     }
 
     /// Suspended -> Pending (user approves / chooses to continue)
