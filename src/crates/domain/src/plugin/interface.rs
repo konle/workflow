@@ -38,15 +38,15 @@ impl ExecutionResult {
     }
 
     pub fn async_dispatch(job: ExecuteTaskJob) -> Self {
-        Self { status: NodeExecutionStatus::Suspended, dispatch_jobs: vec![job], dispatch_workflow_jobs: vec![], jump_to_node: None }
+        Self { status: NodeExecutionStatus::Await, dispatch_jobs: vec![job], dispatch_workflow_jobs: vec![], jump_to_node: None }
     }
 
     pub fn async_dispatch_multiple(jobs: Vec<ExecuteTaskJob>) -> Self {
-        Self { status: NodeExecutionStatus::Suspended, dispatch_jobs: jobs, dispatch_workflow_jobs: vec![], jump_to_node: None }
+        Self { status: NodeExecutionStatus::Await, dispatch_jobs: jobs, dispatch_workflow_jobs: vec![], jump_to_node: None }
     }
 
     pub fn async_dispatch_workflow(job: ExecuteWorkflowJob) -> Self {
-        Self { status: NodeExecutionStatus::Suspended, dispatch_jobs: vec![], dispatch_workflow_jobs: vec![job], jump_to_node: None }
+        Self { status: NodeExecutionStatus::Await, dispatch_jobs: vec![], dispatch_workflow_jobs: vec![job], jump_to_node: None }
     }
 }
 

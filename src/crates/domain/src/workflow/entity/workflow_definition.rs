@@ -95,6 +95,7 @@ pub enum NodeExecutionStatus {
     Success,
     Failed,
     Suspended,
+    Await,
     Skipped,
 }
 

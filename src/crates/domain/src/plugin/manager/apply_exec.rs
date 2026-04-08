@@ -41,21 +41,20 @@ impl PluginManager {
                 instance.status = WorkflowInstanceStatus::Failed;
                 LoopAction::Done
             }
+            NodeExecutionStatus::Await => {
+                self.workflow_instance_svc
+                    .await_instance(&instance.workflow_instance_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                instance.status = WorkflowInstanceStatus::Await;
+                LoopAction::Done
+            }
             NodeExecutionStatus::Pending | NodeExecutionStatus::Suspended => {
-                if !exec_result.dispatch_jobs.is_empty() || !exec_result.dispatch_workflow_jobs.is_empty()
-                {
-                    self.workflow_instance_svc
-                        .await_instance(&instance.workflow_instance_id)
-                        .await
-                        .map_err(|e| anyhow::anyhow!(e))?;
-                    instance.status = WorkflowInstanceStatus::Await;
-                } else {
-                    self.workflow_instance_svc
-                        .suspend_instance(&instance.workflow_instance_id)
-                        .await
-                        .map_err(|e| anyhow::anyhow!(e))?;
-                    instance.status = WorkflowInstanceStatus::Suspended;
-                }
+                self.workflow_instance_svc
+                    .suspend_instance(&instance.workflow_instance_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                instance.status = WorkflowInstanceStatus::Suspended;
                 LoopAction::Done
             }
             _ => LoopAction::Retry,

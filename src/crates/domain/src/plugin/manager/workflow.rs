@@ -456,7 +456,7 @@ impl PluginManager {
                     .map_err(|e| anyhow::anyhow!(e))?;
                 Ok(LoopOutcome::Stop)
             }
-            NodeExecutionStatus::Suspended | NodeExecutionStatus::Running => Ok(LoopOutcome::Stop),
+            NodeExecutionStatus::Suspended | NodeExecutionStatus::Await | NodeExecutionStatus::Running => Ok(LoopOutcome::Stop),
             NodeExecutionStatus::Pending => {
                 instance.nodes[node_index].status = NodeExecutionStatus::Running;
                 self.save_instance_and_bump_epoch(instance).await?;
