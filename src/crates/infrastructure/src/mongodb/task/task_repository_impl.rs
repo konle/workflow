@@ -77,16 +77,18 @@ impl TaskInstanceEntityRepository for TaskInstanceRepositoryImpl {
         from_status: &TaskInstanceStatus,
         to_status: &TaskInstanceStatus,
     ) -> Result<TaskInstanceEntity, RepositoryError> {
-        let from_str = format!("{:?}", from_status);
-        let to_str = format!("{:?}", to_status);
+        let from_bson = mongodb::bson::to_bson(from_status)
+            .map_err(|e| format!("serialize from_status: {e}"))?;
+        let to_bson = mongodb::bson::to_bson(to_status)
+            .map_err(|e| format!("serialize to_status: {e}"))?;
 
         let filter = doc! {
             "task_instance_id": task_instance_id,
-            "task_status": &from_str,
+            "task_status": from_bson,
         };
         let update = doc! {
             "$set": {
-                "task_status": &to_str,
+                "task_status": to_bson,
                 "updated_at": chrono::Utc::now().to_rfc3339(),
             }
         };
@@ -96,8 +98,8 @@ impl TaskInstanceEntityRepository for TaskInstanceRepositoryImpl {
             .return_document(mongodb::options::ReturnDocument::After)
             .await?
             .ok_or_else(|| format!(
-                "CAS failed: task instance {} not in expected state {}",
-                task_instance_id, from_str
+                "CAS failed: task instance {} not in expected state {:?}",
+                task_instance_id, from_status
             ))?;
 
         Ok(result)

@@ -1,7 +1,7 @@
 use axum::{
     extract::{Extension, Path, Query, State},
     middleware::from_fn,
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
     Json, Router,
 };
 use domain::shared::workflow::{TaskStatus, TaskType};

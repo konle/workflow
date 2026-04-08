@@ -15,15 +15,6 @@ impl Display for WorkflowStatus {
 }
 
 impl WorkflowStatus {
-    pub fn from_str(status: &str) -> Option<Self> {
-        match status {
-            "draft" => Some(WorkflowStatus::Draft),
-            "published" => Some(WorkflowStatus::Published),
-            "deleted" => Some(WorkflowStatus::Deleted),
-            "archived" => Some(WorkflowStatus::Archived),
-            _ => None,
-        }
-    }
     /// State machine transition rules:
     ///   Draft   -> Published
     ///   Published -> Archived
@@ -55,34 +46,7 @@ impl Display for WorkflowInstanceStatus {
     }
 }
 
-impl From<&WorkflowInstanceStatus> for mongodb::bson::Bson {
-    fn from(status: &WorkflowInstanceStatus) -> Self {
-        match status {
-            WorkflowInstanceStatus::Pending => mongodb::bson::Bson::String("pending".to_string()),
-            WorkflowInstanceStatus::Running => mongodb::bson::Bson::String("running".to_string()),
-            WorkflowInstanceStatus::Await => mongodb::bson::Bson::String("await".to_string()),
-            WorkflowInstanceStatus::Completed => mongodb::bson::Bson::String("completed".to_string()),
-            WorkflowInstanceStatus::Failed => mongodb::bson::Bson::String("failed".to_string()),
-            WorkflowInstanceStatus::Canceled => mongodb::bson::Bson::String("canceled".to_string()),
-            WorkflowInstanceStatus::Suspended => mongodb::bson::Bson::String("suspended".to_string()),
-        }
-    }
-}
-
 impl WorkflowInstanceStatus {
-    pub fn from_str(status: &str) -> Option<Self> {
-        match status {
-            "pending" => Some(WorkflowInstanceStatus::Pending),
-            "running" => Some(WorkflowInstanceStatus::Running),
-            "completed" => Some(WorkflowInstanceStatus::Completed),
-            "failed" => Some(WorkflowInstanceStatus::Failed),
-            "canceled" => Some(WorkflowInstanceStatus::Canceled),
-            "suspended" => Some(WorkflowInstanceStatus::Suspended),
-            "await" => Some(WorkflowInstanceStatus::Await),
-            _ => None,
-        }
-    }
-
     /// State machine transition rules:
     ///   Pending   -> Running
     ///   Running   -> Completed | Failed | Suspended | Await
@@ -124,15 +88,6 @@ impl Display for TaskStatus {
     }
 }
 
-impl TaskStatus {
-    pub fn from_str(status: &str) -> Option<Self> {
-        match status {
-            "draft" => Some(TaskStatus::Draft),
-            "published" => Some(TaskStatus::Published),
-            _ => None,
-        }
-    }
-}
 
 // 任务实例状态枚举 用于表示任务实例的状态 如待执行、执行中、已完成、失败
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,17 +105,6 @@ impl Display for TaskInstanceStatus {
 }
 
 impl TaskInstanceStatus {
-    pub fn from_str(status: &str) -> Option<Self> {
-        match status {
-            "pending" => Some(TaskInstanceStatus::Pending),
-            "running" => Some(TaskInstanceStatus::Running),
-            "completed" => Some(TaskInstanceStatus::Completed),
-            "failed" => Some(TaskInstanceStatus::Failed),
-            "canceled" => Some(TaskInstanceStatus::Canceled),
-            _ => None,
-        }
-    }
-
     /// State machine transition rules:
     ///   Pending   -> Running | Canceled
     ///   Running   -> Completed | Failed

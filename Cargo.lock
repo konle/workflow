@@ -1634,6 +1634,7 @@ dependencies = [
  "mongodb",
  "serde",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

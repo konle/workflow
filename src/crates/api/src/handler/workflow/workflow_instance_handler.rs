@@ -108,6 +108,7 @@ async fn list_instances(
 ) -> Result<Json<Response<PaginatedData<WorkflowInstanceEntity>>>, ApiError> {
     let mut query = WorkflowInstanceQuery::from(req);
     query.tenant_id = auth.tenant_id.clone();
+    info!("list_instances query: {:?} tenant_id: {}", query, auth.tenant_id);
     let result = handler.instance_service.list_workflow_instances(&auth.tenant_id, &query).await?;
     Ok(Json(Response::success(result)))
 }

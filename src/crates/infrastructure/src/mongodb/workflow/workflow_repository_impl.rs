@@ -7,9 +7,10 @@ use domain::workflow::repository::{
     RepositoryError, WorkflowDefinitionRepository, WorkflowInstanceRepository,
 };
 use futures::TryStreamExt;
-use mongodb::bson::{Bson, Document, doc};
+use mongodb::bson::{Document, doc};
 use mongodb::options::{FindOneOptions, FindOptions};
 use mongodb::{Client, Collection, Database};
+use tracing::info;
 
 pub struct WorkflowDefinitionRepositoryImpl {
     pub client: Client,
@@ -216,9 +217,9 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionRepositoryImpl {
         from_status: &WorkflowStatus,
         to_status: &WorkflowStatus,
     ) -> Result<(), RepositoryError> {
-        let from_str = format!("{:?}", from_status);
-        let to_str = format!("{:?}", to_status);
-        let result = self.collection.update_one(doc! {"workflow_meta_id": &workflow_meta_id, "version": &version, "status": &from_str}, doc! {"$set": {"status": &to_str, "updated_at": mongodb::bson::to_bson(&chrono::Utc::now()).map_err(|e| format!("serialize updated_at: {}", e))?}}).await?;
+        let from_bson = mongodb::bson::to_bson(from_status).map_err(|e| format!("serialize status: {e}"))?;
+        let to_bson = mongodb::bson::to_bson(to_status).map_err(|e| format!("serialize status: {e}"))?;
+        let result = self.collection.update_one(doc! {"workflow_meta_id": &workflow_meta_id, "version": &version, "status": from_bson}, doc! {"$set": {"status": to_bson, "updated_at": mongodb::bson::to_bson(&chrono::Utc::now()).map_err(|e| format!("serialize updated_at: {e}"))?}}).await?;
         if result.matched_count == 0 {
             return Err(format!(
                 "cannot transition workflow version {}: not found or not in expected status",
@@ -288,7 +289,9 @@ impl WorkflowInstanceRepositoryImpl{
             filter.insert("workflow_version", version);
         }
         if let Some(status) = &query.filter.status {
-            filter.insert("status", Bson::from(&status));
+            if let Ok(bson_val) = mongodb::bson::to_bson(status) {
+                filter.insert("status", bson_val);
+            }
         }
         filter
     }
@@ -336,6 +339,7 @@ impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
         let page = query.pagination.page;
         let page_size = query.pagination.page_size;
         let skip = (page - 1) * page_size;
+        info!("list_workflow_instances filter: {:?} tenant_id: {} page: {} page_size: {}", filter, _tenant_id, page, page_size);
 
         let total = self
             .workflow_instance_collection
@@ -367,16 +371,18 @@ impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
         from_status: &WorkflowInstanceStatus,
         to_status: &WorkflowInstanceStatus,
     ) -> Result<WorkflowInstanceEntity, RepositoryError> {
-        let from_str = format!("{:?}", from_status);
-        let to_str = format!("{:?}", to_status);
+        let from_bson = mongodb::bson::to_bson(from_status)
+            .map_err(|e| format!("serialize from_status: {e}"))?;
+        let to_bson = mongodb::bson::to_bson(to_status)
+            .map_err(|e| format!("serialize to_status: {e}"))?;
 
         let filter = doc! {
             "workflow_instance_id": workflow_instance_id,
-            "status": &from_str,
+            "status": from_bson,
         };
         let update = doc! {
             "$set": {
-                "status": &to_str,
+                "status": to_bson,
                 "updated_at": chrono::Utc::now().to_rfc3339(),
             }
         };
@@ -388,8 +394,8 @@ impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
             .await?
             .ok_or_else(|| {
                 format!(
-                    "CAS failed: instance {} not in expected state {}",
-                    workflow_instance_id, from_str
+                    "CAS failed: instance {} not in expected state {:?}",
+                    workflow_instance_id, from_status
                 )
             })?;
 
