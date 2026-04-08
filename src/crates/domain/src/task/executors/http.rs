@@ -1,9 +1,11 @@
 use async_trait::async_trait;
 use chrono::Utc;
+use rhai::Scope;
 use reqwest::Client;
 use serde_json::json;
 use tracing::{debug, warn, error};
 
+use crate::plugin::rhai_engine;
 use crate::shared::workflow::TaskType;
 use crate::task::entity::{HttpMethod, TaskInstanceEntity, TaskTemplate};
 use crate::task::http_template_resolve::effective_http_request;
@@ -45,6 +47,7 @@ impl TaskExecutor for HttpTaskExecutor {
         }
 
         let mut last_error: Option<String> = None;
+        let mut last_output: Option<serde_json::Value> = None;
         let attempts = config.retry_count + 1;
 
         for attempt in 0..attempts {
@@ -90,19 +93,88 @@ impl TaskExecutor for HttpTaskExecutor {
                     });
 
                     if (200..300).contains(&status_code) {
-                        debug!(
-                            task_instance_id = %task_instance.task_instance_id,
-                            url = %url,
-                            status_code = status_code,
-                            duration_ms = duration,
-                            "HTTP request succeeded"
-                        );
-                        return Ok(TaskExecutionResult {
-                            status: NodeExecutionStatus::Success,
-                            input: Some(input_snapshot),
-                            output: Some(output_data),
-                            error_message: None,
-                        });
+                        if let Some(ref condition) = config.success_condition {
+                            let condition_passed = match serde_json::from_str::<serde_json::Value>(&resp_body) {
+                                Ok(body_json) => {
+                                    let engine = rhai_engine::create_engine();
+                                    let mut scope = Scope::new();
+                                    rhai_engine::inject_context_flat(&mut scope, &body_json);
+                                    match engine.eval_with_scope::<bool>(&mut scope, condition) {
+                                        Ok(v) => v,
+                                        Err(e) => {
+                                            warn!(
+                                                task_instance_id = %task_instance.task_instance_id,
+                                                condition = %condition,
+                                                error = %e,
+                                                "success_condition eval error, treating as not met"
+                                            );
+                                            false
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    warn!(
+                                        task_instance_id = %task_instance.task_instance_id,
+                                        "response body is not valid JSON, success_condition cannot be evaluated"
+                                    );
+                                    false
+                                }
+                            };
+
+                            let output_with_condition = json!({
+                                "status_code": status_code,
+                                "body": resp_body,
+                                "duration_ms": duration,
+                                "attempt": attempt + 1,
+                                "condition_result": condition_passed,
+                                "condition_expression": condition,
+                            });
+
+                            if !condition_passed {
+                                warn!(
+                                    task_instance_id = %task_instance.task_instance_id,
+                                    url = %url,
+                                    condition = %condition,
+                                    attempt = attempt + 1,
+                                    "success_condition not met"
+                                );
+                                last_error = Some(format!(
+                                    "success_condition `{}` not met (body: {})",
+                                    condition, resp_body
+                                ));
+                                last_output = Some(output_with_condition);
+                                // fall through to retry loop
+                            } else {
+                                debug!(
+                                    task_instance_id = %task_instance.task_instance_id,
+                                    url = %url,
+                                    status_code = status_code,
+                                    condition = %condition,
+                                    duration_ms = duration,
+                                    "HTTP request succeeded (condition met)"
+                                );
+                                return Ok(TaskExecutionResult {
+                                    status: NodeExecutionStatus::Success,
+                                    input: Some(input_snapshot),
+                                    output: Some(output_with_condition),
+                                    error_message: None,
+                                });
+                            }
+                        } else {
+                            debug!(
+                                task_instance_id = %task_instance.task_instance_id,
+                                url = %url,
+                                status_code = status_code,
+                                duration_ms = duration,
+                                "HTTP request succeeded"
+                            );
+                            return Ok(TaskExecutionResult {
+                                status: NodeExecutionStatus::Success,
+                                input: Some(input_snapshot),
+                                output: Some(output_data),
+                                error_message: None,
+                            });
+                        }
                     } else {
                         warn!(
                             task_instance_id = %task_instance.task_instance_id,
@@ -146,7 +218,7 @@ impl TaskExecutor for HttpTaskExecutor {
         Ok(TaskExecutionResult {
             status: NodeExecutionStatus::Failed,
             input: Some(input_snapshot),
-            output: None,
+            output: last_output,
             error_message: Some(error_msg),
         })
     }
