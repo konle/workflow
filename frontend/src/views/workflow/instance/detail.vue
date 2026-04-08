@@ -133,6 +133,27 @@ const NODE_COLORS: Record<string, string> = {
   Skipped: '#E5E6EB',
 }
 
+function collectEdges(nodes: WorkflowNodeInstanceEntity[]) {
+  const edges: { source: string; target: string; label?: string; branch?: boolean }[] = []
+  for (const n of nodes) {
+    if (n.next_node) {
+      edges.push({ source: n.node_id, target: n.next_node })
+    }
+    if (n.node_type === 'IfCondition') {
+      const tpl = (n.task_instance.task_template as { IfCondition: { then_task?: string | null; else_task?: string | null } }).IfCondition
+      if (tpl?.then_task) edges.push({ source: n.node_id, target: tpl.then_task, label: 'Y', branch: true })
+      if (tpl?.else_task) edges.push({ source: n.node_id, target: tpl.else_task, label: 'N', branch: true })
+    }
+  }
+  const seen = new Set<string>()
+  return edges.filter(e => {
+    const key = `${e.source}->${e.target}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 const flowNodes = computed(() => {
   if (!instance.value) return []
   const g = new dagre.graphlib.Graph()
@@ -140,7 +161,9 @@ const flowNodes = computed(() => {
   g.setDefaultEdgeLabel(() => ({}))
   for (const n of instance.value.nodes) {
     g.setNode(n.node_id, { width: 150, height: 40 })
-    if (n.next_node) g.setEdge(n.node_id, n.next_node)
+  }
+  for (const e of collectEdges(instance.value.nodes)) {
+    g.setEdge(e.source, e.target)
   }
   dagre.layout(g)
   return instance.value.nodes.map(n => {
@@ -164,13 +187,14 @@ const flowNodes = computed(() => {
 
 const flowEdges = computed(() => {
   if (!instance.value) return []
-  const edges: any[] = []
-  for (const n of instance.value.nodes) {
-    if (n.next_node) {
-      edges.push({ id: `${n.node_id}->${n.next_node}`, source: n.node_id, target: n.next_node, animated: n.status === 'Running' })
-    }
-  }
-  return edges
+  return collectEdges(instance.value.nodes).map(e => ({
+    id: `${e.source}->${e.target}`,
+    source: e.source,
+    target: e.target,
+    animated: instance.value!.nodes.find(n => n.node_id === e.source)?.status === 'Running',
+    label: e.label,
+    style: e.branch ? { strokeDasharray: '5 5' } : {},
+  }))
 })
 
 async function fetchInstance() {

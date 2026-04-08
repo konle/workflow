@@ -34,3 +34,7 @@ uuid = { version = "1.23.0", features = ["v4"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 rand = "0.10.0"
+[profile.dev]
+incremental = true
+opt-level = 0
+debug = 0 # 如果不是在调试变量，减少 debug 信息可以加快速度
