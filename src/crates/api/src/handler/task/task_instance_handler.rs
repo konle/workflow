@@ -1,5 +1,6 @@
 use axum::{
     extract::{Extension, Path, State},
+    middleware::from_fn,
     routing::{get, post},
     Json, Router,
 };
@@ -10,8 +11,10 @@ use domain::shared::job::{ExecuteTaskJob, TaskDispatcher};
 use domain::shared::workflow::TaskInstanceStatus;
 use domain::task::entity::TaskInstanceEntity;
 use domain::task::service::{TaskService, TaskInstanceService};
+use domain::user::entity::Permission;
 use crate::error::ApiError;
 use crate::middleware::auth::AuthContext;
+use crate::middleware::permission::require_permission;
 use crate::response::response::Response;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -35,12 +38,20 @@ impl TaskInstanceHandler {
 }
 
 pub fn routes(handler: Arc<TaskInstanceHandler>) -> Router {
-    Router::new()
-        .route("/", post(create_task_instance).get(list_task_instances))
-        .route("/{id}", get(get_task_instance))
+    let reads = Router::new()
+        .route("/", get(list_task_instances))
+        .route("/{id}", get(get_task_instance));
+
+    let writes = Router::new()
+        .route("/", post(create_task_instance))
         .route("/{id}/execute", post(execute_task_instance))
         .route("/{id}/retry", post(retry_task_instance))
         .route("/{id}/cancel", post(cancel_task_instance))
+        .layer(from_fn(require_permission(Permission::InstanceExecute)));
+
+    Router::new()
+        .merge(reads)
+        .merge(writes)
         .with_state(handler)
 }
 

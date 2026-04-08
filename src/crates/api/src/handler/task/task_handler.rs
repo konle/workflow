@@ -1,13 +1,16 @@
 use axum::{
     extract::{Extension, Path, Query, State},
-    routing::{get, post},
+    middleware::from_fn,
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use domain::shared::workflow::{TaskStatus, TaskType};
 use domain::task::entity::{TaskEntity, TaskTemplate};
 use domain::task::service::{CreateTaskCommand, UpdateTaskCommand, TaskService};
+use domain::user::entity::Permission;
 use crate::error::ApiError;
 use crate::middleware::auth::AuthContext;
+use crate::middleware::permission::require_permission;
 use crate::response::response::Response;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -67,9 +70,18 @@ impl TaskHandler {
 }
 
 pub fn routes(handler: Arc<TaskHandler>) -> Router {
+    let reads = Router::new()
+        .route("/", get(list_tasks))
+        .route("/{id}", get(get_task));
+
+    let writes = Router::new()
+        .route("/", post(create_task))
+        .route("/{id}", put(update_task).delete(delete_task))
+        .layer(from_fn(require_permission(Permission::TemplateWrite)));
+
     Router::new()
-        .route("/", post(create_task).get(list_tasks))
-        .route("/{id}", get(get_task).put(update_task).delete(delete_task))
+        .merge(reads)
+        .merge(writes)
         .with_state(handler)
 }
 

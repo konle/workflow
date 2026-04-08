@@ -46,6 +46,8 @@ pub enum Permission {
     UserManage,
     TemplateWrite,
     InstanceExecute,
+    ApprovalAdmin,
+    ApprovalDecide,
     ReadOnly,
 }
 
@@ -55,10 +57,11 @@ impl TenantRole {
             Permission::TenantManage => false,
             Permission::UserManage => matches!(self, TenantRole::TenantAdmin),
             Permission::TemplateWrite => matches!(self, TenantRole::TenantAdmin | TenantRole::Developer),
-            Permission::InstanceExecute => matches!(
+            Permission::InstanceExecute | Permission::ApprovalDecide => matches!(
                 self,
                 TenantRole::TenantAdmin | TenantRole::Developer | TenantRole::Operator
             ),
+            Permission::ApprovalAdmin => matches!(self, TenantRole::TenantAdmin),
             Permission::ReadOnly => true,
         }
     }

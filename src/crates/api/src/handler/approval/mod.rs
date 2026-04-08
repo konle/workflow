@@ -3,7 +3,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use tracing::{info, warn, error};
+use tracing::{info, error};
 use domain::approval::entity::{ApprovalInstanceEntity, Decision};
 use domain::approval::service::ApprovalService;
 use domain::plugin::plugins::approval::approval_status_to_node_status;
@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use crate::error::ApiError;
 use crate::middleware::auth::AuthContext;
+use crate::middleware::permission_guard::{Guard, RequireApprovalAdmin, RequireApprovalDecide};
 use crate::response::response::Response;
 
 #[derive(Clone)]
@@ -54,10 +55,10 @@ async fn list_my_approvals(
 }
 
 async fn list_all_approvals(
+    _: Guard<RequireApprovalAdmin>,
     State(handler): State<Arc<ApprovalHandler>>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Response<Vec<ApprovalInstanceEntity>>>, ApiError> {
-    check_admin_permission(&auth)?;
     let result = handler.service.list_by_tenant(&auth.tenant_id).await?;
     Ok(Json(Response::success(result)))
 }
@@ -72,13 +73,12 @@ async fn get_approval(
 }
 
 async fn decide_approval(
+    _: Guard<RequireApprovalDecide>,
     State(handler): State<Arc<ApprovalHandler>>,
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
     Json(req): Json<DecideRequest>,
 ) -> Result<Json<Response<ApprovalInstanceEntity>>, ApiError> {
-    check_decide_permission(&auth)?;
-
     let approval = handler
         .service
         .decide(&auth.tenant_id, &id, &auth.user_id, req.decision, req.comment)
@@ -142,30 +142,3 @@ async fn decide_approval(
     Ok(Json(Response::success(approval)))
 }
 
-fn check_admin_permission(auth: &AuthContext) -> Result<(), ApiError> {
-    use domain::user::entity::TenantRole;
-    if auth.is_super_admin {
-        return Ok(());
-    }
-    match &auth.role {
-        Some(TenantRole::TenantAdmin) => Ok(()),
-        _ => {
-            warn!(user_id = %auth.user_id, "forbidden: only TenantAdmin+ can view all approvals");
-            Err(ApiError::forbidden("only TenantAdmin+ can view all approvals"))
-        }
-    }
-}
-
-fn check_decide_permission(auth: &AuthContext) -> Result<(), ApiError> {
-    use domain::user::entity::TenantRole;
-    if auth.is_super_admin {
-        return Ok(());
-    }
-    match &auth.role {
-        Some(TenantRole::Viewer) | None => {
-            warn!(user_id = %auth.user_id, "forbidden: viewer cannot submit approval decisions");
-            Err(ApiError::forbidden("Viewer cannot submit approval decisions"))
-        }
-        _ => Ok(()),
-    }
-}

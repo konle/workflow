@@ -1,16 +1,19 @@
 use axum::{
     extract::{Extension, Path, State},
-    routing::{get, post},
+    middleware::from_fn,
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use domain::shared::form::Form;
 use domain::shared::workflow::WorkflowStatus;
+use domain::user::entity::Permission;
 use domain::workflow::{
     entity::workflow_definition::{WorkflowEntity, WorkflowMetaEntity, WorkflowNodeEntity},
     service::WorkflowDefinitionService,
 };
 use crate::error::ApiError;
 use crate::middleware::auth::AuthContext;
+use crate::middleware::permission::require_permission;
 use crate::response::response::Response;
 use chrono::Utc;
 use serde::Deserialize;
@@ -55,23 +58,25 @@ impl WorkflowHandler {
 }
 
 pub fn routes(handler: Arc<WorkflowHandler>) -> Router {
+    let reads = Router::new()
+        .route("/meta", get(list_workflow_meta))
+        .route("/meta/{workflow_meta_id}", get(get_workflow_meta))
+        .route("/meta/{workflow_meta_id}/template", get(list_workflow_templates))
+        .route("/meta/{workflow_meta_id}/template/{version}", get(get_workflow_template));
+
+    let writes = Router::new()
+        .route("/meta", post(create_workflow_meta))
+        .route("/meta/{workflow_meta_id}", put(update_workflow_meta).delete(delete_workflow_meta))
+        .route("/meta/{workflow_meta_id}/template", post(save_workflow_template))
+        .route("/meta/{workflow_meta_id}/template/{version}", delete(delete_workflow_template))
+        .route("/meta/{workflow_meta_id}/template/{version}/publish", post(publish_workflow_template))
+        .route("/meta/{workflow_meta_id}/template/{version}/copy", post(copy_workflow_template))
+        .route("/meta/{workflow_meta_id}/template/{version}/archive", post(archive_workflow_template))
+        .layer(from_fn(require_permission(Permission::TemplateWrite)));
+
     Router::new()
-        .route("/meta", post(create_workflow_meta).get(list_workflow_meta))
-        .route("/meta/{workflow_meta_id}", get(get_workflow_meta).put(update_workflow_meta).delete(delete_workflow_meta))
-        .route("/meta/{workflow_meta_id}/template", post(save_workflow_template).get(list_workflow_templates))
-        .route(
-            "/meta/{workflow_meta_id}/template/{version}/publish",
-            post(publish_workflow_template),
-        )
-        .route(
-            "/meta/{workflow_meta_id}/template/{version}/copy",
-            post(copy_workflow_template),
-        )
-        .route(
-            "/meta/{workflow_meta_id}/template/{version}/archive",
-            post(archive_workflow_template),
-        )
-        .route("/meta/{workflow_meta_id}/template/{version}", get(get_workflow_template).delete(delete_workflow_template))
+        .merge(reads)
+        .merge(writes)
         .with_state(handler)
 }
 

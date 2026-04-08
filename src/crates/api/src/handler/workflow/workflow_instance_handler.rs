@@ -1,8 +1,15 @@
 use axum::{
-    Json, Router, extract::{Extension, Path, Query, State}, routing::{get, post}
+    Json, Router,
+    extract::{Extension, Path, Query, State},
+    middleware::from_fn,
+    routing::{get, post},
 };
 use tracing::{info, error};
-use domain::{shared::{job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent}, workflow::WorkflowStatus}, user::entity::TenantRole, workflow::entity::query::WorkflowInstanceQuery};
+use domain::{
+    shared::{job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent}, workflow::WorkflowStatus},
+    user::entity::Permission,
+    workflow::entity::query::WorkflowInstanceQuery,
+};
 use domain::workflow::{
     entity::workflow_definition::{NodeExecutionStatus, WorkflowInstanceEntity},
     service::{node_callback_child_task_id, WorkflowDefinitionService, WorkflowInstanceService},
@@ -12,6 +19,8 @@ use common::pagination::PaginatedData;
 
 use crate::error::ApiError;
 use crate::middleware::auth::AuthContext;
+use crate::middleware::permission::require_permission;
+use crate::middleware::permission_guard::{PermissionLevel, RequireDraftInstanceCreate};
 use crate::response::response::Response;
 use crate::handler::workflow::workflow_instance_request::{CreateWorkflowInstanceRequest, SkipWorkflowNodeRequest, ListWorkflowInstancesRequest};
 use std::sync::Arc;
@@ -35,15 +44,22 @@ impl WorkflowInstanceHandler {
 }
 
 pub fn routes(handler: Arc<WorkflowInstanceHandler>) -> Router {
-    Router::new()
-        .route("/", post(create_instance).get(list_instances))
-        // .route("/test", post(create_draft_instance)) // for test，租户开发者和管理员可以对草稿发起运行开发期间的测试
-        .route("/{id}", get(get_instance))
+    let reads = Router::new()
+        .route("/", get(list_instances))
+        .route("/{id}", get(get_instance));
+
+    let writes = Router::new()
+        .route("/", post(create_instance))
         .route("/{id}/execute", post(execute_instance))
         .route("/{id}/cancel", post(cancel_instance))
         .route("/{id}/retry", post(retry_instance))
         .route("/{id}/resume", post(resume_instance))
         .route("/{id}/skip-node", post(skip_node))
+        .layer(from_fn(require_permission(Permission::InstanceExecute)));
+
+    Router::new()
+        .merge(reads)
+        .merge(writes)
         .with_state(handler)
 }
 
@@ -62,13 +78,9 @@ async fn create_instance(
 
     match workflow_entity.status {
         WorkflowStatus::Draft => {
-            if auth.role != Some(TenantRole::Developer) && auth.role != Some(TenantRole::TenantAdmin) {
-                return Err(ApiError::bad_request("only developer and tenant admin can create draft instance"));
-            }
+            RequireDraftInstanceCreate::check(&auth)?;
         }
-        WorkflowStatus::Published => {
-            
-        }
+        WorkflowStatus::Published => {}
         _ => {
             return Err(ApiError::bad_request("workflow is not a draft or published"));
         }

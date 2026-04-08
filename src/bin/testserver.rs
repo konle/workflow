@@ -1,9 +1,14 @@
 use api::response::response::Response;
-use axum::{Json, Router, routing::{get, post}};
+use axum::{
+    Json, Router,
+    routing::{get, post},
+};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tracing::{error, info};
+use rand::{Rng, rngs::ThreadRng};
+use rand::prelude::*;
 
 use workflow::config::AppConfig;
 
@@ -23,12 +28,10 @@ async fn main() {
     info!(config = %cli.config, "testserver starting");
 
     let addr = format!("0.0.0.0:8081");
-    let listener = TcpListener::bind(&addr)
-        .await
-        .unwrap_or_else(|e| {
-            error!(addr = %addr, error = %e, "failed to bind");
-            std::process::exit(1);
-        });
+    let listener = TcpListener::bind(&addr).await.unwrap_or_else(|e| {
+        error!(addr = %addr, error = %e, "failed to bind");
+        std::process::exit(1);
+    });
 
     info!(addr = %addr, "apiserver ready");
     let app = create_app().await;
@@ -64,6 +67,10 @@ struct CreateUserResponse {
 
 async fn create_user(Json(req): Json<CreateUserRequest>) -> Json<Response<CreateUserResponse>> {
     info!("create_user: {:?}", req);
+    // 随机80% 失败
+    if rand::rng().random_bool(0.8) {
+        return Json(Response::error(400, "failed to create user".to_string()));
+    }
     Json(Response::success(CreateUserResponse {
         id: "123".to_string(),
         name: req.name,
