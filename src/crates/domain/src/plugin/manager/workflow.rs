@@ -57,9 +57,13 @@ impl PluginManager {
                     workflow_instance_id = %job.workflow_instance_id,
                     worker_id = %worker_id,
                     error = %e,
-                    "failed to acquire lock, skipping"
+                    "failed to acquire lock, will retry"
                 );
-                return Ok(());
+                return Err(anyhow::anyhow!(
+                    "failed to acquire lock for instance {}: {}",
+                    job.workflow_instance_id,
+                    e
+                ));
             }
         };
 
