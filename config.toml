@@ -12,6 +12,11 @@ format = "pretty"
 [security]
 variable_encrypt_key = "workflow-default-encrypt-key-change-me"
 
+[sweeper]
+enabled = true
+interval_secs = 60
+max_recover_per_cycle = 10
+
 [init]
 admin_username = "admin"
 admin_password = "admin123"

@@ -131,6 +131,25 @@ impl PluginInterface for ForkJoinPlugin {
             .clone()
             .unwrap_or(serde_json::json!({}));
 
+        let processed: Vec<String> = state
+            .get("processed_callbacks")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if processed.contains(&child_task_id.to_string()) {
+            warn!(
+                node_id = %node_instance.node_id,
+                child_task_id = %child_task_id,
+                "forkjoin: duplicate callback ignored"
+            );
+            return Ok(ExecutionResult::async_dispatch_multiple(vec![]));
+        }
+
         let mut success_count = state["success_count"].as_u64().unwrap_or(0);
         let mut failed_count = state["failed_count"].as_u64().unwrap_or(0);
         let total_tasks = state["total_tasks"].as_u64().unwrap_or(0);
@@ -227,6 +246,9 @@ impl PluginInterface for ForkJoinPlugin {
         state["success_count"] = serde_json::json!(success_count);
         state["failed_count"] = serde_json::json!(failed_count);
         state["dispatched_count"] = serde_json::json!(dispatched_count);
+        let mut updated_processed = processed;
+        updated_processed.push(child_task_id.to_string());
+        state["processed_callbacks"] = serde_json::json!(updated_processed);
         node_instance.task_instance.output = Some(state);
 
         Ok(exec_result)

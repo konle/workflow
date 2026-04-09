@@ -1087,6 +1087,42 @@ info!(
 | **Phase 2** | 扫描 Await + 锁过期 → 子任务状态回查 + 补发 NodeCallback / 重投 TaskJob | Redis 丢消息后 Await 实例恢复 |
 | **Phase 3** | Parallel/ForkJoin 回调去重（child_task_id based）+ 审批超时扫描 + metrics 埋点 | 完整生产可用 |
 
+### 12.10 回调去重机制（Phase 3）
+
+Sweeper 补发回调与原始回调可能并发到达，必须在 Parallel / ForkJoin 的 `handle_callback` 中做幂等判断。
+
+**实现方式**：在 `node_instance.task_instance.output` 的 state JSON 中维护 `processed_callbacks: string[]` 数组。
+
+```
+callback 到达
+  → 读取 state.processed_callbacks
+  → child_task_id ∈ processed_callbacks ?
+      ├── YES → warn!("duplicate callback ignored") → 返回空调度（幂等跳过）
+      └── NO  → 正常累加 success_count / failed_count
+               → 将 child_task_id 追加到 processed_callbacks
+               → 持久化 state
+```
+
+**适用插件**：
+- `ParallelPlugin::handle_callback` — `child_task_id` 格式: `{wf_id}-{node_id}-{index}`
+- `ForkJoinPlugin::handle_callback` — 同上格式
+
+### 12.11 审批超时自动驳回（Phase 3）
+
+Sweeper 在每个扫描周期还会处理过期审批：
+
+```
+scan_expired_approvals(limit)
+  → 查询 status="Pending" AND expires_at < now AND expires_at IS NOT NULL
+  → 对每个过期审批:
+      1. 标记 status=Rejected, updated_at=now
+      2. 投递 NodeCallback(Failed) 到工作流
+         output: { approval_expired: true, expires_at }
+         error_message: "approval expired"
+```
+
+`ApprovalService` 新增 `scan_expired_approvals` + `expire_approval` 方法，Sweeper 通过 `with_approval_service()` 可选注入。
+
 ### 12.9 架构位置
 
 扫地僧运行在 engine 进程中，作为独立的 `tokio::spawn` 定时任务。**不经过** Apalis 队列（它自己就是队列的补偿机制），直接读写 MongoDB 并向 Redis 投递恢复 Job。
@@ -1109,8 +1145,8 @@ engine 进程
 
 **实例运维补充**：重试/取消/跳过节点与级联通知的完整约定见 **§1.4**（**方案 A**：与执行器共用 **`NodeCallback`** 形态进入编排；**`Start`** 用于 `Pending` 整实例重入）。
 
-**僵尸实例恢复**：见 **§12 扫地僧 (Sweeper)**，基于 `locked_at + locked_duration` 租约过期判定 + epoch CAS 安全清锁，分阶段实现 Running 重投和 Await 回调补发。
+**僵尸实例恢复**：见 **§12 扫地僧 (Sweeper)**，基于 `locked_at + locked_duration` 租约过期判定 + epoch CAS 安全清锁，三阶段全部实现：Running 重投、Await 回调补发、Parallel/ForkJoin 回调去重、审批超时自动驳回。
 
 未来的扩展方案：
 1. **延迟节点**：通过向 Apalis 推送定时消息，延时触发。
-2. **审批超时**：可纳入扫地僧 Phase 3，定时扫描 `expires_at` 过期的审批实例，自动标记 Expired 并回调工作流。
+2. **Prometheus metrics 埋点**：sweeper_recovered_total / sweeper_expired_approvals_total 等 Counter。
