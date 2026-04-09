@@ -64,4 +64,17 @@ pub trait WorkflowInstanceRepository: Send + Sync {
         &self,
         instance: &WorkflowInstanceEntity,
     ) -> Result<(), RepositoryError>;
+
+    /// Scan zombie instances: status in {Running, Await} and lease expired or absent.
+    async fn scan_zombie_instances(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError>;
+
+    /// CAS-based lock clearing: only succeeds if epoch matches.
+    async fn force_clear_lock(
+        &self,
+        workflow_instance_id: &str,
+        expected_epoch: u64,
+    ) -> Result<(), RepositoryError>;
 }

@@ -541,4 +541,77 @@ impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
 
         Ok(())
     }
+
+    async fn scan_zombie_instances(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let status_running = mongodb::bson::to_bson(&WorkflowInstanceStatus::Running)
+            .map_err(|e| format!("serialize Running: {e}"))?;
+        let status_await = mongodb::bson::to_bson(&WorkflowInstanceStatus::Await)
+            .map_err(|e| format!("serialize Await: {e}"))?;
+
+        let filter = doc! {
+            "status": { "$in": [status_running, status_await] },
+            "$or": [
+                { "locked_at": mongodb::bson::Bson::Null },
+                { "$expr": {
+                    "$lt": [
+                        { "$dateAdd": {
+                            "startDate": { "$dateFromString": { "dateString": "$locked_at" } },
+                            "unit": "millisecond",
+                            "amount": "$locked_duration"
+                        }},
+                        { "$dateFromString": { "dateString": &now } }
+                    ]
+                }}
+            ]
+        };
+
+        let mut cursor = self
+            .workflow_instance_collection
+            .find(filter)
+            .limit(limit as i64)
+            .await?;
+
+        let mut results = Vec::new();
+        while cursor.advance().await? {
+            results.push(cursor.deserialize_current()?);
+        }
+        Ok(results)
+    }
+
+    async fn force_clear_lock(
+        &self,
+        workflow_instance_id: &str,
+        expected_epoch: u64,
+    ) -> Result<(), RepositoryError> {
+        let filter = doc! {
+            "workflow_instance_id": workflow_instance_id,
+            "epoch": expected_epoch as i64,
+        };
+        let update = doc! {
+            "$set": {
+                "locked_by": mongodb::bson::Bson::Null,
+                "locked_at": mongodb::bson::Bson::Null,
+                "locked_duration": mongodb::bson::Bson::Null,
+                "updated_at": chrono::Utc::now().to_rfc3339(),
+            },
+            "$inc": { "epoch": 1 }
+        };
+
+        let result = self
+            .workflow_instance_collection
+            .update_one(filter, update)
+            .await?;
+
+        if result.matched_count == 0 {
+            return Err(format!(
+                "CAS failed: instance {} epoch {} was already modified",
+                workflow_instance_id, expected_epoch
+            ).into());
+        }
+        Ok(())
+    }
 }

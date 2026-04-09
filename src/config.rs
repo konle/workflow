@@ -8,6 +8,8 @@ pub struct AppConfig {
     pub security: SecurityConfig,
     pub log: LogConfig,
     pub init: InitConfig,
+    #[serde(default)]
+    pub sweeper: SweeperConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -30,6 +32,30 @@ pub struct SecurityConfig {
 pub struct LogConfig {
     pub level: String,
     pub format: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct SweeperConfig {
+    #[serde(default = "default_sweeper_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_sweeper_interval")]
+    pub interval_secs: u64,
+    #[serde(default = "default_sweeper_max_recover")]
+    pub max_recover_per_cycle: u32,
+}
+
+fn default_sweeper_enabled() -> bool { true }
+fn default_sweeper_interval() -> u64 { 60 }
+fn default_sweeper_max_recover() -> u32 { 10 }
+
+impl Default for SweeperConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_sweeper_enabled(),
+            interval_secs: default_sweeper_interval(),
+            max_recover_per_cycle: default_sweeper_max_recover(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]

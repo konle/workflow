@@ -945,12 +945,172 @@ POST /api/v1/workflow/meta/{workflow_meta_id}/template/{version}/publish
 
 ---
 
-## 12. 总结与扩展
+## 12. 扫地僧 (Sweeper) — 僵尸实例自动恢复
+
+### 12.1 问题场景
+
+引擎崩溃、Redis 丢消息等故障发生后，部分工作流实例可能永远停在非终态而无人推进：
+
+| 状态 | 成因 | 表现 |
+|------|------|------|
+| **Running** | Worker 持锁时引擎宕机，未释放锁也未推进 | 租约过期后锁可被抢占，但无人再投递事件 |
+| **Await** | 子任务回调在 Redis 中丢失（如 Redis 重启、队列 TTL 淘汰） | 工作流永远等不到 NodeCallback |
+
+### 12.2 恢复判定：仅基于 `locked_at` + `locked_duration`
+
+扫地僧**不依赖** `updated_at`（该字段仅为业务记录，不具备分布式安全语义），也**不依赖** `locked_by`（仅用于展示当前持锁者，不参与并发安全判定）。判定依据**完全且仅来自 `locked_at` + `locked_duration`**：
+
+```
+扫描目标（MongoDB 查询）：
+  status ∈ { Running, Await }
+  AND (
+    locked_at IS NULL                        -- 无租约（锁已释放或从未加锁）
+    OR locked_at + locked_duration < now()   -- 租约已过期（持锁者可能已崩溃）
+  )
+```
+
+两种条件的语义：
+- **`locked_at IS NULL`**：`release_lock` 正常清空了 `locked_at`，但实例仍在 Running/Await → 释放锁后无人推进后续事件
+- **`locked_at + locked_duration < now()`**：租约到期，持锁 Worker 可能已宕机
+
+**核心原则**：如果 `locked_at` 非空且 `locked_at + locked_duration >= now()`（租约有效期内），无论实例状态如何，扫地僧**绝不触碰**——因为有 Worker 正在处理。
+
+### 12.3 恢复流程
+
+```
+对每个匹配的僵尸实例：
+
+Step 1: 抢占式清锁（CAS 保护）
+  filter:  { workflow_instance_id, epoch: <读到的epoch> }
+  update:  { locked_by: null, locked_at: null, locked_duration: null }
+  $inc:    { epoch: +1 }
+  ↳ epoch CAS 保证：若其他 Worker 在扫地僧读取后已处理该实例（epoch 变了），
+    则 CAS 失败，扫地僧跳过（幂等安全）
+
+Step 2: 分支处理
+
+  ┌─ 实例 status == Running:
+  │   状态转换: Running → Pending (CAS)
+  │   投递: dispatch_workflow(Start)
+  │   ↳ Worker 拿到 Start → execute_workflow_loop → 从 current_node 恢复
+  │
+  └─ 实例 status == Await:
+     子任务回查（见 §12.4）
+     ↳ 根据回查结果决定：补发 NodeCallback 或重投 TaskJob
+```
+
+### 12.4 Await 状态的子任务回查
+
+对 Await 状态的实例，仅投递 Start **不够**（`execute_workflow_loop` 遇到 Await 节点会直接 Stop）。需要主动回查子任务的实际状态：
+
+#### 12.4.1 Http 节点（单子任务）
+
+```
+查询: task_instances.find({ task_instance_id: "{instance_id}-{node_id}" })
+
+├─ task_status == Completed / Failed:
+│   回调丢失 → 补发 NodeCallback { status, output, error_message }
+│
+├─ task_status == Pending / Running:
+│   子任务也可能僵死 → 重投 dispatch_task(ExecuteTaskJob)
+│
+└─ 不存在:
+│   ensure_task_instance_for_job 可能未完成 → 走 Running 恢复流程
+```
+
+#### 12.4.2 Parallel / ForkJoin 节点（多子任务）
+
+```
+从 node.task_instance.output 读取状态机:
+  { total_items, dispatched_count, success_count, failed_count }
+
+已知完成数 = success_count + failed_count
+预期完成数 = dispatched_count（已派发的子任务数）
+
+差值 = dispatched_count - 已知完成数  // 丢失的回调数
+
+对每个丢失的回调:
+  查询: task_instances.find({ task_instance_id: "{instance_id}-{node_id}-{index}" })
+  ├─ Completed / Failed → 补发 NodeCallback
+  └─ Pending / Running → 重投 dispatch_task
+```
+
+### 12.5 幂等安全性分析
+
+| 场景 | 是否安全 | 原因 |
+|------|:---:|------|
+| 实例正在被 Worker 处理 | ✅ | 租约未过期 → 不匹配扫描条件 |
+| 扫地僧与正常回调同时到达 | ✅ | Step 1 的 epoch CAS 保证只有一个成功 |
+| Start 被重复投递 | ✅ | `execute_workflow_loop` 每次 reload from DB，幂等 |
+| NodeCallback 被重复补发 | ✅ | `handle_callback` 应幂等（Parallel 的 success_count 已在库中，重复+1 需额外保护） |
+| 子任务 TaskJob 被重复投递 | ✅ | TaskExecutor 执行是幂等的（HTTP 请求本身可能不幂等，但这是业务层面） |
+
+**注意**：Parallel 的 `handle_callback` 中 `success_count` 的增量操作需要确保幂等（如通过 child_task_id 去重），否则补发的回调可能导致计数错误。建议在 Phase 2 实现时增加回调去重机制。
+
+### 12.6 配置参数
+
+```toml
+[sweeper]
+enabled = true
+interval_secs = 60           # 扫描间隔
+max_recover_per_cycle = 10   # 每次扫描最多恢复的实例数（限流防雪崩）
+```
+
+**不设置独立的超时阈值**——过期判定完全由每个实例自身的 `locked_at + locked_duration` 决定。这避免了引入额外的"魔法数字"，也意味着 `acquire_lock(duration_ms)` 的参数设定直接决定了该实例的最大无响应容忍时间。
+
+### 12.7 可观测性
+
+```rust
+// 每次扫描循环记录
+info!(
+    scanned = scanned_count,          // 扫描到的僵尸实例数
+    recovered_running = running_count, // Running → 重投 Start
+    recovered_await = await_count,     // Await → 子任务回查 + 补发
+    skipped_cas = cas_fail_count,      // CAS 失败（已被其他 Worker 处理）
+    "sweeper cycle completed"
+);
+
+// 每个恢复的实例单独记录
+info!(
+    workflow_instance_id = %id,
+    original_status = %status,
+    action = %action,  // "restarted" | "callback_补发" | "task_redispatch"
+    "sweeper recovered instance"
+);
+```
+
+### 12.8 实现分阶段
+
+| 阶段 | 内容 | 覆盖场景 |
+|------|------|----------|
+| **Phase 1 (MVP)** | 扫描 Running + 锁过期 → 清锁 + Running→Pending + 投递 Start | 引擎宕机后 Running 实例恢复 |
+| **Phase 2** | 扫描 Await + 锁过期 → 子任务状态回查 + 补发 NodeCallback / 重投 TaskJob | Redis 丢消息后 Await 实例恢复 |
+| **Phase 3** | Parallel/ForkJoin 回调去重（child_task_id based）+ 审批超时扫描 + metrics 埋点 | 完整生产可用 |
+
+### 12.9 架构位置
+
+扫地僧运行在 engine 进程中，作为独立的 `tokio::spawn` 定时任务。**不经过** Apalis 队列（它自己就是队列的补偿机制），直接读写 MongoDB 并向 Redis 投递恢复 Job。
+
+```
+engine 进程
+├── Workflow Worker (apalis consumer)
+├── Task Worker (apalis consumer)
+└── Sweeper (tokio interval task)  ← 新增
+    ├── 读 MongoDB: 查询僵尸实例
+    ├── 写 MongoDB: CAS 清锁 + 状态转换
+    └── 写 Redis: 投递 Start / NodeCallback / TaskJob
+```
+
+---
+
+## 13. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
 
 **实例运维补充**：重试/取消/跳过节点与级联通知的完整约定见 **§1.4**（**方案 A**：与执行器共用 **`NodeCallback`** 形态进入编排；**`Start`** 用于 `Pending` 整实例重入）。
 
+**僵尸实例恢复**：见 **§12 扫地僧 (Sweeper)**，基于 `locked_at + locked_duration` 租约过期判定 + epoch CAS 安全清锁，分阶段实现 Running 重投和 Await 回调补发。
+
 未来的扩展方案：
 1. **延迟节点**：通过向 Apalis 推送定时消息，延时触发。
-2. **审批超时**：定时扫描 `expires_at` 过期的审批实例，自动标记 Expired 并回调工作流。
+2. **审批超时**：可纳入扫地僧 Phase 3，定时扫描 `expires_at` 过期的审批实例，自动标记 Expired 并回调工作流。

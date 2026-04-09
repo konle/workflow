@@ -462,6 +462,37 @@ impl WorkflowInstanceService {
             .await
             .map_err(|e| e.to_string())
     }
+
+    // ── Sweeper helpers ─────────────────────────────────────────────
+
+    pub async fn scan_zombie_instances(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError> {
+        self.repository.scan_zombie_instances(limit).await
+    }
+
+    pub async fn force_clear_lock(
+        &self,
+        workflow_instance_id: &str,
+        expected_epoch: u64,
+    ) -> Result<(), RepositoryError> {
+        self.repository
+            .force_clear_lock(workflow_instance_id, expected_epoch)
+            .await
+    }
+
+    /// Bypass state machine validation — used only by sweeper to force a status.
+    pub async fn transfer_status_unchecked(
+        &self,
+        workflow_instance_id: &str,
+        to: &WorkflowInstanceStatus,
+    ) -> Result<WorkflowInstanceEntity, RepositoryError> {
+        let instance = self.get_workflow_instance(workflow_instance_id.to_string()).await?;
+        self.repository
+            .transfer_status(workflow_instance_id, &instance.status, to)
+            .await
+    }
 }
 
 /// `child_task_id` for [`crate::shared::job::WorkflowEvent::NodeCallback`]: match HTTP executor jobs (`{workflow}-{node}`).

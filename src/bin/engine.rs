@@ -5,6 +5,7 @@ use clap::Parser;
 use tracing::{info, error};
 use domain::plugin::manager::PluginManager;
 use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob};
+use domain::sweeper::{Sweeper, SweeperConfig};
 use domain::task::service::TaskInstanceService;
 use domain::approval::service::ApprovalService;
 use domain::variable::service::VariableService;
@@ -207,10 +208,10 @@ async fn main() {
 
     let plugin_manager = create_plugin_manager(
         workflow_definition_svc,
-        workflow_instance_svc,
+        workflow_instance_svc.clone(),
         task_svc.clone(),
         variable_svc,
-        approval_svc,
+        approval_svc.clone(),
         task_storage.clone(),
         wf_storage.clone(),
     );
@@ -224,6 +225,37 @@ async fn main() {
         .data((plugin_manager.clone(), task_manager))
         .backend(task_storage)
         .build_fn(handle_task_job);
+
+    if config.sweeper.enabled {
+        let sweeper = Arc::new(
+            Sweeper::new(
+                workflow_instance_svc.clone(),
+                task_svc.clone(),
+                plugin_manager.dispatcher(),
+                SweeperConfig {
+                    interval_secs: config.sweeper.interval_secs,
+                    max_recover_per_cycle: config.sweeper.max_recover_per_cycle,
+                },
+            )
+            .with_approval_service(approval_svc.clone()),
+        );
+        let interval_secs = config.sweeper.interval_secs;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                tokio::time::Duration::from_secs(interval_secs),
+            );
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                sweeper.run_cycle().await;
+            }
+        });
+        info!(
+            interval_secs = config.sweeper.interval_secs,
+            max_recover = config.sweeper.max_recover_per_cycle,
+            "sweeper started"
+        );
+    }
 
     info!("engine ready, waiting for jobs");
 

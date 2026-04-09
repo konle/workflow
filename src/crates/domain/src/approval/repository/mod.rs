@@ -27,4 +27,10 @@ pub trait ApprovalRepository: Send + Sync {
         &self,
         tenant_id: &str,
     ) -> Result<Vec<ApprovalInstanceEntity>, RepositoryError>;
+
+    /// Scan pending approval instances whose `expires_at` has passed.
+    async fn scan_expired_approvals(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<ApprovalInstanceEntity>, RepositoryError>;
 }

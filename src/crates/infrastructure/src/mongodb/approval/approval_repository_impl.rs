@@ -75,4 +75,17 @@ impl ApprovalRepository for ApprovalRepositoryImpl {
         let cursor = self.collection.find(doc! { "tenant_id": tenant_id }).await?;
         Ok(cursor.try_collect().await?)
     }
+
+    async fn scan_expired_approvals(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<ApprovalInstanceEntity>, RepositoryError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let filter = doc! {
+            "status": "Pending",
+            "expires_at": { "$ne": mongodb::bson::Bson::Null, "$lt": &now },
+        };
+        let cursor = self.collection.find(filter).limit(limit as i64).await?;
+        Ok(cursor.try_collect().await?)
+    }
 }

@@ -237,4 +237,21 @@ impl ApprovalService {
 
         Ok(user_ids)
     }
+
+    pub async fn scan_expired_approvals(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<ApprovalInstanceEntity>, RepositoryError> {
+        self.repository.scan_expired_approvals(limit).await
+    }
+
+    pub async fn expire_approval(
+        &self,
+        approval: &ApprovalInstanceEntity,
+    ) -> Result<ApprovalInstanceEntity, RepositoryError> {
+        let mut expired = approval.clone();
+        expired.status = ApprovalStatus::Rejected;
+        expired.updated_at = Utc::now();
+        self.repository.update(&expired).await
+    }
 }
