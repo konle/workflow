@@ -10,18 +10,21 @@ use crate::workflow::entity::workflow_definition::WorkflowInstanceEntity;
 use tracing::warn;
 
 impl PluginManager {
-    /// Derive the expected (child_template, child_task_type) for a dispatched job based on
-    /// the parent node's template. Parallel/ForkJoin children use their inner template;
-    /// all others inherit the parent's template as-is.
+    /// Derive the expected (child_template, child_task_type, child_task_id) for a dispatched
+    /// job based on the parent node's template. Parallel/ForkJoin children use their inner
+    /// template; all others inherit the parent's template as-is.
+    ///
+    /// Returns `(template, task_type, task_id_override)`. When `task_id_override` is `Some`,
+    /// it should replace the parent's `task_id` on the materialised child instance.
     fn derive_child_template(
         parent: &TaskInstanceEntity,
         job: &ExecuteTaskJob,
-    ) -> anyhow::Result<(TaskTemplate, crate::shared::workflow::TaskType)> {
+    ) -> anyhow::Result<(TaskTemplate, crate::shared::workflow::TaskType, Option<String>)> {
         match &parent.task_template {
-            TaskTemplate::Parallel(pt) => {
-                let inner = (*pt.task_template).clone();
+            TaskTemplate::Parallel(_pt) => {
+                let inner = (*_pt.task_template).clone();
                 let tt = inner.task_type();
-                Ok((inner, tt))
+                Ok((inner, tt, None))
             }
             TaskTemplate::ForkJoin(fj) => {
                 let idx = job
@@ -40,9 +43,10 @@ impl PluginManager {
                 })?;
                 let inner = item.task_template.clone();
                 let tt = inner.task_type();
-                Ok((inner, tt))
+                let child_task_id = item.task_id.clone();
+                Ok((inner, tt, child_task_id))
             }
-            _ => Ok((parent.task_template.clone(), parent.task_type.clone())),
+            _ => Ok((parent.task_template.clone(), parent.task_type.clone(), None)),
         }
     }
 
@@ -57,7 +61,10 @@ impl PluginManager {
         };
 
         let parent = &instance.nodes[node_index].task_instance;
-        let (child_template, child_task_type) = Self::derive_child_template(parent, job)?;
+        let (child_template, child_task_type, task_id_override) =
+            Self::derive_child_template(parent, job)?;
+
+        let effective_task_id = task_id_override.unwrap_or_else(|| parent.task_id.clone());
 
         if let Ok(existing) = task_svc
             .get_task_instance_entity(job.task_instance_id.clone())
@@ -73,6 +80,7 @@ impl PluginManager {
                 let mut corrected = existing;
                 corrected.task_type = child_task_type;
                 corrected.task_template = child_template;
+                corrected.task_id = effective_task_id;
                 task_svc
                     .update_task_instance_entity(corrected)
                     .await
@@ -88,7 +96,7 @@ impl PluginManager {
         task_instance.task_template = child_template;
         task_instance.task_type = child_task_type;
         task_instance.id = job.task_instance_id.clone();
-        task_instance.task_id = parent.task_id.clone();
+        task_instance.task_id = effective_task_id;
         task_instance.task_instance_id = job.task_instance_id.clone();
         task_instance.tenant_id = job.tenant_id.clone();
         task_instance.caller_context = job.caller_context.clone();

@@ -348,7 +348,8 @@ pub struct ForkJoinTemplate {
 }
 
 pub struct ForkJoinTaskItem {
-    pub task_key: String,               // 容器内唯一标识
+    pub task_key: String,               // 容器内唯一标识 (results map 索引键)
+    pub task_id: Option<String>,        // 关联的 TaskEntity ID (仅独立任务如 Http/gRPC)
     pub name: String,                   // 可读名称
     pub task_template: TaskTemplate,    // 任意原子任务模板 (Http, gRPC, ...)
 }
@@ -388,6 +389,13 @@ ForkJoin.execute()
 ```
 
 后续节点可通过 `task_key` 精确引用某个子任务的输出结果。
+
+#### task_id 与 task_key 的区分
+
+- **`task_key`**：容器内唯一标识，作为 `results` map 的键，供后续节点引用子任务输出。值为人类可读标签（如 `"create_user"`）。
+- **`task_id`**：可选，关联独立注册的 `TaskEntity` 记录（UUID）。仅对 Http、gRPC 等可独立存在的原子任务有意义；对工作流内部插件（IfCondition、ContextRewrite 等）或子工作流（已有 `SubWorkflowTemplate.workflow_meta_id`）无需填写。子任务实例化时，`task_id` 会传播到 `TaskInstanceEntity.task_id`，实现来源追溯。
+
+Parallel 节点的 `task_id` 追溯通过 `WorkflowNodeEntity.task_id` 实现（编排时由客户端填写），因为 Parallel 内部仅有一种同构任务模板。
 
 ### 5.5 Scatter & Gather 流程
 

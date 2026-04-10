@@ -60,6 +60,9 @@
               <a-descriptions-item label="状态">
                 <status-tag :status="selectedNode.status" :map="NODE_STATUS_MAP" />
               </a-descriptions-item>
+              <a-descriptions-item v-if="selectedNode.task_instance?.task_id" label="任务模板ID">
+                <a-typography-text copyable>{{ selectedNode.task_instance.task_id }}</a-typography-text>
+              </a-descriptions-item>
             </a-descriptions>
             <a-divider>节点上下文</a-divider>
             <p class="node-context-hint">

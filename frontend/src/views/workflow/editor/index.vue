@@ -686,7 +686,7 @@ function buildWorkflowEntity(): any {
   const workflowNodes: any[] = (nodes.value as any[]).map((n: any) => {
     const d = n.data as any
     let config: any
-    const taskId = d.taskId || null
+    const taskId = d.taskId || (d.nodeType === 'Parallel' ? d.parallelInnerTaskId : null) || null
 
     if (isTaskRefNode(d.nodeType) && d.taskSnapshot) {
       config = d.taskSnapshot
@@ -828,6 +828,7 @@ async function loadFromEntity(entity: any) {
     if (type === 'Parallel') {
       Object.assign(data, parallelNodeDataDefaults())
       hydrateParallelEditorState(data, taskCache.value, workflowMetas.value)
+      if (taskId && !data.parallelInnerTaskId) data.parallelInnerTaskId = taskId
     }
     data.label = resolveLabel(n.node_id, type, data)
 

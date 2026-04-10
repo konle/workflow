@@ -52,6 +52,7 @@ export interface ParallelTemplate {
 
 export interface ForkJoinTaskItem {
   task_key: string
+  task_id?: string | null
   name: string
   task_template: TaskTemplate
 }

@@ -57,6 +57,8 @@ pub struct ForkJoinTemplate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForkJoinTaskItem {
     pub task_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
     pub name: String,
     pub task_template: TaskTemplate,
 }
