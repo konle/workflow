@@ -20,6 +20,16 @@ pub struct WorkflowDefinitionRepositoryImpl {
 }
 
 impl WorkflowDefinitionRepositoryImpl {
+    // 避免排序注入
+    // const ALLOWED_SORT_FIELDS: &[&str] = &[
+    //     "created_at", "updated_at", "status", "workflow_meta_id", "workflow_version",
+    // ];
+    // fn validate_sort_field(field: &str) -> Result<(), RepositoryError> {
+    //     if !Self::ALLOWED_SORT_FIELDS.contains(&field) {
+    //         return Err(format!("invalid sort field: {}", field).into());
+    //     }
+    //     Ok(())
+    // }
     pub fn new(client: Client) -> Self {
         let database = client.database("workflow");
         let collection = database.collection("workflow_entities");
@@ -265,6 +275,16 @@ pub struct WorkflowInstanceRepositoryImpl {
 }
 
 impl WorkflowInstanceRepositoryImpl {
+    // 避免排序注入
+    const ALLOWED_SORT_FIELDS: &[&str] = &[
+        "created_at", "updated_at", "status", "workflow_meta_id", "workflow_version",
+    ];
+    fn validate_sort_field(field: &str) -> Result<(), RepositoryError> {
+        if !Self::ALLOWED_SORT_FIELDS.contains(&field) {
+            return Err(format!("invalid sort field: {}", field).into());
+        }
+        Ok(())
+    }
     pub fn new(client: Client) -> Self {
         let database = client.database("workflow");
         let workflow_instance_collection = database.collection("workflow_instances");
@@ -293,7 +313,7 @@ impl WorkflowInstanceRepositoryImpl{
                 filter.insert("status", bson_val);
             }
         }
-        // TODO: sort by 
+        // TODO: sort by
         filter
     }
 }
@@ -340,7 +360,10 @@ impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
         let page = query.pagination.page;
         let page_size = query.pagination.page_size;
         let skip = (page - 1) * page_size;
+        Self::validate_sort_field(&query.sort.sort_by)?;
         info!("list_workflow_instances filter: {:?} tenant_id: {} page: {} page_size: {}", filter, _tenant_id, page, page_size);
+        let sort_order:i32 = if query.sort.sort_order == "asc" { 1 } else { -1 };
+        let sort_doc = doc! { &query.sort.sort_by: sort_order };
 
         let total = self
             .workflow_instance_collection
@@ -350,6 +373,7 @@ impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
         let find_options = FindOptions::builder()
             .skip(skip as u64)
             .limit(page_size as i64)
+            .sort(sort_doc)
             .build();
         let cursor = self
             .workflow_instance_collection
