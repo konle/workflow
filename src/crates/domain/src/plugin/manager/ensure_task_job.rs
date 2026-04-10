@@ -7,34 +7,21 @@ use crate::shared::job::ExecuteTaskJob;
 use crate::shared::workflow::TaskInstanceStatus;
 use crate::task::entity::{TaskInstanceEntity, TaskTemplate};
 use crate::workflow::entity::workflow_definition::WorkflowInstanceEntity;
+use tracing::warn;
 
 impl PluginManager {
-    pub(super) async fn ensure_task_instance_for_job(
-        &self,
-        instance: &WorkflowInstanceEntity,
-        node_index: usize,
+    /// Derive the expected (child_template, child_task_type) for a dispatched job based on
+    /// the parent node's template. Parallel/ForkJoin children use their inner template;
+    /// all others inherit the parent's template as-is.
+    fn derive_child_template(
+        parent: &TaskInstanceEntity,
         job: &ExecuteTaskJob,
-    ) -> anyhow::Result<()> {
-        let Some(task_svc) = &self.task_instance_svc else {
-            return Ok(());
-        };
-
-        if task_svc
-            .get_task_instance_entity(job.task_instance_id.clone())
-            .await
-            .is_ok()
-        {
-            return Ok(());
-        }
-
-        let now = chrono::Utc::now();
-        let parent_node_ctx = &instance.nodes[node_index].context;
-        let parent = &instance.nodes[node_index].task_instance;
-        let (child_template, child_task_type) = match &parent.task_template {
+    ) -> anyhow::Result<(TaskTemplate, crate::shared::workflow::TaskType)> {
+        match &parent.task_template {
             TaskTemplate::Parallel(pt) => {
                 let inner = (*pt.task_template).clone();
                 let tt = inner.task_type();
-                (inner, tt)
+                Ok((inner, tt))
             }
             TaskTemplate::ForkJoin(fj) => {
                 let idx = job
@@ -53,10 +40,49 @@ impl PluginManager {
                 })?;
                 let inner = item.task_template.clone();
                 let tt = inner.task_type();
-                (inner, tt)
+                Ok((inner, tt))
             }
-            _ => (parent.task_template.clone(), parent.task_type.clone()),
+            _ => Ok((parent.task_template.clone(), parent.task_type.clone())),
+        }
+    }
+
+    pub(super) async fn ensure_task_instance_for_job(
+        &self,
+        instance: &WorkflowInstanceEntity,
+        node_index: usize,
+        job: &ExecuteTaskJob,
+    ) -> anyhow::Result<()> {
+        let Some(task_svc) = &self.task_instance_svc else {
+            return Ok(());
         };
+
+        let parent = &instance.nodes[node_index].task_instance;
+        let (child_template, child_task_type) = Self::derive_child_template(parent, job)?;
+
+        if let Ok(existing) = task_svc
+            .get_task_instance_entity(job.task_instance_id.clone())
+            .await
+        {
+            if existing.task_type != child_task_type {
+                warn!(
+                    task_instance_id = %job.task_instance_id,
+                    existing_type = ?existing.task_type,
+                    expected_type = ?child_task_type,
+                    "task instance has wrong task_type, correcting"
+                );
+                let mut corrected = existing;
+                corrected.task_type = child_task_type;
+                corrected.task_template = child_template;
+                task_svc
+                    .update_task_instance_entity(corrected)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
+            return Ok(());
+        }
+
+        let now = chrono::Utc::now();
+        let parent_node_ctx = &instance.nodes[node_index].context;
 
         let mut task_instance: TaskInstanceEntity = parent.clone();
         task_instance.task_template = child_template;

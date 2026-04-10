@@ -127,14 +127,15 @@ impl Sweeper {
         );
     }
 
-    /// Phase 1: Running → Pending → dispatch Start
-    async fn recover_running(&self, instance: &WorkflowInstanceEntity) -> anyhow::Result<()> {
+    /// Reset to Pending → Running → dispatch Start.
+    /// Leaf helper that never recurses into recover_await / recover_running.
+    async fn restart_via_start(&self, instance: &WorkflowInstanceEntity) -> anyhow::Result<()> {
         let id = &instance.workflow_instance_id;
 
         self.workflow_instance_svc
             .transfer_status_unchecked(id, &WorkflowInstanceStatus::Pending)
             .await
-            .map_err(|e| anyhow::anyhow!("Running→Pending failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("→Pending failed: {e}"))?;
 
         self.workflow_instance_svc
             .start_instance(id)
@@ -152,9 +153,56 @@ impl Sweeper {
         info!(
             workflow_instance_id = %id,
             action = "restarted",
-            "sweeper recovered running instance"
+            "sweeper restarted instance via Start"
         );
         Ok(())
+    }
+
+    /// Phase 1: Running → recover.
+    ///
+    /// If the current node is in Await/Suspended (the engine was mid-callback when it crashed),
+    /// a plain `Start` dispatch is useless — the workflow loop would stop immediately. Instead
+    /// we transition to Await and delegate to `recover_await` which checks child task status
+    /// and supplements missing callbacks or re-dispatches stale tasks.
+    async fn recover_running(&self, instance: &WorkflowInstanceEntity) -> anyhow::Result<()> {
+        let id = &instance.workflow_instance_id;
+
+        let current_node = instance
+            .nodes
+            .iter()
+            .find(|n| n.node_id == instance.current_node);
+
+        let node_needs_callback = current_node
+            .map(|n| {
+                matches!(
+                    n.status,
+                    NodeExecutionStatus::Await | NodeExecutionStatus::Suspended
+                )
+            })
+            .unwrap_or(false);
+
+        if node_needs_callback {
+            self.workflow_instance_svc
+                .transfer_status_unchecked(id, &WorkflowInstanceStatus::Await)
+                .await
+                .map_err(|e| anyhow::anyhow!("Running→Await failed: {e}"))?;
+
+            let refreshed = self
+                .workflow_instance_svc
+                .get_workflow_instance(id.clone())
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
+
+            info!(
+                workflow_instance_id = %id,
+                current_node = %instance.current_node,
+                action = "delegated_to_recover_await",
+                "sweeper: running instance has awaiting node, switching to recover_await"
+            );
+            return self.recover_await(&refreshed).await;
+        }
+
+        self.restart_via_start(instance).await
     }
 
     /// Phase 2: Await — look up child tasks, supplement missing callbacks or re-dispatch
@@ -230,7 +278,7 @@ impl Sweeper {
                 }
             }
             Err(_) => {
-                self.recover_running(instance).await?;
+                self.restart_via_start(instance).await?;
             }
         }
         Ok(())
@@ -265,36 +313,30 @@ impl Sweeper {
 
             match task.task_status {
                 TaskInstanceStatus::Completed => {
-                    // Only supplement if this callback was likely lost
-                    // (we can't perfectly deduplicate here; Phase 3 adds proper dedup)
-                    if known_completed < dispatched_count {
-                        self.supplement_callback(
-                            instance,
-                            &node.node_id,
-                            &child_task_id,
-                            NodeExecutionStatus::Success,
-                            task.output.clone(),
-                            task.error_message.clone(),
-                            task.input.clone(),
-                        )
-                        .await?;
-                        supplemented += 1;
-                    }
+                    self.supplement_callback(
+                        instance,
+                        &node.node_id,
+                        &child_task_id,
+                        NodeExecutionStatus::Success,
+                        task.output.clone(),
+                        task.error_message.clone(),
+                        task.input.clone(),
+                    )
+                    .await?;
+                    supplemented += 1;
                 }
                 TaskInstanceStatus::Failed => {
-                    if known_completed < dispatched_count {
-                        self.supplement_callback(
-                            instance,
-                            &node.node_id,
-                            &child_task_id,
-                            NodeExecutionStatus::Failed,
-                            task.output.clone(),
-                            task.error_message.clone(),
-                            task.input.clone(),
-                        )
-                        .await?;
-                        supplemented += 1;
-                    }
+                    self.supplement_callback(
+                        instance,
+                        &node.node_id,
+                        &child_task_id,
+                        NodeExecutionStatus::Failed,
+                        task.output.clone(),
+                        task.error_message.clone(),
+                        task.input.clone(),
+                    )
+                    .await?;
+                    supplemented += 1;
                 }
                 TaskInstanceStatus::Pending | TaskInstanceStatus::Running => {
                     self.redispatch_task(instance, &child_task_id, &node.node_id).await?;

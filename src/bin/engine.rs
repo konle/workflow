@@ -54,18 +54,43 @@ async fn handle_task_job(
             std::io::Error::other(e)
         })?;
 
-    let exec_result = task_manager
-        .execute_task(&task_instance_entity)
-        .await
-        .map_err(|e| {
+    let exec_result = match task_manager.execute_task(&task_instance_entity).await {
+        Ok(r) => r,
+        Err(e) => {
             error!(
                 task_instance_id = %job.task_instance_id,
                 task_type = ?task_instance_entity.task_type,
                 error = %e,
                 "task execution failed"
             );
-            std::io::Error::other(e)
-        })?;
+
+            task_instance_entity.task_status = domain::shared::workflow::TaskInstanceStatus::Failed;
+            task_instance_entity.error_message = Some(e.to_string());
+            let _ = task_manager.task_instance_svc()
+                .update_task_instance_entity(task_instance_entity)
+                .await;
+
+            if let Some(caller) = job.caller_context {
+                let _ = manager
+                    .dispatcher()
+                    .dispatch_workflow(ExecuteWorkflowJob {
+                        workflow_instance_id: caller.workflow_instance_id.clone(),
+                        tenant_id: job.tenant_id,
+                        event: domain::shared::job::WorkflowEvent::NodeCallback {
+                            node_id: caller.node_id,
+                            child_task_id: job.task_instance_id.clone(),
+                            status: domain::workflow::entity::workflow_definition::NodeExecutionStatus::Failed,
+                            output: None,
+                            error_message: Some(e.to_string()),
+                            input: None,
+                        },
+                    })
+                    .await;
+            }
+
+            return Err(std::io::Error::other(e));
+        }
+    };
 
     task_instance_entity.task_status = match exec_result.status {
         domain::workflow::entity::workflow_definition::NodeExecutionStatus::Success => domain::shared::workflow::TaskInstanceStatus::Completed,

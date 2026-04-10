@@ -1,4 +1,11 @@
 //! Apply [`ExecutionResult`] to the workflow graph: node status, instance status, persistence, queue dispatch.
+//!
+//! Instance status is set **in-memory only** and persisted via the single
+//! `save_instance_and_bump_epoch` CAS write. Separate `transfer_status` calls
+//! (complete_instance, fail_instance, …) are intentionally avoided here to
+//! prevent double-write epoch drift that would cause the CAS save to fail,
+//! leaving the Parallel state (success_count / processed_callbacks) updated in
+//! the DB but the workflow status / node status stale.
 
 use super::loop_action::LoopAction;
 use super::PluginManager;
@@ -25,35 +32,19 @@ impl PluginManager {
                     instance.current_node = next;
                     LoopAction::Advance
                 } else {
-                    self.workflow_instance_svc
-                        .complete_instance(&instance.workflow_instance_id)
-                        .await
-                        .map_err(|e| anyhow::anyhow!(e))?;
                     instance.status = WorkflowInstanceStatus::Completed;
                     LoopAction::Done
                 }
             }
             NodeExecutionStatus::Failed => {
-                self.workflow_instance_svc
-                    .fail_instance(&instance.workflow_instance_id)
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))?;
                 instance.status = WorkflowInstanceStatus::Failed;
                 LoopAction::Done
             }
             NodeExecutionStatus::Await => {
-                self.workflow_instance_svc
-                    .await_instance(&instance.workflow_instance_id)
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))?;
                 instance.status = WorkflowInstanceStatus::Await;
                 LoopAction::Done
             }
             NodeExecutionStatus::Pending | NodeExecutionStatus::Suspended => {
-                self.workflow_instance_svc
-                    .suspend_instance(&instance.workflow_instance_id)
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))?;
                 instance.status = WorkflowInstanceStatus::Suspended;
                 LoopAction::Done
             }
