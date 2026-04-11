@@ -205,10 +205,14 @@ async fn main() {
     );
     let workflow_definition_svc = WorkflowDefinitionService::new(workflow_def_repo);
 
+    let task_repo = Arc::new(infrastructure::mongodb::task::task_repository_impl::TaskInstanceRepositoryImpl::new(mongo_client.clone()));
+    let task_svc = Arc::new(TaskInstanceService::new(task_repo));
+    let task_manager = create_task_manager(task_svc.clone());
+
     let workflow_repo = Arc::new(
         infrastructure::mongodb::workflow::workflow_repository_impl::WorkflowInstanceRepositoryImpl::new(mongo_client.clone())
     );
-    let workflow_instance_svc = Arc::new(WorkflowInstanceService::new(workflow_repo));
+    let workflow_instance_svc = Arc::new(WorkflowInstanceService::new(workflow_repo, task_svc.clone()));
 
     let variable_repo = Arc::new(
         infrastructure::mongodb::variable::variable_repository_impl::VariableRepositoryImpl::new(mongo_client.clone())
@@ -222,10 +226,6 @@ async fn main() {
         infrastructure::mongodb::approval::approval_repository_impl::ApprovalRepositoryImpl::new(mongo_client.clone())
     );
     let approval_svc = ApprovalService::new(approval_repo, role_repo);
-
-    let task_repo = Arc::new(infrastructure::mongodb::task::task_repository_impl::TaskInstanceRepositoryImpl::new(mongo_client.clone()));
-    let task_svc = Arc::new(TaskInstanceService::new(task_repo));
-    let task_manager = create_task_manager(task_svc.clone());
 
     let wf_storage = consumer::create_workflow_storage(&config.database.redis_url).await;
     let task_storage = consumer::create_task_storage(&config.database.redis_url).await;

@@ -162,7 +162,17 @@ async fn retry_instance(
 ) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
     handler.instance_service.get_workflow_instance_scoped(&auth.tenant_id, &id).await?;
     let result = handler.instance_service.retry_instance(&id).await?;
-    info!(workflow_instance_id = %id, "workflow instance retried");
+
+    handler.dispatcher.dispatch_workflow(ExecuteWorkflowJob {
+        workflow_instance_id: result.workflow_instance_id.clone(),
+        tenant_id: auth.tenant_id,
+        event: WorkflowEvent::Start,
+    }).await.map_err(|e| {
+        error!(workflow_instance_id = %id, error = %e, "failed to dispatch Start after retry");
+        ApiError::internal(e.to_string())
+    })?;
+
+    info!(workflow_instance_id = %id, "workflow instance retried and Start dispatched");
     Ok(Json(Response::success(result)))
 }
 

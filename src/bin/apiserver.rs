@@ -143,13 +143,13 @@ async fn main() {
     let workflow_inst_repo = Arc::new(WorkflowInstanceRepositoryImpl::new(mongo_client.clone()));
 
     let task_service = TaskService::new(task_repo);
-    let task_instance_service = TaskInstanceService::new(task_instance_repo);
+    let task_instance_service = Arc::new(TaskInstanceService::new(task_instance_repo));
     let tenant_service = TenantService::new(tenant_repo);
     let user_service = UserService::new(user_repo, role_repo.clone());
     let approval_service = ApprovalService::new(approval_repo, role_repo);
     let variable_service = VariableService::new(variable_repo, config.security.variable_encrypt_key.clone());
     let workflow_def_service = WorkflowDefinitionService::new(workflow_def_repo);
-    let workflow_inst_service = WorkflowInstanceService::new(workflow_inst_repo);
+    let workflow_inst_service = WorkflowInstanceService::new(workflow_inst_repo, task_instance_service.clone());
 
     if cli.init {
         bootstrap(&config, &user_service, &tenant_service).await;
@@ -161,7 +161,7 @@ async fn main() {
     let approval_handler = Arc::new(ApprovalHandler::new(approval_service, dispatcher.clone()));
     let variable_handler = Arc::new(VariableHandler::new(variable_service));
     let task_handler = Arc::new(TaskHandler::new(task_service.clone()));
-    let task_instance_handler = Arc::new(TaskInstanceHandler::new(task_instance_service, task_service, dispatcher.clone()));
+    let task_instance_handler = Arc::new(TaskInstanceHandler::new((*task_instance_service).clone(), task_service, dispatcher.clone()));
     let workflow_handler = Arc::new(WorkflowHandler::new(workflow_def_service.clone()));
     let workflow_instance_handler = Arc::new(WorkflowInstanceHandler::new(
         workflow_def_service,

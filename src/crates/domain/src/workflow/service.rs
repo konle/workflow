@@ -1,11 +1,12 @@
 use std::sync::Arc;
 use chrono::Utc;
 use serde_json::Value as JsonValue;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 use crate::shared::job::WorkflowCallerContext;
 use crate::shared::workflow::{TaskInstanceStatus, TaskType, WorkflowInstanceStatus, WorkflowStatus};
 use crate::task::entity::TaskInstanceEntity;
+use crate::task::service::TaskInstanceService;
 use crate::workflow::entity::query::WorkflowInstanceQuery;
 use crate::workflow::entity::workflow_definition::{
     NodeExecutionStatus, WorkflowEntity, WorkflowInstanceEntity,
@@ -108,11 +109,15 @@ impl WorkflowDefinitionService {
 #[derive(Clone)]
 pub struct WorkflowInstanceService {
     pub repository: Arc<dyn WorkflowInstanceRepository>,
+    pub task_instance_svc: Arc<TaskInstanceService>,
 }
 
 impl WorkflowInstanceService {
-    pub fn new(repository: Arc<dyn WorkflowInstanceRepository>) -> Self {
-        Self { repository }
+    pub fn new(
+        repository: Arc<dyn WorkflowInstanceRepository>,
+        task_instance_svc: Arc<TaskInstanceService>,
+    ) -> Self {
+        Self { repository, task_instance_svc }
     }
 
     pub async fn get_workflow_instance(&self, id: String) -> Result<WorkflowInstanceEntity, RepositoryError> {
@@ -449,6 +454,8 @@ impl WorkflowInstanceService {
                     .map_err(|e| e.to_string())?;
             }
 
+            self.sync_task_instance_status(cid, &output).await;
+
             return self
                 .get_workflow_instance(workflow_instance_id.to_string())
                 .await
@@ -478,12 +485,15 @@ impl WorkflowInstanceService {
         }
 
         inst.nodes[idx].status = NodeExecutionStatus::Skipped;
-        inst.nodes[idx].task_instance.output = Some(output);
+        inst.nodes[idx].task_instance.output = Some(output.clone());
         inst.nodes[idx].task_instance.task_status = TaskInstanceStatus::Completed;
         inst.nodes[idx].task_instance.error_message = None;
         inst.nodes[idx].error_message = None;
         inst.nodes[idx].updated_at = Utc::now();
         inst.nodes[idx].task_instance.updated_at = Utc::now();
+
+        let task_id = inst.nodes[idx].task_instance.task_instance_id.clone();
+        self.sync_task_instance_status(&task_id, &output).await;
 
         if !inst
             .status
@@ -535,6 +545,24 @@ impl WorkflowInstanceService {
         self.repository
             .transfer_status(workflow_instance_id, &instance.status, to)
             .await
+    }
+
+    async fn sync_task_instance_status(&self, task_instance_id: &str, output: &JsonValue) {
+        match self.task_instance_svc.get_task_instance_entity(task_instance_id.to_string()).await {
+            Ok(mut task_inst) => {
+                task_inst.task_status = TaskInstanceStatus::Completed;
+                task_inst.output = Some(output.clone());
+                task_inst.error_message = None;
+                if let Err(e) = self.task_instance_svc.update_task_instance_entity(task_inst).await {
+                    warn!(task_instance_id = %task_instance_id, error = %e,
+                        "failed to sync task_instance status after skip");
+                }
+            }
+            Err(e) => {
+                warn!(task_instance_id = %task_instance_id, error = %e,
+                    "task_instance not found for skip sync");
+            }
+        }
     }
 }
 
