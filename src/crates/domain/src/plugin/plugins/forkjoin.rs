@@ -77,6 +77,7 @@ impl PluginInterface for ForkJoinPlugin {
             "dispatched_count": initial_dispatch,
             "success_count": 0,
             "failed_count": 0,
+            "skipped_count": 0,
             "results": results_map,
         });
         node_instance.task_instance.output = Some(state);
@@ -141,7 +142,9 @@ impl PluginInterface for ForkJoinPlugin {
             })
             .unwrap_or_default();
 
-        if processed.contains(&child_task_id.to_string()) {
+        let is_duplicate = processed.contains(&child_task_id.to_string());
+
+        if is_duplicate && *status != NodeExecutionStatus::Skipped {
             warn!(
                 node_id = %node_instance.node_id,
                 child_task_id = %child_task_id,
@@ -152,11 +155,39 @@ impl PluginInterface for ForkJoinPlugin {
 
         let mut success_count = state["success_count"].as_u64().unwrap_or(0);
         let mut failed_count = state["failed_count"].as_u64().unwrap_or(0);
+        let mut skipped_count = state["skipped_count"].as_u64().unwrap_or(0);
         let total_tasks = state["total_tasks"].as_u64().unwrap_or(0);
         let mut dispatched_count = state["dispatched_count"].as_u64().unwrap_or(0);
 
-        if *status == NodeExecutionStatus::Success {
+        if is_duplicate && *status == NodeExecutionStatus::Skipped {
+            let prev_status = if let Some(task_key) = Self::resolve_task_key_by_child_id(&template, child_task_id) {
+                state.get("results")
+                    .and_then(|r| r.get(task_key))
+                    .and_then(|e| e.get("status"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                String::new()
+            };
+            match prev_status.as_str() {
+                "Failed" => { failed_count = failed_count.saturating_sub(1); }
+                "Success" => { success_count = success_count.saturating_sub(1); }
+                _ => {}
+            }
             success_count += 1;
+            skipped_count += 1;
+            debug!(
+                node_id = %node_instance.node_id,
+                child_task_id = %child_task_id,
+                prev_status = %prev_status,
+                "forkjoin: skip overriding previous callback"
+            );
+        } else if *status == NodeExecutionStatus::Success {
+            success_count += 1;
+        } else if *status == NodeExecutionStatus::Skipped {
+            success_count += 1;
+            skipped_count += 1;
         } else if *status == NodeExecutionStatus::Failed {
             failed_count += 1;
         }
@@ -175,29 +206,48 @@ impl PluginInterface for ForkJoinPlugin {
         let concurrency = template.concurrency as u64;
         let mode = template.mode.clone();
 
-        let has_failed_threshold = match template.max_failures {
-            Some(max) => failed_count > max as u64,
+        let max_failures = template.max_failures;
+
+        // max_failures: early-abort threshold only.
+        //   Some(n) → abort as soon as failed_count >= n
+        //   None    → never abort early
+        // At completion: failed_count > 0 always means Failed.
+        let early_abort = match max_failures {
+            Some(max) => failed_count >= max as u64,
             None => false,
         };
 
-        let exec_result = if has_failed_threshold {
+        let all_done = success_count + failed_count == total_tasks;
+
+        let exec_result = if early_abort {
             warn!(
                 node_id = %node_instance.node_id,
                 failed_count = failed_count,
-                max_failures = ?template.max_failures,
-                "forkjoin: max_failures threshold exceeded"
+                max_failures = ?max_failures,
+                "forkjoin: max_failures reached, aborting"
             );
             node_instance.error_message = Some(format!(
-                "ForkJoin max_failures threshold exceeded ({} failed)",
-                failed_count
+                "ForkJoin aborted: {} failures reached max_failures={}",
+                failed_count, max_failures.unwrap_or(0)
             ));
             ExecutionResult::failed()
-        } else if success_count + failed_count == total_tasks {
+        } else if all_done && failed_count > 0 {
+            warn!(
+                node_id = %node_instance.node_id,
+                failed_count = failed_count,
+                success_count = success_count,
+                "forkjoin: completed with failures"
+            );
+            node_instance.error_message = Some(format!(
+                "ForkJoin completed with {} failures out of {} tasks",
+                failed_count, total_tasks
+            ));
+            ExecutionResult::failed()
+        } else if all_done {
             debug!(
                 node_id = %node_instance.node_id,
                 success_count = success_count,
-                failed_count = failed_count,
-                "forkjoin: all tasks completed"
+                "forkjoin: all tasks completed successfully"
             );
             ExecutionResult::success(None)
         } else {
@@ -245,6 +295,7 @@ impl PluginInterface for ForkJoinPlugin {
 
         state["success_count"] = serde_json::json!(success_count);
         state["failed_count"] = serde_json::json!(failed_count);
+        state["skipped_count"] = serde_json::json!(skipped_count);
         state["dispatched_count"] = serde_json::json!(dispatched_count);
         let mut updated_processed = processed;
         updated_processed.push(child_task_id.to_string());
@@ -256,5 +307,238 @@ impl PluginInterface for ForkJoinPlugin {
 
     fn plugin_type(&self) -> TaskType {
         TaskType::ForkJoin
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::interface::{PluginExecutor, PluginInterface};
+    use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
+    use crate::task::entity::{
+        ForkJoinTaskItem, ForkJoinTemplate, HttpMethod, TaskHttpTemplate, TaskTemplate,
+    };
+    use chrono::Utc;
+
+    struct StubExecutor;
+
+    #[async_trait::async_trait]
+    impl PluginExecutor for StubExecutor {
+        async fn execute_node_instance(
+            &self,
+            _ni: &mut WorkflowNodeInstanceEntity,
+            _wi: &mut WorkflowInstanceEntity,
+        ) -> anyhow::Result<ExecutionResult> {
+            unreachable!()
+        }
+        async fn handle_node_callback(
+            &self,
+            _ni: &mut WorkflowNodeInstanceEntity,
+            _wi: &mut WorkflowInstanceEntity,
+            _cid: &str,
+            _st: &NodeExecutionStatus,
+            _out: &Option<serde_json::Value>,
+            _err: &Option<String>,
+            _inp: &Option<serde_json::Value>,
+        ) -> anyhow::Result<ExecutionResult> {
+            unreachable!()
+        }
+    }
+
+    fn http_template() -> TaskHttpTemplate {
+        TaskHttpTemplate {
+            url: "/test".into(),
+            method: HttpMethod::Get,
+            headers: vec![],
+            body: vec![],
+            form: vec![],
+            retry_count: 0,
+            retry_delay: 0,
+            timeout: 0,
+            success_condition: None,
+        }
+    }
+
+    fn forkjoin_template(keys: &[&str]) -> TaskTemplate {
+        TaskTemplate::ForkJoin(ForkJoinTemplate {
+            tasks: keys
+                .iter()
+                .map(|k| ForkJoinTaskItem {
+                    task_key: k.to_string(),
+                    task_id: None,
+                    name: k.to_string(),
+                    task_template: TaskTemplate::Http(http_template()),
+                })
+                .collect(),
+            concurrency: keys.len() as u32,
+            mode: ParallelMode::Rolling,
+            max_failures: None,
+        })
+    }
+
+    fn make_node(node_id: &str, keys: &[&str], dispatched: usize, success: u64, failed: u64, skipped: u64, processed: Vec<String>, results: serde_json::Map<String, JsonValue>) -> WorkflowNodeInstanceEntity {
+        let now = Utc::now();
+        let state = serde_json::json!({
+            "total_tasks": keys.len(),
+            "dispatched_count": dispatched,
+            "success_count": success,
+            "failed_count": failed,
+            "skipped_count": skipped,
+            "processed_callbacks": processed,
+            "results": results,
+        });
+        WorkflowNodeInstanceEntity {
+            node_id: node_id.into(),
+            node_type: TaskType::ForkJoin,
+            task_instance: crate::task::entity::TaskInstanceEntity {
+                id: format!("ti-{}", node_id),
+                tenant_id: "t1".into(),
+                task_id: "".into(),
+                task_name: "forkjoin".into(),
+                task_type: TaskType::ForkJoin,
+                task_template: forkjoin_template(keys),
+                task_status: TaskInstanceStatus::Running,
+                task_instance_id: format!("ti-{}", node_id),
+                created_at: now,
+                updated_at: now,
+                deleted_at: None,
+                input: None,
+                output: Some(state),
+                error_message: None,
+                execution_duration: None,
+                caller_context: None,
+            },
+            context: serde_json::json!({}),
+            next_node: None,
+            status: NodeExecutionStatus::Await,
+            error_message: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn make_instance() -> WorkflowInstanceEntity {
+        let now = Utc::now();
+        WorkflowInstanceEntity {
+            workflow_instance_id: "wf1".into(),
+            tenant_id: "t1".into(),
+            workflow_meta_id: "m1".into(),
+            workflow_version: 1,
+            status: WorkflowInstanceStatus::Await,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+            context: serde_json::json!({}),
+            entry_node: "fj".into(),
+            current_node: "fj".into(),
+            nodes: vec![],
+            parent_context: None,
+            depth: 0,
+            epoch: 0,
+            locked_by: None,
+            locked_at: None,
+            locked_duration: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn skipped_callback_counts_as_success_and_records_in_results() {
+        let plugin = ForkJoinPlugin::new();
+        let exec = StubExecutor;
+        let keys = &["create_user", "send_email", "log_audit"];
+        let mut results = serde_json::Map::new();
+        results.insert("create_user".into(), serde_json::json!({"status": "Success", "output": {"id": 1}, "error": null}));
+        results.insert("send_email".into(), JsonValue::Null);
+        results.insert("log_audit".into(), JsonValue::Null);
+
+        let mut node = make_node("fj", keys, 3, 1, 0, 0, vec!["wf1-fj-0".into()], results);
+        let mut wf = make_instance();
+
+        let result = plugin
+            .handle_callback(
+                &exec,
+                &mut node,
+                &mut wf,
+                "wf1-fj-1",
+                &NodeExecutionStatus::Skipped,
+                &Some(serde_json::json!({})),
+                &None,
+                &None,
+            )
+            .await
+            .unwrap();
+
+        let state = node.task_instance.output.unwrap();
+        assert_eq!(state["success_count"], 2);
+        assert_eq!(state["skipped_count"], 1);
+        assert_eq!(state["failed_count"], 0);
+        assert_eq!(result.status, NodeExecutionStatus::Await);
+
+        let entry = &state["results"]["send_email"];
+        assert_eq!(entry["status"].as_str().unwrap(), "Skipped");
+    }
+
+    #[tokio::test]
+    async fn all_tasks_done_with_skip_completes_forkjoin() {
+        let plugin = ForkJoinPlugin::new();
+        let exec = StubExecutor;
+        let keys = &["a", "b"];
+        let mut results = serde_json::Map::new();
+        results.insert("a".into(), serde_json::json!({"status": "Success", "output": {}, "error": null}));
+        results.insert("b".into(), JsonValue::Null);
+
+        let mut node = make_node("fj", keys, 2, 1, 0, 0, vec!["wf1-fj-0".into()], results);
+        let mut wf = make_instance();
+
+        let result = plugin
+            .handle_callback(
+                &exec,
+                &mut node,
+                &mut wf,
+                "wf1-fj-1",
+                &NodeExecutionStatus::Skipped,
+                &Some(serde_json::json!({})),
+                &None,
+                &None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, NodeExecutionStatus::Success);
+        let state = node.task_instance.output.unwrap();
+        assert_eq!(state["success_count"], 2);
+        assert_eq!(state["skipped_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn all_failed_no_max_failures_returns_failed() {
+        let plugin = ForkJoinPlugin::new();
+        let exec = StubExecutor;
+        let keys = &["a", "b"];
+        let mut results = serde_json::Map::new();
+        results.insert("a".into(), serde_json::json!({"status": "Failed", "output": null, "error": "err"}));
+        results.insert("b".into(), JsonValue::Null);
+
+        let mut node = make_node("fj", keys, 2, 0, 1, 0, vec!["wf1-fj-0".into()], results);
+        if let TaskTemplate::ForkJoin(ref mut t) = node.task_instance.task_template {
+            t.max_failures = None;
+        }
+        let mut wf = make_instance();
+
+        let result = plugin
+            .handle_callback(
+                &exec,
+                &mut node,
+                &mut wf,
+                "wf1-fj-1",
+                &NodeExecutionStatus::Failed,
+                &None,
+                &Some("err".into()),
+                &None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, NodeExecutionStatus::Failed);
     }
 }

@@ -17,6 +17,14 @@
       <a-textarea v-model="skipOutputText" :auto-size="{ minRows: 6, maxRows: 16 }" placeholder="{}" />
     </a-modal>
 
+    <a-modal v-model:visible="childSkipModalVisible" title="跳过容器子任务" @ok="submitChildSkip" @cancel="childSkipModalVisible = false">
+      <p class="skip-hint">为容器内失败的子任务填写 <code>output</code> JSON 对象（可为空对象 <code>{}</code>）。</p>
+      <a-descriptions :column="1" size="small" style="margin-bottom: 12px">
+        <a-descriptions-item label="子任务ID">{{ childSkipTarget }}</a-descriptions-item>
+      </a-descriptions>
+      <a-textarea v-model="childSkipOutputText" :auto-size="{ minRows: 6, maxRows: 16 }" placeholder="{}" />
+    </a-modal>
+
     <a-row :gutter="16">
       <a-col :span="6">
         <a-card title="基本信息" :loading="loading" size="small">
@@ -64,6 +72,37 @@
                 <a-typography-text copyable>{{ selectedNode.task_instance.task_id }}</a-typography-text>
               </a-descriptions-item>
             </a-descriptions>
+            <template v-if="isContainerNode(selectedNode)">
+              <a-divider>子任务状态</a-divider>
+              <a-table :data="containerChildTasks" :pagination="false" size="mini" :bordered="{ cell: true }">
+                <template #columns>
+                  <a-table-column title="子任务ID" data-index="id" :width="180" ellipsis />
+                  <a-table-column title="状态" data-index="status" :width="80">
+                    <template #cell="{ record }">
+                      <a-tag :color="childStatusColor(record.status)">{{ record.status }}</a-tag>
+                    </template>
+                  </a-table-column>
+                  <a-table-column title="操作" :width="60">
+                    <template #cell="{ record }">
+                      <a-button
+                        v-if="record.status === 'Failed' && canExecute"
+                        type="text"
+                        size="mini"
+                        @click="openChildSkipModal(record.id)"
+                      >跳过</a-button>
+                    </template>
+                  </a-table-column>
+                </template>
+              </a-table>
+            </template>
+
+            <template v-if="selectedNode.node_type === 'SubWorkflow' && subWorkflowInstanceId">
+              <a-divider>子工作流实例</a-divider>
+              <router-link :to="`/workflows/instances/${subWorkflowInstanceId}`">
+                <a-link>{{ subWorkflowInstanceId }}</a-link>
+              </router-link>
+            </template>
+
             <a-divider>节点上下文</a-divider>
             <p class="node-context-hint">
               执行本节点前用于模板 / Rhai 解析的合并上下文（含变量合并与系统注入的 <code>nodes</code>）。
@@ -112,7 +151,11 @@ const loading = ref(false)
 const selectedNode = ref<WorkflowNodeInstanceEntity | null>(null)
 const skipModalVisible = ref(false)
 const skipOutputText = ref('{}')
+const childSkipModalVisible = ref(false)
+const childSkipOutputText = ref('{}')
+const childSkipTarget = ref('')
 
+const CONTAINER_TYPES = new Set(['Parallel', 'ForkJoin'])
 const UNSKIPPABLE_TYPES = new Set(['Parallel', 'ForkJoin', 'SubWorkflow'])
 
 const canSkipNode = computed(() => {
@@ -278,6 +321,102 @@ async function submitSkip() {
   }
 }
 
+
+function isContainerNode(node: WorkflowNodeInstanceEntity | null): boolean {
+  return !!node && CONTAINER_TYPES.has(node.node_type)
+}
+
+interface ChildTaskInfo { id: string; status: string }
+
+const containerChildTasks = computed<ChildTaskInfo[]>(() => {
+  const node = selectedNode.value
+  if (!node || !CONTAINER_TYPES.has(node.node_type)) return []
+  const output = node.task_instance?.output
+  if (!output || typeof output !== 'object') return []
+
+  const total = (output as any).total_items ?? (output as any).total_tasks ?? 0
+  const results: Record<string, any> | undefined = (output as any).results
+  const instanceId = instance.value?.workflow_instance_id || ''
+  const dispatched = (output as any).dispatched_count || 0
+
+  const items: ChildTaskInfo[] = []
+  const isForkJoin = node.node_type === 'ForkJoin'
+
+  if (isForkJoin && results) {
+    for (const [key, entry] of Object.entries(results)) {
+      const id = key
+      let status = 'Pending'
+      if (entry && typeof entry === 'object' && entry.status) {
+        status = entry.status
+      }
+      items.push({ id, status })
+    }
+  } else {
+    for (let i = 0; i < total; i++) {
+      const id = `${instanceId}-${node.node_id}-${i}`
+      let status = 'Pending'
+      if (results && results[id] && typeof results[id] === 'object' && results[id].status) {
+        status = results[id].status
+      } else if (i < dispatched) {
+        status = 'Running'
+      }
+      items.push({ id, status })
+    }
+  }
+  return items
+})
+
+const subWorkflowInstanceId = computed<string | null>(() => {
+  const node = selectedNode.value
+  if (!node || node.node_type !== 'SubWorkflow') return null
+  const output = node.task_instance?.output
+  if (!output || typeof output !== 'object') return null
+  return (output as any).child_workflow_instance_id || null
+})
+
+function childStatusColor(status: string): string {
+  switch (status) {
+    case 'Success': return 'green'
+    case 'Failed': return 'red'
+    case 'Skipped': return 'gray'
+    case 'Running': return 'blue'
+    default: return 'gray'
+  }
+}
+
+function openChildSkipModal(childTaskId: string) {
+  childSkipTarget.value = childTaskId
+  childSkipOutputText.value = '{}'
+  childSkipModalVisible.value = true
+}
+
+async function submitChildSkip() {
+  if (!instance.value || !selectedNode.value) return
+  let output: Record<string, unknown>
+  try {
+    const parsed = JSON.parse(childSkipOutputText.value || '{}')
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      Notification.error({ content: 'output 须为 JSON 对象' })
+      return
+    }
+    output = parsed as Record<string, unknown>
+  } catch {
+    Notification.error({ content: 'output 不是合法 JSON' })
+    return
+  }
+  try {
+    await workflowApi.skipNode(instanceId, {
+      node_id: selectedNode.value.node_id,
+      child_task_id: childSkipTarget.value,
+      output,
+    })
+    Notification.success({ content: '已跳过子任务并投递编排' })
+    childSkipModalVisible.value = false
+    fetchInstance()
+  } catch {
+    /* axios 拦截器已提示 */
+  }
+}
 
 onMounted(async () => {
   loading.value = true

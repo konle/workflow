@@ -138,20 +138,171 @@ sequenceDiagram
 
 #### 1.4.5 跳过节点（Skip）
 
-**目标**：不执行该节点逻辑，但将其视为在数据面上**已有输出**（可为空对象），以便下游 **`nodes.<id>.output`**（§8.6）继续解析。
+##### 1.4.5.1 核心原则
+
+> **跳过必须做到"原子"级别**。用户跳过的目标永远是最内层的具体执行单元（Http、gRPC、Approval 等），而非容器本身。
+
+- 对 **普通节点**（Http/gRPC/Approval/IfCondition/ContextRewrite）：直接跳过，与现有逻辑一致。
+- 对 **Parallel/ForkJoin**：用户跳过的是容器内**某个失败的子任务**，而非整个容器节点。容器的状态机通过接收 `Skipped` 回调正常推进。
+- 对 **SubWorkflow**：用户**直接操作子工作流实例**，对子工作流内部的具体失败节点执行 skip。子工作流完成后自然通过 `NodeCallback` 回调父工作流。
+- 对 **Parallel/ForkJoin 内的 SubWorkflow 子任务**：行为与独立 SubWorkflow 一致 — 定位到子工作流实例，递归 skip 其内部节点。
+
+**设计思路 B（已定）**：用户始终直接操作目标实例（无论是父还是子工作流），不在 API 层做自动递归。好处：
+1. 用户从父工作流或子工作流进入，都能看到一致的视图
+2. 正反两面路径一致 — 无论是正常回调还是人工 skip，都通过 `NodeCallback` 向上通知
+3. 实现简单，复用现有 skip 逻辑，无需 API 层递归
+
+##### 1.4.5.2 NodeExecutionStatus::Skipped 状态机
+
+`Skipped` 是**终态**，与 `Success`、`Failed` 并列。允许的转入路径：
+
+| 从状态 | 到状态 | 场景 |
+|--------|--------|------|
+| `Failed` | `Skipped` | 用户对失败节点执行 skip |
+| `Suspended` | `Skipped` | 用户对挂起节点（如审批超时后）执行 skip |
+
+**禁止**从 `Success`、`Pending`、`Running`、`Await` 直接转为 `Skipped`。`Skipped` 本身为终态，不可再转出。
+
+对应 `TaskInstanceStatus`：跳过时将子任务状态设为 `Completed`（`TaskInstanceStatus` 无 `Skipped` 变体，复用 `Completed`）。
+
+##### 1.4.5.3 普通节点跳过（已实现）
+
+**API**：
+```
+POST /api/v1/workflow/instances/{id}/skip-node
+Body: { "node_id": "node_3", "output": {} }
+```
 
 **`output`（统一字段，无额外别名）**
 
-- Body 提供 **`node_id`** 与 **`output`**（JSON 对象）。**用户须提交 `output`，允许为 `{}`**。  
-- 持久化：节点 **`Skipped`**，该节点 **`task_instance.output = output`**（与成功节点一样占用同一字段，**不**引入 `synthetic_output` 等额外名）。  
+- Body 提供 **`node_id`** 与 **`output`**（JSON 对象）。**用户须提交 `output`，允许为 `{}`**。
+- 持久化：节点 **`Skipped`**，该节点 **`task_instance.output = output`**（与成功节点一样占用同一字段，**不**引入 `synthetic_output` 等额外名）。
 - **`build_nodes_object`**：`Skipped` 且 **`output` 已落盘**（含 `{}`）→ 生成 **`nodes.<id>.output`**，复用现有模板解析链。
-
-**允许跳过的工作流实例状态**（安全窗口）：**`Failed`**、**`Suspended`**（一期规则可再收紧）；**`Parallel` / `ForkJoin` 父节点** 一期建议禁止或单独规则。
 
 **算法要点**：
 
-1. **阶段 1**：校验租户与状态窗口；写 **`Skipped`** + **`output`**；按模板更新 **`current_node`**（If 分支需产品约定）；实例若需回到 **`Pending`** 以便后续 **`Start`**，一并写入。  
-2. **阶段 2**：**`dispatch_workflow(ExecuteWorkflowJob { event: NodeCallback, node_id, child_task_id, status: Skipped, output: … })`**（字段与库一致），由 **`handle_callback`** 与执行器回调**同路径**推进（具体由插件实现吸收 `Skipped`）。  
+1. **阶段 1**：校验租户与状态窗口；写 **`Skipped`** + **`output`**；实例回到 **`Pending`**。
+2. **阶段 2**：**`dispatch_workflow(ExecuteWorkflowJob { event: NodeCallback, node_id, child_task_id, status: Skipped, output })`**，由 **`handle_callback`** 与执行器回调**同路径**推进。
+
+**允许跳过的工作流实例状态**（安全窗口）：**`Failed`**、**`Suspended`**。
+
+##### 1.4.5.4 Parallel / ForkJoin 子任务跳过
+
+用户跳过的是容器内**某个具体失败的子任务**，而非容器节点整体。
+
+**API**（扩展现有接口）：
+```
+POST /api/v1/workflow/instances/{id}/skip-node
+Body: {
+  "node_id": "node_6",                          // 容器节点 ID
+  "child_task_id": "aee71fc7-...-node_6-2",    // 必须：具体子任务 ID
+  "output": {}
+}
+```
+
+**前置条件**：
+- 工作流实例状态为 `Failed`（容器子任务有失败或触发 `max_failures` 提前终止）或 `Await`（子任务失败但未触发提前终止）
+- `child_task_id` 对应的 `task_instances` 记录状态为 `Failed`
+- `child_task_id` 必须属于 `node_id` 容器（格式校验：`{instance_id}-{node_id}-{index}`）
+
+**执行流程**：
+
+```
+API: skip_node(instance_id, node_id="node_6", child_task_id="xxx-node_6-2", output={})
+  │
+  ├─ 阶段 1: 持久化
+  │   ├─ 更新 task_instances 集合: child_task_id → task_status = Completed
+  │   ├─ 不修改容器节点状态（Parallel 仍在 Await）
+  │   ├─ 不修改 workflow_instance 状态
+  │   └─ 若实例为 Failed（熔断后），转回 Await 以便接收回调
+  │
+  └─ 阶段 2: 投递
+      └─ dispatch_workflow(NodeCallback {
+           node_id: "node_6",
+           child_task_id: "xxx-node_6-2",
+           status: Skipped,
+           output: user_output,
+         })
+```
+
+**handle_callback 对 Skipped 的处理**：
+
+Parallel / ForkJoin 的 `handle_callback` 将 `Skipped` **等同于 `Success` 处理**，同时记录独立计数：
+
+```
+# 首次回调（child_task_id 不在 processed_callbacks 中）
+if status == Success → success_count += 1
+if status == Skipped → success_count += 1, skipped_count += 1
+if status == Failed  → failed_count += 1
+
+# Skipped 覆盖（child_task_id 已在 processed_callbacks 中，但 status == Skipped）
+从 results[child_task_id].status 读取原始状态
+if 原始状态 == Failed  → failed_count -= 1
+if 原始状态 == Success → success_count -= 1
+然后: success_count += 1, skipped_count += 1
+重新评估完成条件
+```
+
+> 非 Skipped 的重复回调仍被忽略（幂等保护）。仅 Skipped 允许覆盖，因为它是用户主动操作。
+
+在容器状态机 `output` 中新增 `skipped_count` 字段和 `results` map（Parallel 与 ForkJoin 对称）：
+
+**Parallel output 示例**（`results` key 为 `child_task_id`）：
+```json
+{
+  "total_items": 10,
+  "dispatched_count": 10,
+  "success_count": 9,
+  "failed_count": 0,
+  "skipped_count": 1,
+  "results": {
+    "wf-node_6-0": { "status": "Skipped", "output": {}, "error": null },
+    "wf-node_6-1": { "status": "Success", "output": { "..." }, "error": null }
+  },
+  "processed_callbacks": ["wf-node_6-0", "wf-node_6-1", ...]
+}
+```
+
+**ForkJoin output 示例**（`results` key 为 `task_key`）：
+```json
+{
+  "total_tasks": 3,
+  "dispatched_count": 3,
+  "success_count": 2,
+  "failed_count": 0,
+  "skipped_count": 1,
+  "results": {
+    "send_email": { "status": "Skipped", "output": {}, "error": null },
+    "fetch_user": { "status": "Success", "output": { "..." }, "error": null }
+  },
+  "processed_callbacks": ["wf-fj-0", "wf-fj-1", ...]
+}
+```
+
+完成检测条件不变：`success_count + failed_count == total_items`（其中 `success_count` 包含了被 skip 的任务）。
+
+##### 1.4.5.5 SubWorkflow 节点跳过
+
+SubWorkflow 节点**不直接跳过**。用户通过以下路径操作：
+
+1. 在父工作流实例详情页，查看 SubWorkflow 节点的 `task_instance.output`，获取 `child_workflow_instance_id`
+2. 导航到子工作流实例详情页
+3. 对子工作流内部的具体失败节点（Http/gRPC 等）执行 skip
+4. 子工作流恢复执行，到达终态后自动通过 `NodeCallback` 回调父工作流
+5. 父工作流的 SubWorkflow 节点接收回调，正常推进
+
+**Parallel/ForkJoin 内的 SubWorkflow 子任务**：行为一致。每个 SubWorkflow 子任务在 `execute` 阶段创建了独立的子工作流实例（`child_workflow_instance_id` 记录在该子任务的 output 中）。用户定位到对应的子工作流实例，递归 skip 其内部原子节点。
+
+**此设计保证**：无论嵌套多深，用户始终操作最内层的原子节点，向上通知路径与正常执行完全一致。
+
+##### 1.4.5.6 前端适配
+
+| 页面 | 行为 |
+|------|------|
+| **普通节点详情** | 现有 skip 按钮，收集 `output`（默认 `{}`）后提交。 |
+| **Parallel/ForkJoin 节点详情** | 展示子任务列表（从 `task_instances` 查询），每个 `Failed` 子任务旁显示 skip 按钮。提交时携带 `child_task_id`。 |
+| **SubWorkflow 节点详情** | 展示 `child_workflow_instance_id` 链接，用户点击跳转到子工作流实例详情页操作。 |
+| **工作流实例列表** | 无变化。 |
 
 **审计（二期）**：`skipped_at`、`skipped_by`、`reason` 可选字段。
 
@@ -166,9 +317,9 @@ sequenceDiagram
 
 | 阶段 | 内容 |
 |------|------|
-| **P0** | **`build_nodes_object`** 支持 `Skipped`+`output`；skip API **阶段1+2**；**`handle_callback`** 对人工 **`NodeCallback`** 幂等；retry/resume 后 **`Start`** 路径与现网对齐。 |
-| **P1** | 任务页级联写库 + 父 **`Start`/`NodeCallback`**；子工作流与父一致性；`Await` 取消。 |
-| **P2** | 容器 skip、队列补偿、审计。 |
+| **P0（已完成）** | **`build_nodes_object`** 支持 `Skipped`+`output`；普通节点 skip API **阶段1+2**；**`handle_callback`** 对人工 **`NodeCallback`** 幂等；retry/resume 后 **`Start`** 路径与现网对齐。 |
+| **P1** | **容器 skip**：skip API 扩展 `child_task_id` 参数；Parallel/ForkJoin `handle_callback` 识别 `Skipped` 状态并记录 `skipped_count`；前端 Parallel/ForkJoin 节点详情展示子任务列表 + skip 按钮；SubWorkflow 节点详情展示子工作流实例跳转链接。 |
+| **P2** | 任务页级联写库 + 父 **`Start`/`NodeCallback`**；`Await` 取消；队列补偿；审计（`skipped_at`/`skipped_by`/`reason`）。 |
 
 ---
 
@@ -245,8 +396,8 @@ Parallel 借用了它自身的 `TaskInstanceEntity.output` 来充当状态机的
    事件流转进入 `ParallelPlugin::handle_callback`，在此进行如下决断：
    
    * **状态聚合**：根据子任务的成败，对 `success_count` 或 `failed_count` 进行加一。
-   * **失败熔断**：检测 `failed_count > max_failures`。若超过容忍度，整个 Parallel 立即短路失败，抛弃未执行的任务。
-   * **完成检测**：若 `success_count + failed_count == total_items`，全员收工，向引擎返回 `Success` 推动主流程前行。
+   * **提前终止**：`max_failures` 为**提前终止阈值**（非容忍阈值）。当 `failed_count >= max_failures` 时，整个 Parallel 立即短路失败，不再浪费资源执行剩余任务。若 `max_failures` 为 `None`，则不提前终止，等全部子任务完成后再判断。
+   * **完成检测**：若 `success_count + failed_count == total_items`（全员收工），判定最终状态：`failed_count > 0` 则容器 **Failed**（无论 `max_failures` 设为多少），否则 **Success**。`max_failures` 仅控制提前终止时机，不改变最终成败判定。
    * **并发补货**：如果既未熔断也未完成，则根据并发模式开始派发新任务：
      * **Rolling (滚动模式)**：犹如滑动窗口，走了一个补一个，立即派发第 `dispatched_count` 号任务给队列，保证全速满负荷运转。
      * **Batch (批量模式)**：按兵不动，直到前 10 个任务全部死活出结果了，才一次性把后 10 个任务发出。
@@ -333,7 +484,7 @@ pub struct WorkflowInstanceEntity {
 | 子任务类型 | 全部相同（如全是 HTTP） | 可以不同（HTTP + gRPC + ...） |
 | 典型场景 | "给 1000 个用户各发一封邮件" | "同时拉用户数据 + 发通知 + 生成报告" |
 | 并发控制 | concurrency + Rolling/Batch | 同样 concurrency + Rolling/Batch |
-| 失败控制 | max_failures | 同样 max_failures |
+| 失败控制 | max_failures（提前终止阈值） | 同样 max_failures |
 
 二者本质上共享同一套 Scatter-Gather + Callback 状态机，区别仅在于数据源：Parallel 从数组动态展开 N 个相同任务，ForkJoin 从静态列表展开 N 个不同任务。
 
@@ -344,7 +495,7 @@ pub struct ForkJoinTemplate {
     pub tasks: Vec<ForkJoinTaskItem>,   // 子任务列表
     pub concurrency: u32,               // 并发度
     pub mode: ParallelMode,             // Rolling / Batch
-    pub max_failures: Option<u32>,      // 最大失败容忍数
+    pub max_failures: Option<u32>,      // 提前终止阈值（failed >= n 时中止，None 不提前终止）
 }
 
 pub struct ForkJoinTaskItem {
@@ -401,7 +552,7 @@ Parallel 节点的 `task_id` 追溯通过 `WorkflowNodeEntity.task_id` 实现（
 
 **Scatter (execute)**：读取 `tasks` 列表 → 初始化状态机 → 按 `concurrency` 派发前 N 个子任务 → `caller_context.item_index` 记录子任务在列表中的索引。
 
-**Gather (handle_callback)**：与 Parallel 共享完全相同的决策逻辑（状态聚合 → 失败熔断 → 完成检测 → 并发补货），唯一区别是额外将结果写入 `results[task_key]`。
+**Gather (handle_callback)**：与 Parallel 共享完全相同的决策逻辑（状态聚合 → 提前终止 → 完成检测 → 并发补货），唯一区别是额外将结果写入 `results[task_key]`。
 
 ---
 
@@ -1099,17 +1250,26 @@ info!(
 
 Sweeper 补发回调与原始回调可能并发到达，必须在 Parallel / ForkJoin 的 `handle_callback` 中做幂等判断。
 
-**实现方式**：在 `node_instance.task_instance.output` 的 state JSON 中维护 `processed_callbacks: string[]` 数组。
+**实现方式**：在 `node_instance.task_instance.output` 的 state JSON 中维护 `processed_callbacks: string[]` 数组和 `results: Map<child_id, {status, output, error}>` map。
 
 ```
 callback 到达
   → 读取 state.processed_callbacks
   → child_task_id ∈ processed_callbacks ?
-      ├── YES → warn!("duplicate callback ignored") → 返回空调度（幂等跳过）
+      ├── YES & status ≠ Skipped → warn!("duplicate callback ignored") → 返回空调度（幂等跳过）
+      ├── YES & status = Skipped → **覆盖模式**：
+      │     从 results[child_task_id] 读取原始状态
+      │     回退原始计数器（如 Failed → failed_count -= 1）
+      │     计入新状态（success_count += 1, skipped_count += 1）
+      │     更新 results[child_task_id] 为 Skipped
+      │     重新评估完成条件
       └── NO  → 正常累加 success_count / failed_count
+               → 记录 results[child_task_id] = {status, output, error}
                → 将 child_task_id 追加到 processed_callbacks
                → 持久化 state
 ```
+
+> **设计决策**：Skipped 是用户主动发起的操作，必须能覆盖之前的 Failed 结果。若不允许覆盖，容器会因所有 child 都在 `processed_callbacks` 中而永远卡在 Await 状态（死锁）。非 Skipped 的重复回调仍然被忽略，保证 Sweeper 补发和并发回调的幂等性。
 
 **适用插件**：
 - `ParallelPlugin::handle_callback` — `child_task_id` 格式: `{wf_id}-{node_id}-{index}`

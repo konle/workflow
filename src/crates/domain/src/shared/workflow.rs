@@ -50,7 +50,7 @@ impl WorkflowInstanceStatus {
     /// State machine transition rules:
     ///   Pending   -> Running
     ///   Running   -> Completed | Failed | Suspended | Await
-    ///   Failed    -> Pending (retry) | Canceled
+    ///   Failed    -> Pending (retry) | Canceled | Await (container child skip)
     ///   Suspended -> Pending (resume) | Canceled
     ///   Completed -> (terminal)
     ///   Canceled  -> (terminal)
@@ -65,6 +65,7 @@ impl WorkflowInstanceStatus {
                 | (WorkflowInstanceStatus::Running, WorkflowInstanceStatus::Await)
                 | (WorkflowInstanceStatus::Failed, WorkflowInstanceStatus::Pending)
                 | (WorkflowInstanceStatus::Failed, WorkflowInstanceStatus::Canceled)
+                | (WorkflowInstanceStatus::Failed, WorkflowInstanceStatus::Await)
                 | (WorkflowInstanceStatus::Suspended, WorkflowInstanceStatus::Pending)
                 | (WorkflowInstanceStatus::Suspended, WorkflowInstanceStatus::Canceled)
                 | (WorkflowInstanceStatus::Await, WorkflowInstanceStatus::Pending)
@@ -138,4 +139,29 @@ pub enum TaskType {
     SubWorkflow,
     Grpc,
     Approval,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_to_await_transition_allowed() {
+        assert!(WorkflowInstanceStatus::Failed.can_transition_to(&WorkflowInstanceStatus::Await));
+    }
+
+    #[test]
+    fn await_to_pending_still_allowed() {
+        assert!(WorkflowInstanceStatus::Await.can_transition_to(&WorkflowInstanceStatus::Pending));
+    }
+
+    #[test]
+    fn completed_to_await_forbidden() {
+        assert!(!WorkflowInstanceStatus::Completed.can_transition_to(&WorkflowInstanceStatus::Await));
+    }
+
+    #[test]
+    fn suspended_to_await_forbidden() {
+        assert!(!WorkflowInstanceStatus::Suspended.can_transition_to(&WorkflowInstanceStatus::Await));
+    }
 }

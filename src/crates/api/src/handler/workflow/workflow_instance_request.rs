@@ -5,6 +5,8 @@ use common::pagination::{Pagination, SortQuery};
 #[derive(Deserialize)]
 pub struct SkipWorkflowNodeRequest {
     pub node_id: String,
+    #[serde(default)]
+    pub child_task_id: Option<String>,
     pub output: JsonValue,
 }
 

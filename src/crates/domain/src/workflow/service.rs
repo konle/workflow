@@ -382,6 +382,7 @@ impl WorkflowInstanceService {
         tenant_id: &str,
         workflow_instance_id: &str,
         node_id: &str,
+        child_task_id: Option<String>,
         output: JsonValue,
     ) -> Result<WorkflowInstanceEntity, String> {
         if !output.is_object() {
@@ -392,16 +393,6 @@ impl WorkflowInstanceService {
             .get_workflow_instance_scoped(tenant_id, workflow_instance_id)
             .await
             .map_err(|e| e.to_string())?;
-
-        if !matches!(
-            inst.status,
-            WorkflowInstanceStatus::Failed | WorkflowInstanceStatus::Suspended
-        ) {
-            return Err(format!(
-                "workflow instance must be Failed or Suspended, got {:?}",
-                inst.status
-            ));
-        }
 
         if inst.get_current_node() != node_id {
             return Err("node_id must match current_node".to_string());
@@ -414,14 +405,66 @@ impl WorkflowInstanceService {
             .ok_or_else(|| format!("node not found: {}", node_id))?;
 
         let node = &inst.nodes[idx];
-        if matches!(
+        let is_container = matches!(
             node.node_type,
-            TaskType::Parallel | TaskType::ForkJoin | TaskType::SubWorkflow
-        ) {
-            // TODO: support skipping Parallel, ForkJoin, and SubWorkflow nodes
+            TaskType::Parallel | TaskType::ForkJoin
+        );
+
+        if matches!(node.node_type, TaskType::SubWorkflow) {
             return Err(
-                "skipping Parallel, ForkJoin, or SubWorkflow nodes is not supported".to_string(),
+                "SubWorkflow nodes cannot be skipped directly; skip the failed node inside the child workflow instance instead".to_string(),
             );
+        }
+
+        if is_container {
+            let cid = child_task_id.as_deref().ok_or_else(|| {
+                "child_task_id is required when skipping a Parallel/ForkJoin child task".to_string()
+            })?;
+
+            let prefix = format!("{}-{}-", workflow_instance_id, node_id);
+            if !cid.starts_with(&prefix) {
+                return Err(format!(
+                    "child_task_id '{}' does not belong to container node '{}'",
+                    cid, node_id
+                ));
+            }
+
+            if !matches!(
+                inst.status,
+                WorkflowInstanceStatus::Failed | WorkflowInstanceStatus::Await
+            ) {
+                return Err(format!(
+                    "workflow instance must be Failed or Await to skip container child, got {:?}",
+                    inst.status
+                ));
+            }
+
+            // For Failed instances (max_failures breaker tripped), transition back
+            // to Await so the workflow worker can process the incoming NodeCallback.
+            if inst.status == WorkflowInstanceStatus::Failed {
+                inst.status = WorkflowInstanceStatus::Await;
+                inst.updated_at = Utc::now();
+                self.save_workflow_instance(&inst)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+
+            return self
+                .get_workflow_instance(workflow_instance_id.to_string())
+                .await
+                .map_err(|e| e.to_string());
+        }
+
+        // ── ordinary (atomic) node skip ──
+
+        if !matches!(
+            inst.status,
+            WorkflowInstanceStatus::Failed | WorkflowInstanceStatus::Suspended
+        ) {
+            return Err(format!(
+                "workflow instance must be Failed or Suspended, got {:?}",
+                inst.status
+            ));
         }
 
         if !matches!(

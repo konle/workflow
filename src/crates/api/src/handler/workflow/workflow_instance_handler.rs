@@ -190,7 +190,7 @@ async fn skip_node(
 
     let updated = handler
         .instance_service
-        .skip_workflow_node(&auth.tenant_id, &id, &req.node_id, req.output.clone())
+        .skip_workflow_node(&auth.tenant_id, &id, &req.node_id, req.child_task_id.clone(), req.output.clone())
         .await
         .map_err(ApiError::bad_request)?;
 
@@ -199,6 +199,12 @@ async fn skip_node(
         .iter()
         .find(|n| n.node_id == req.node_id)
         .ok_or_else(|| ApiError::internal("skipped node missing after save"))?;
+
+    let child_task_id = if let Some(ref cid) = req.child_task_id {
+        cid.clone()
+    } else {
+        node_callback_child_task_id(&updated, node)
+    };
 
     let out = node.task_instance.output.clone().unwrap_or(req.output);
 
@@ -209,7 +215,7 @@ async fn skip_node(
             tenant_id: auth.tenant_id.clone(),
             event: WorkflowEvent::NodeCallback {
                 node_id: req.node_id.clone(),
-                child_task_id: node_callback_child_task_id(&updated, node),
+                child_task_id,
                 status: NodeExecutionStatus::Skipped,
                 output: Some(out),
                 error_message: None,
@@ -222,7 +228,7 @@ async fn skip_node(
             ApiError::internal(e.to_string())
         })?;
 
-    info!(workflow_instance_id = %id, node_id = %req.node_id, "skip-node persisted and NodeCallback dispatched");
+    info!(workflow_instance_id = %id, node_id = %req.node_id, child_task_id = ?req.child_task_id, "skip-node persisted and NodeCallback dispatched");
 
     Ok(Json(Response::success(updated)))
 }

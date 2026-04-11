@@ -67,6 +67,6 @@ export const workflowApi = {
   resumeInstance: (id: string) =>
     request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/resume`),
 
-  skipNode: (id: string, body: { node_id: string; output: Record<string, unknown> }) =>
+  skipNode: (id: string, body: { node_id: string; child_task_id?: string; output: Record<string, unknown> }) =>
     request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/skip-node`, body),
 }
