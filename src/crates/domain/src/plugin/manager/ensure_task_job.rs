@@ -70,6 +70,14 @@ impl PluginManager {
             .get_task_instance_entity(job.task_instance_id.clone())
             .await
         {
+            if existing.task_status.is_terminal() {
+                warn!(
+                    task_instance_id = %job.task_instance_id,
+                    status = ?existing.task_status,
+                    "task instance in terminal state, refusing to overwrite"
+                );
+                return Ok(());
+            }
             if existing.task_type != child_task_type {
                 warn!(
                     task_instance_id = %job.task_instance_id,

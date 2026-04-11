@@ -6,7 +6,7 @@ use axum::{
 };
 use tracing::{info, error};
 use domain::{
-    shared::{job::{ExecuteWorkflowJob, TaskDispatcher, WorkflowEvent}, workflow::WorkflowStatus},
+    shared::{job::{ExecuteTaskJob, ExecuteWorkflowJob, TaskDispatcher, WorkflowCallerContext, WorkflowEvent}, workflow::{TaskType, WorkflowStatus}},
     user::entity::Permission,
     workflow::entity::query::WorkflowInstanceQuery,
 };
@@ -22,7 +22,7 @@ use crate::middleware::auth::AuthContext;
 use crate::middleware::permission::require_permission;
 use crate::middleware::permission_guard::{PermissionLevel, RequireDraftInstanceCreate};
 use crate::response::response::Response;
-use crate::handler::workflow::workflow_instance_request::{CreateWorkflowInstanceRequest, SkipWorkflowNodeRequest, ListWorkflowInstancesRequest};
+use crate::handler::workflow::workflow_instance_request::{CreateWorkflowInstanceRequest, RetryWorkflowNodeRequest, SkipWorkflowNodeRequest, ListWorkflowInstancesRequest};
 use std::sync::Arc;
 
 
@@ -52,9 +52,9 @@ pub fn routes(handler: Arc<WorkflowInstanceHandler>) -> Router {
         .route("/", post(create_instance))
         .route("/{id}/execute", post(execute_instance))
         .route("/{id}/cancel", post(cancel_instance))
-        .route("/{id}/retry", post(retry_instance))
         .route("/{id}/resume", post(resume_instance))
         .route("/{id}/skip-node", post(skip_node))
+        .route("/{id}/retry-node", post(retry_node))
         .layer(from_fn(require_permission(Permission::InstanceExecute)));
 
     Router::new()
@@ -155,25 +155,77 @@ async fn cancel_instance(
     Ok(Json(Response::success(result)))
 }
 
-async fn retry_instance(
+async fn retry_node(
     State(handler): State<Arc<WorkflowInstanceHandler>>,
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
+    Json(req): Json<RetryWorkflowNodeRequest>,
 ) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
-    handler.instance_service.get_workflow_instance_scoped(&auth.tenant_id, &id).await?;
-    let result = handler.instance_service.retry_instance(&id).await?;
+    handler
+        .instance_service
+        .get_workflow_instance_scoped(&auth.tenant_id, &id)
+        .await?;
 
-    handler.dispatcher.dispatch_workflow(ExecuteWorkflowJob {
-        workflow_instance_id: result.workflow_instance_id.clone(),
-        tenant_id: auth.tenant_id,
-        event: WorkflowEvent::Start,
-    }).await.map_err(|e| {
-        error!(workflow_instance_id = %id, error = %e, "failed to dispatch Start after retry");
-        ApiError::internal(e.to_string())
-    })?;
+    let updated = handler
+        .instance_service
+        .retry_workflow_node(&auth.tenant_id, &id, &req.node_id, req.child_task_id.clone())
+        .await
+        .map_err(ApiError::bad_request)?;
 
-    info!(workflow_instance_id = %id, "workflow instance retried and Start dispatched");
-    Ok(Json(Response::success(result)))
+    let node = updated
+        .nodes
+        .iter()
+        .find(|n| n.node_id == req.node_id)
+        .ok_or_else(|| ApiError::internal("retried node missing after save"))?;
+
+    let is_container = matches!(node.node_type, TaskType::Parallel | TaskType::ForkJoin);
+
+    if is_container {
+        let cid = req.child_task_id.as_ref().unwrap();
+        let item_index = cid
+            .rsplit('-')
+            .next()
+            .and_then(|s| s.parse::<usize>().ok());
+
+        let caller_context = WorkflowCallerContext {
+            workflow_instance_id: updated.workflow_instance_id.clone(),
+            node_id: req.node_id.clone(),
+            parent_task_instance_id: Some(node.task_instance.id.clone()),
+            item_index,
+        };
+
+        handler
+            .dispatcher
+            .dispatch_task(ExecuteTaskJob {
+                task_instance_id: cid.clone(),
+                tenant_id: auth.tenant_id.clone(),
+                caller_context: Some(caller_context),
+            })
+            .await
+            .map_err(|e| {
+                error!(workflow_instance_id = %id, child_task_id = %cid, error = %e, "failed to dispatch child task retry");
+                ApiError::internal(e.to_string())
+            })?;
+
+        info!(workflow_instance_id = %id, node_id = %req.node_id, child_task_id = %cid, "retry-node: container child re-dispatched");
+    } else {
+        handler
+            .dispatcher
+            .dispatch_workflow(ExecuteWorkflowJob {
+                workflow_instance_id: updated.workflow_instance_id.clone(),
+                tenant_id: auth.tenant_id.clone(),
+                event: WorkflowEvent::Start,
+            })
+            .await
+            .map_err(|e| {
+                error!(workflow_instance_id = %id, error = %e, "failed to dispatch Start after retry");
+                ApiError::internal(e.to_string())
+            })?;
+
+        info!(workflow_instance_id = %id, node_id = %req.node_id, "retry-node: atomic node retried and Start dispatched");
+    }
+
+    Ok(Json(Response::success(updated)))
 }
 
 async fn resume_instance(

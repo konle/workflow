@@ -61,12 +61,12 @@ export const workflowApi = {
   cancelInstance: (id: string) =>
     request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/cancel`),
 
-  retryInstance: (id: string) =>
-    request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/retry`),
-
   resumeInstance: (id: string) =>
     request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/resume`),
 
   skipNode: (id: string, body: { node_id: string; child_task_id?: string; output: Record<string, unknown> }) =>
     request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/skip-node`, body),
+
+  retryNode: (id: string, body: { node_id: string; child_task_id?: string }) =>
+    request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/retry-node`, body),
 }

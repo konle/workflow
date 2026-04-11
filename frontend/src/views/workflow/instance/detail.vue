@@ -4,7 +4,7 @@
       <template #extra>
         <a-space>
           <a-button v-if="instance?.status === 'Pending' && canExecute" type="primary" @click="handleExecute">执行</a-button>
-          <a-button v-if="instance?.status === 'Failed' && canExecute" @click="handleRetry">重试</a-button>
+          <a-button v-if="canRetryNode && canExecute" @click="handleRetry">重试</a-button>
           <a-button v-if="instance?.status === 'Suspended' && canExecute" @click="handleResume">恢复</a-button>
           <a-button v-if="['Failed','Suspended'].includes(instance?.status || '') && canExecute" status="danger" @click="handleCancel">取消</a-button>
           <a-button v-if="canSkipNode" @click="openSkipModal">跳过当前节点</a-button>
@@ -82,14 +82,12 @@
                       <a-tag :color="childStatusColor(record.status)">{{ record.status }}</a-tag>
                     </template>
                   </a-table-column>
-                  <a-table-column title="操作" :width="60">
+                  <a-table-column title="操作" :width="120">
                     <template #cell="{ record }">
-                      <a-button
-                        v-if="record.status === 'Failed' && canExecute"
-                        type="text"
-                        size="mini"
-                        @click="openChildSkipModal(record.id)"
-                      >跳过</a-button>
+                      <a-space v-if="record.status === 'Failed' && canExecute">
+                        <a-button type="text" size="mini" @click="handleChildRetry(record.id)">重试</a-button>
+                        <a-button type="text" size="mini" @click="openChildSkipModal(record.id)">跳过</a-button>
+                      </a-space>
                     </template>
                   </a-table-column>
                 </template>
@@ -167,6 +165,16 @@ const canSkipNode = computed(() => {
   if (!n) return false
   if (n.status !== 'Failed' && n.status !== 'Suspended') return false
   if (UNSKIPPABLE_TYPES.has(n.node_type)) return false
+  return true
+})
+
+const canRetryNode = computed(() => {
+  if (!canExecute.value || !instance.value) return false
+  if (instance.value.status !== 'Failed') return false
+  const cur = instance.value.current_node
+  const n = instance.value.nodes.find(x => x.node_id === cur)
+  if (!n || n.status !== 'Failed') return false
+  if (CONTAINER_TYPES.has(n.node_type)) return false
   return true
 })
 
@@ -269,7 +277,8 @@ async function handleExecute() {
 }
 
 async function handleRetry() {
-  await workflowApi.retryInstance(instanceId)
+  if (!instance.value) return
+  await workflowApi.retryNode(instanceId, { node_id: instance.value.current_node })
   Notification.success({ content: '已重试' })
   fetchInstance()
 }
@@ -381,6 +390,20 @@ function childStatusColor(status: string): string {
     case 'Skipped': return 'gray'
     case 'Running': return 'blue'
     default: return 'gray'
+  }
+}
+
+async function handleChildRetry(childTaskId: string) {
+  if (!instance.value || !selectedNode.value) return
+  try {
+    await workflowApi.retryNode(instanceId, {
+      node_id: selectedNode.value.node_id,
+      child_task_id: childTaskId,
+    })
+    Notification.success({ content: '已重试子任务' })
+    fetchInstance()
+  } catch (e: any) {
+    Notification.error({ content: e?.message || '重试失败' })
   }
 }
 

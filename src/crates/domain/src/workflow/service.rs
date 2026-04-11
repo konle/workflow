@@ -300,9 +300,8 @@ impl WorkflowInstanceService {
         ).await
     }
 
-    /// Failed -> Pending (user chooses to retry).
-    /// Also resets the current (failed) node back to Pending so the
-    /// execution loop will re-execute it instead of short-circuiting.
+    /// Deprecated: use `retry_workflow_node` instead (which handles both atomic and container nodes).
+    #[deprecated(note = "use retry_workflow_node instead")]
     pub async fn retry_instance(
         &self,
         workflow_instance_id: &str,
@@ -504,6 +503,176 @@ impl WorkflowInstanceService {
                 inst.status
             ));
         }
+        inst.status = WorkflowInstanceStatus::Pending;
+        inst.updated_at = Utc::now();
+
+        self.save_workflow_instance(&inst)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        self.get_workflow_instance(workflow_instance_id.to_string())
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    // ── Retry node (symmetric to skip_workflow_node) ──
+
+    /// Retry the current node or a specific container child task.
+    /// - `child_task_id = None` → atomic node retry (Pending + dispatch Start)
+    /// - `child_task_id = Some(id)` → container child retry (remove from processed_callbacks, CAS reset task_instance, dispatch task)
+    pub async fn retry_workflow_node(
+        &self,
+        tenant_id: &str,
+        workflow_instance_id: &str,
+        node_id: &str,
+        child_task_id: Option<String>,
+    ) -> Result<WorkflowInstanceEntity, String> {
+        let mut inst = self
+            .get_workflow_instance_scoped(tenant_id, workflow_instance_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if inst.get_current_node() != node_id {
+            return Err("node_id must match current_node".to_string());
+        }
+
+        let idx = inst
+            .nodes
+            .iter()
+            .position(|n| n.node_id == node_id)
+            .ok_or_else(|| format!("node not found: {}", node_id))?;
+
+        let node = &inst.nodes[idx];
+        let is_container = matches!(
+            node.node_type,
+            TaskType::Parallel | TaskType::ForkJoin
+        );
+
+        if matches!(node.node_type, TaskType::SubWorkflow) {
+            return Err(
+                "SubWorkflow nodes cannot be retried directly; retry the failed node inside the child workflow instance instead".to_string(),
+            );
+        }
+
+        if is_container {
+            let cid = child_task_id.as_deref().ok_or_else(|| {
+                "child_task_id is required when retrying a Parallel/ForkJoin child task".to_string()
+            })?;
+
+            let prefix = format!("{}-{}-", workflow_instance_id, node_id);
+            if !cid.starts_with(&prefix) {
+                return Err(format!(
+                    "child_task_id '{}' does not belong to container node '{}'",
+                    cid, node_id
+                ));
+            }
+
+            if !matches!(
+                inst.status,
+                WorkflowInstanceStatus::Failed | WorkflowInstanceStatus::Await
+            ) {
+                return Err(format!(
+                    "workflow instance must be Failed or Await to retry container child, got {:?}",
+                    inst.status
+                ));
+            }
+
+            let state = inst.nodes[idx]
+                .task_instance
+                .output
+                .as_ref()
+                .ok_or_else(|| "container node has no output state".to_string())?;
+
+            let child_status = state
+                .get("results")
+                .and_then(|r| r.get(cid))
+                .and_then(|e| e.get("status"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            if child_status != "Failed" {
+                return Err(format!(
+                    "child_task_id '{}' status is '{}', only Failed children can be retried",
+                    cid, child_status
+                ));
+            }
+
+            // Update container output state
+            let state = inst.nodes[idx]
+                .task_instance
+                .output
+                .as_mut()
+                .unwrap();
+
+            // Remove from processed_callbacks
+            if let Some(arr) = state.get_mut("processed_callbacks").and_then(|v| v.as_array_mut()) {
+                arr.retain(|v| v.as_str() != Some(cid));
+            }
+
+            // Decrement failed_count
+            if let Some(fc) = state.get_mut("failed_count").and_then(|v| v.as_u64()) {
+                state["failed_count"] = serde_json::json!(fc.saturating_sub(1));
+            }
+
+            // Reset results entry to null (pending re-dispatch)
+            if let Some(results) = state.get_mut("results").and_then(|r| r.as_object_mut()) {
+                results.insert(cid.to_string(), serde_json::json!(null));
+            }
+
+            // CAS reset independent task_instance: Failed → Pending
+            if let Err(e) = self.task_instance_svc.retry_instance(cid).await {
+                warn!(child_task_id = %cid, error = %e, "failed to CAS reset task_instance for retry");
+                return Err(format!("failed to reset task_instance status: {}", e));
+            }
+            // Clear task_instance output/error but preserve input (resolved HTTP snapshot)
+            if let Ok(mut ti) = self.task_instance_svc.get_task_instance_entity(cid.to_string()).await {
+                ti.output = None;
+                ti.error_message = None;
+                let _ = self.task_instance_svc.update_task_instance_entity(ti).await;
+            }
+
+            // Transition workflow: Failed → Await
+            if inst.status == WorkflowInstanceStatus::Failed {
+                inst.status = WorkflowInstanceStatus::Await;
+            }
+            inst.updated_at = Utc::now();
+            self.save_workflow_instance(&inst)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            return self
+                .get_workflow_instance(workflow_instance_id.to_string())
+                .await
+                .map_err(|e| e.to_string());
+        }
+
+        // ── ordinary (atomic) node retry ──
+
+        if !matches!(inst.status, WorkflowInstanceStatus::Failed) {
+            return Err(format!(
+                "workflow instance must be Failed to retry atomic node, got {:?}",
+                inst.status
+            ));
+        }
+
+        if !matches!(node.status, NodeExecutionStatus::Failed) {
+            return Err(format!(
+                "node must be Failed to retry, got {:?}",
+                node.status
+            ));
+        }
+
+        // CAS reset independent task_instance: Failed → Pending
+        let task_id = inst.nodes[idx].task_instance.task_instance_id.clone();
+        if let Err(e) = self.task_instance_svc.retry_instance(&task_id).await {
+            warn!(task_instance_id = %task_id, error = %e, "failed to CAS reset task_instance for retry");
+        }
+
+        inst.nodes[idx].status = NodeExecutionStatus::Pending;
+        inst.nodes[idx].error_message = None;
+        inst.nodes[idx].task_instance.output = None;
+        inst.nodes[idx].task_instance.error_message = None;
+        inst.nodes[idx].updated_at = Utc::now();
+
         inst.status = WorkflowInstanceStatus::Pending;
         inst.updated_at = Utc::now();
 

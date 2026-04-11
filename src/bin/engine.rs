@@ -2,7 +2,7 @@ use std::sync::Arc;
 use apalis::prelude::*;
 use apalis_redis::RedisStorage;
 use clap::Parser;
-use tracing::{info, error};
+use tracing::{info, warn, error};
 use domain::plugin::manager::PluginManager;
 use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob};
 use domain::sweeper::{Sweeper, SweeperConfig};
@@ -43,16 +43,18 @@ async fn handle_task_job(
 ) -> Result<(), std::io::Error> {
     let manager = &ctx.0;
     let task_manager = &ctx.1;
+    let task_svc = task_manager.task_instance_svc();
     info!(task_instance_id = %job.task_instance_id, "processing task job");
 
-    let mut task_instance_entity = task_manager
-        .task_instance_svc()
-        .get_task_instance_entity(job.task_instance_id.clone())
-        .await
-        .map_err(|e| {
-            error!(task_instance_id = %job.task_instance_id, error = %e, "failed to load task instance");
-            std::io::Error::other(e)
-        })?;
+    // CAS claim: Pending → Running (only one worker can succeed)
+    let task_instance_entity = match task_svc.submit_instance(&job.task_instance_id).await {
+        Ok(inst) => inst,
+        Err(e) => {
+            warn!(task_instance_id = %job.task_instance_id, error = %e,
+                "task instance not claimable (already running or terminal), skipping");
+            return Ok(());
+        }
+    };
 
     let exec_result = match task_manager.execute_task(&task_instance_entity).await {
         Ok(r) => r,
@@ -64,11 +66,12 @@ async fn handle_task_job(
                 "task execution failed"
             );
 
-            task_instance_entity.task_status = domain::shared::workflow::TaskInstanceStatus::Failed;
-            task_instance_entity.error_message = Some(e.to_string());
-            let _ = task_manager.task_instance_svc()
-                .update_task_instance_entity(task_instance_entity)
-                .await;
+            // CAS: Running → Failed
+            let _ = task_svc.fail_instance(&job.task_instance_id).await;
+            if let Ok(mut ti) = task_svc.get_task_instance_entity(job.task_instance_id.clone()).await {
+                ti.error_message = Some(e.to_string());
+                let _ = task_svc.update_task_instance_entity(ti).await;
+            }
 
             if let Some(caller) = job.caller_context {
                 let _ = manager
@@ -92,25 +95,29 @@ async fn handle_task_job(
         }
     };
 
-    task_instance_entity.task_status = match exec_result.status {
-        domain::workflow::entity::workflow_definition::NodeExecutionStatus::Success => domain::shared::workflow::TaskInstanceStatus::Completed,
-        domain::workflow::entity::workflow_definition::NodeExecutionStatus::Failed => domain::shared::workflow::TaskInstanceStatus::Failed,
-        _ => domain::shared::workflow::TaskInstanceStatus::Pending,
+    // CAS finalize: Running → Completed or Running → Failed
+    let final_status = match exec_result.status {
+        domain::workflow::entity::workflow_definition::NodeExecutionStatus::Success => {
+            let _ = task_svc.complete_instance(&job.task_instance_id).await;
+            domain::shared::workflow::TaskInstanceStatus::Completed
+        }
+        _ => {
+            let _ = task_svc.fail_instance(&job.task_instance_id).await;
+            domain::shared::workflow::TaskInstanceStatus::Failed
+        }
     };
-    task_instance_entity.output = exec_result.output.clone();
-    task_instance_entity.input = exec_result.input.clone();
-    task_instance_entity.error_message = exec_result.error_message.clone();
 
-    task_manager.task_instance_svc().update_task_instance_entity(task_instance_entity.clone())
-        .await
-        .map_err(|e| {
-            error!(task_instance_id = %job.task_instance_id, error = %e, "failed to save task instance");
-            std::io::Error::other(e)
-        })?;
+    // Write output/error fields (non-status update)
+    if let Ok(mut entity) = task_svc.get_task_instance_entity(job.task_instance_id.clone()).await {
+        entity.output = exec_result.output.clone();
+        entity.input = exec_result.input.clone();
+        entity.error_message = exec_result.error_message.clone();
+        let _ = task_svc.update_task_instance_entity(entity).await;
+    }
 
     info!(
         task_instance_id = %job.task_instance_id,
-        status = ?task_instance_entity.task_status,
+        status = ?final_status,
         "task completed"
     );
 

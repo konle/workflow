@@ -11,6 +11,13 @@ pub struct SkipWorkflowNodeRequest {
 }
 
 #[derive(Deserialize)]
+pub struct RetryWorkflowNodeRequest {
+    pub node_id: String,
+    #[serde(default)]
+    pub child_task_id: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct CreateWorkflowInstanceRequest {
     pub workflow_meta_id: String,
     pub version: u32,
