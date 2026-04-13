@@ -12,6 +12,7 @@
             <a-option value="Completed">Completed</a-option>
             <a-option value="Failed">Failed</a-option>
             <a-option value="Canceled">Canceled</a-option>
+            <a-option value="Skipped">Skipped</a-option>
           </a-select>
         </a-form-item>
         <a-form-item>

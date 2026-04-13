@@ -453,7 +453,7 @@ impl WorkflowInstanceService {
                     .map_err(|e| e.to_string())?;
             }
 
-            self.sync_task_instance_status(cid, &output).await;
+            self.mark_task_instance_skipped(cid, &output).await;
 
             return self
                 .get_workflow_instance(workflow_instance_id.to_string())
@@ -485,14 +485,14 @@ impl WorkflowInstanceService {
 
         inst.nodes[idx].status = NodeExecutionStatus::Skipped;
         inst.nodes[idx].task_instance.output = Some(output.clone());
-        inst.nodes[idx].task_instance.task_status = TaskInstanceStatus::Completed;
+        inst.nodes[idx].task_instance.task_status = TaskInstanceStatus::Skipped;
         inst.nodes[idx].task_instance.error_message = None;
         inst.nodes[idx].error_message = None;
         inst.nodes[idx].updated_at = Utc::now();
         inst.nodes[idx].task_instance.updated_at = Utc::now();
 
         let task_id = inst.nodes[idx].task_instance.task_instance_id.clone();
-        self.sync_task_instance_status(&task_id, &output).await;
+        self.mark_task_instance_skipped(&task_id, &output).await;
 
         if !inst
             .status
@@ -716,20 +716,23 @@ impl WorkflowInstanceService {
             .await
     }
 
-    async fn sync_task_instance_status(&self, task_instance_id: &str, output: &JsonValue) {
+    /// Mark the independent `task_instances` record as `Skipped` when the
+    /// workflow node is skipped. Sets the user-provided output and clears
+    /// the error so the record stays consistent with the embedded copy.
+    async fn mark_task_instance_skipped(&self, task_instance_id: &str, output: &JsonValue) {
         match self.task_instance_svc.get_task_instance_entity(task_instance_id.to_string()).await {
             Ok(mut task_inst) => {
-                task_inst.task_status = TaskInstanceStatus::Completed;
+                task_inst.task_status = TaskInstanceStatus::Skipped;
                 task_inst.output = Some(output.clone());
                 task_inst.error_message = None;
                 if let Err(e) = self.task_instance_svc.update_task_instance_entity(task_inst).await {
                     warn!(task_instance_id = %task_instance_id, error = %e,
-                        "failed to sync task_instance status after skip");
+                        "failed to mark task_instance as Skipped");
                 }
             }
             Err(e) => {
                 warn!(task_instance_id = %task_instance_id, error = %e,
-                    "task_instance not found for skip sync");
+                    "task_instance not found for skip mark");
             }
         }
     }

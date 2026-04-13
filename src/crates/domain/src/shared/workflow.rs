@@ -98,6 +98,7 @@ pub enum TaskInstanceStatus {
     Completed,
     Failed,
     Canceled,
+    Skipped,
 }
 impl Display for TaskInstanceStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -109,7 +110,7 @@ impl TaskInstanceStatus {
     /// State machine transition rules:
     ///   Pending   -> Running | Canceled
     ///   Running   -> Completed | Failed
-    ///   Failed    -> Pending (retry) | Canceled
+    ///   Failed    -> Pending (retry) | Canceled | Skipped
     ///   Completed -> (terminal)
     ///   Canceled  -> (terminal)
     pub fn can_transition_to(&self, target: &TaskInstanceStatus) -> bool {
@@ -121,11 +122,12 @@ impl TaskInstanceStatus {
                 | (TaskInstanceStatus::Running, TaskInstanceStatus::Failed)
                 | (TaskInstanceStatus::Failed, TaskInstanceStatus::Pending)
                 | (TaskInstanceStatus::Failed, TaskInstanceStatus::Canceled)
+                | (TaskInstanceStatus::Failed, TaskInstanceStatus::Skipped)
         )
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(self, TaskInstanceStatus::Completed | TaskInstanceStatus::Canceled)
+        matches!(self, TaskInstanceStatus::Completed | TaskInstanceStatus::Canceled | TaskInstanceStatus::Skipped)
     }
 }
 // 任务类型枚举 用于表示任务的类型 如http、grpc、审批等

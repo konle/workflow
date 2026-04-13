@@ -2,7 +2,7 @@ import type { JsonValue } from './common'
 
 export type TaskType = 'Http' | 'IfCondition' | 'ContextRewrite' | 'Parallel' | 'ForkJoin' | 'SubWorkflow' | 'Grpc' | 'Approval'
 export type TaskStatus = 'Draft' | 'Published'
-export type TaskInstanceStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Canceled'
+export type TaskInstanceStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Canceled' | 'Skipped'
 export type HttpMethod = 'Get' | 'Post' | 'Put' | 'Delete' | 'Head'
 export type ParallelMode = 'Rolling' | 'Batch'
 export type MergeMode = 'Merge' | 'Replace'

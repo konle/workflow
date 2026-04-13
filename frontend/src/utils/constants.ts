@@ -14,6 +14,7 @@ export const TASK_INSTANCE_STATUS_MAP: Record<string, { label: string; color: st
   Completed: { label: '已完成', color: 'green' },
   Failed: { label: '已失败', color: 'red' },
   Canceled: { label: '已取消', color: 'gray' },
+  Skipped: { label: '已跳过', color: 'orange' },
 }
 
 export const TEMPLATE_STATUS_MAP: Record<string, { label: string; color: string }> = {

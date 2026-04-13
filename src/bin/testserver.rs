@@ -68,12 +68,14 @@ struct CreateUserResponse {
 async fn create_user(Json(req): Json<CreateUserRequest>) -> Json<Response<CreateUserResponse>> {
     info!("create_user: {:?}", req);
     // 随机80% 失败
-    // if rand::rng().random_bool(0.8) {
-    //     return Json(Response::error(400, "failed to create user".to_string()));
-    // }
+    if rand::rng().random_bool(0.8) {
+        error!("failed to create user");
+        return Json(Response::error(400, "failed to create user".to_string()));
+    }
+    error!("created user");
     Json(Response::success(CreateUserResponse {
         id: "123".to_string(),
-        name: req.name,
-        email: req.email,
+        name: req.name.clone(),
+        email: req.email.clone(),
     }))
 }
