@@ -8,7 +8,7 @@ use crate::shared::job::{ExecuteTaskJob, WorkflowCallerContext};
 use crate::workflow::entity::workflow_definition::{
     NodeExecutionStatus, WorkflowInstanceEntity, WorkflowNodeInstanceEntity,
 };
-use crate::task::entity::TaskTemplate;
+use crate::task::entity::task_definition::TaskTemplate;
 
 pub struct ParallelPlugin {}
 
@@ -246,12 +246,12 @@ impl PluginInterface for ParallelPlugin {
         } else {
             let mut jobs_to_dispatch = Vec::new();
             
-            if mode == crate::task::entity::ParallelMode::Rolling {
+            if mode == crate::task::entity::task_definition::ParallelMode::Rolling {
                 if dispatched_count < total_items {
                     jobs_to_dispatch.push(dispatched_count);
                     dispatched_count += 1;
                 }
-            } else if mode == crate::task::entity::ParallelMode::Batch {
+            } else if mode == crate::task::entity::task_definition::ParallelMode::Batch {
                 if success_count + failed_count == dispatched_count {
                     let end = std::cmp::min(dispatched_count + concurrency, total_items);
                     for i in dispatched_count..end {
@@ -301,7 +301,7 @@ mod tests {
     use super::*;
     use crate::plugin::interface::{PluginExecutor, PluginInterface};
     use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
-    use crate::task::entity::{
+    use crate::task::entity::task_definition::{
         HttpMethod, ParallelMode, ParallelTemplate, TaskHttpTemplate, TaskTemplate,
     };
     use chrono::Utc;
@@ -375,7 +375,7 @@ mod tests {
         WorkflowNodeInstanceEntity {
             node_id: node_id.into(),
             node_type: TaskType::Parallel,
-            task_instance: crate::task::entity::TaskInstanceEntity {
+            task_instance: crate::task::entity::task_definition::TaskInstanceEntity {
                 id: format!("ti-{}", node_id),
                 tenant_id: "t1".into(),
                 task_id: "".into(),

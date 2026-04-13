@@ -12,7 +12,7 @@ use super::PluginManager;
 use crate::plugin::interface::{ExecutionResult, PluginExecutor};
 use crate::shared::job::{ExecuteWorkflowJob, WorkflowEvent};
 use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
-use crate::task::entity::TaskTemplate;
+use crate::task::entity::task_definition::TaskTemplate;
 use crate::task::http_template_resolve::resolved_http_request_snapshot;
 use crate::workflow::entity::workflow_definition::{NodeExecutionStatus, WorkflowInstanceEntity};
 use crate::workflow::resolution_context::augment_merged_context_with_nodes;

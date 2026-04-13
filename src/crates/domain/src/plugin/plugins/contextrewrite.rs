@@ -5,7 +5,7 @@ use tracing::{debug, error};
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::plugin::rhai_engine;
 use crate::shared::workflow::TaskType;
-use crate::task::entity::{MergeMode, TaskTemplate};
+use crate::task::entity::task_definition::{MergeMode, TaskTemplate};
 use crate::workflow::entity::workflow_definition::{WorkflowInstanceEntity, WorkflowNodeInstanceEntity};
 
 pub struct ContextRewritePlugin {}

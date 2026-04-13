@@ -56,7 +56,7 @@ pub fn augment_merged_context_with_nodes(
 mod tests {
     use super::*;
     use crate::shared::workflow::TaskType;
-    use crate::task::entity::TaskInstanceEntity;
+    use crate::task::entity::task_definition::TaskInstanceEntity;
     use crate::workflow::entity::workflow_definition::WorkflowNodeInstanceEntity;
     use chrono::Utc;
 
@@ -68,10 +68,10 @@ mod tests {
             task_id: "".into(),
             task_name: "".into(),
             task_type: TaskType::Http,
-            task_template: crate::task::entity::TaskTemplate::Http(
-                crate::task::entity::TaskHttpTemplate {
+            task_template: crate::task::entity::task_definition::TaskTemplate::Http(
+                crate::task::entity::task_definition::TaskHttpTemplate {
                     url: "/".into(),
-                    method: crate::task::entity::HttpMethod::Get,
+                    method: crate::task::entity::task_definition::HttpMethod::Get,
                     headers: vec![],
                     body: vec![],
                     form: vec![],

@@ -1,7 +1,36 @@
 <template>
   <div>
     <a-card title="任务实例">
-      <a-table :data="list" :columns="columns" :loading="loading" row-key="id">
+      <a-form :model="filters" layout="inline" class="filter-form">
+        <a-form-item label="任务ID">
+          <a-input v-model="filters.task_id" allow-clear placeholder="可选" style="width: 200px" />
+        </a-form-item>
+        <a-form-item label="状态">
+          <a-select v-model="filters.status" allow-clear placeholder="全部" style="width: 140px">
+            <a-option value="Pending">Pending</a-option>
+            <a-option value="Running">Running</a-option>
+            <a-option value="Completed">Completed</a-option>
+            <a-option value="Failed">Failed</a-option>
+            <a-option value="Canceled">Canceled</a-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item>
+          <a-space>
+            <a-button type="primary" @click="onSearch">查询</a-button>
+            <a-button @click="onResetFilters">重置</a-button>
+          </a-space>
+        </a-form-item>
+      </a-form>
+
+      <a-table
+        :data="list"
+        :columns="columns"
+        :loading="loading"
+        row-key="id"
+        :pagination="pagination"
+        @page-change="onPageChange"
+        @page-size-change="onPageSizeChange"
+      >
         <template #task_type="{ record }">
           <a-tag :color="TASK_TYPE_MAP[record.task_type]?.color">{{ TASK_TYPE_MAP[record.task_type]?.label || record.task_type }}</a-tag>
         </template>
@@ -24,18 +53,35 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { taskInstanceApi } from '../../../api/task-instance'
 import { usePermission } from '../../../composables/use-permission'
 import { TASK_TYPE_MAP, TASK_INSTANCE_STATUS_MAP } from '../../../utils/constants'
 import { formatDate, formatDuration } from '../../../utils/format'
 import StatusTag from '../../../components/common/status-tag.vue'
 import { Notification } from '@arco-design/web-vue'
-import type { TaskInstanceEntity } from '../../../types/task'
+import type { TaskInstanceEntity, TaskInstanceStatus, ListTaskInstancesParams } from '../../../types/task'
 
 const { canExecute } = usePermission()
 const list = ref<TaskInstanceEntity[]>([])
 const loading = ref(false)
+
+const filters = reactive<{
+  task_id: string
+  status: TaskInstanceStatus | undefined
+}>({
+  task_id: '',
+  status: undefined,
+})
+
+const pagination = reactive({
+  current: 1,
+  pageSize: 10,
+  total: 0,
+  showTotal: true,
+  showPageSize: true,
+  pageSizeOptions: [10, 20, 50, 100],
+})
 
 const columns = [
   { title: '实例ID', dataIndex: 'task_instance_id', ellipsis: true, width: 200 },
@@ -47,12 +93,47 @@ const columns = [
   { title: '操作', slotName: 'action', width: 200 },
 ]
 
+function buildQueryParams(): ListTaskInstancesParams {
+  const p: ListTaskInstancesParams = {
+    page: pagination.current,
+    page_size: pagination.pageSize,
+  }
+  const tid = filters.task_id.trim()
+  if (tid) p.task_id = tid
+  if (filters.status) p.status = filters.status
+  return p
+}
+
 async function fetchList() {
   loading.value = true
   try {
-    const res = await taskInstanceApi.list()
-    list.value = res.data
-  } catch {} finally { loading.value = false }
+    const res = await taskInstanceApi.list(buildQueryParams())
+    list.value = res.data.items
+    pagination.total = Number(res.data.total)
+  } catch { /* interceptor */ } finally { loading.value = false }
+}
+
+function onPageChange(page: number) {
+  pagination.current = page
+  fetchList()
+}
+
+function onPageSizeChange(size: number) {
+  pagination.pageSize = size
+  pagination.current = 1
+  fetchList()
+}
+
+function onSearch() {
+  pagination.current = 1
+  fetchList()
+}
+
+function onResetFilters() {
+  filters.task_id = ''
+  filters.status = undefined
+  pagination.current = 1
+  fetchList()
 }
 
 async function handleExecute(id: string) {
@@ -75,3 +156,9 @@ async function handleCancel(id: string) {
 
 onMounted(fetchList)
 </script>
+
+<style scoped>
+.filter-form {
+  margin-bottom: 16px;
+}
+</style>

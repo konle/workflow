@@ -5,7 +5,7 @@
 use super::PluginManager;
 use crate::shared::job::ExecuteTaskJob;
 use crate::shared::workflow::TaskInstanceStatus;
-use crate::task::entity::{TaskInstanceEntity, TaskTemplate};
+use crate::task::entity::task_definition::{TaskInstanceEntity, TaskTemplate};
 use crate::workflow::entity::workflow_definition::WorkflowInstanceEntity;
 use tracing::warn;
 

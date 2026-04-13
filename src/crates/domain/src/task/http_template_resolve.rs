@@ -11,7 +11,7 @@
 //!   literal; only `Variable` runs `{{path}}` template substitution (including mixed text).
 
 use crate::shared::form::{Form, FormValue, FormValueType};
-use crate::task::entity::{HttpMethod, TaskHttpTemplate};
+use crate::task::entity::task_definition::{HttpMethod, TaskHttpTemplate};
 use serde_json::{json, Map, Value as JsonValue};
 
 fn get_by_path(ctx: &JsonValue, path: &str) -> Option<JsonValue> {
@@ -196,7 +196,7 @@ pub fn parse_method_str(s: &str) -> HttpMethod {
 
 /// Interpret `task_instance.input` as a resolved snapshot, or build from template + `ctx`.
 pub fn effective_http_request(
-    task_instance: &crate::task::entity::TaskInstanceEntity,
+    task_instance: &crate::task::entity::task_definition::TaskInstanceEntity,
     config: &TaskHttpTemplate,
     fallback_ctx: &JsonValue,
 ) -> (JsonValue, String, HttpMethod, serde_json::Map<String, JsonValue>, Option<JsonValue>) {
@@ -247,7 +247,7 @@ pub fn effective_http_request(
 mod tests {
     use super::*;
     use crate::shared::form::{Form, FormValue, FormValueType};
-    use crate::task::entity::{HttpMethod, TaskHttpTemplate};
+    use crate::task::entity::task_definition::{HttpMethod, TaskHttpTemplate};
 
     fn form(key: &str, value: FormValue, value_type: FormValueType) -> Form {
         Form {

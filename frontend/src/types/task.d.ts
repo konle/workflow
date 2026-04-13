@@ -136,3 +136,12 @@ export interface TaskInstanceEntity {
   execution_duration: number | null
   caller_context: WorkflowCallerContext | null
 }
+
+export interface ListTaskInstancesParams {
+  page?: number
+  page_size?: number
+  task_id?: string
+  status?: TaskInstanceStatus
+  sort_by?: string
+  sort_order?: string
+}

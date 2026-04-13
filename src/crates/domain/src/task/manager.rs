@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tracing::{info, error};
 use crate::shared::workflow::TaskType;
 use crate::task::interface::{TaskExecutionResult, TaskExecutor};
-use crate::task::entity::TaskInstanceEntity;
+use crate::task::entity::task_definition::TaskInstanceEntity;
 use crate::task::service::TaskInstanceService;
 
 pub struct TaskManager {

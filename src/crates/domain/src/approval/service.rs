@@ -6,7 +6,7 @@ use crate::approval::entity::{
     ApprovalDecision, ApprovalInstanceEntity, ApprovalStatus, Decision,
 };
 use crate::approval::repository::{ApprovalRepository, RepositoryError};
-use crate::task::entity::{ApprovalMode, ApprovalTemplate, ApproverRule};
+use crate::task::entity::task_definition::{ApprovalMode, ApprovalTemplate, ApproverRule};
 use crate::user::repository::UserTenantRoleRepository;
 
 #[derive(Clone)]

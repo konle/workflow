@@ -1,6 +1,8 @@
 use async_trait::async_trait;
+use common::pagination::PaginatedData;
 use crate::shared::workflow::TaskInstanceStatus;
-use crate::task::entity::{TaskEntity, TaskInstanceEntity};
+use crate::task::entity::query::TaskInstanceQuery;
+use crate::task::entity::task_definition::{TaskEntity, TaskInstanceEntity};
 use std::error::Error;
 
 pub type RepositoryError = Box<dyn Error + Send + Sync>;
@@ -21,7 +23,7 @@ pub trait TaskInstanceEntityRepository: Send + Sync {
     async fn create_task_instance_entity(&self, task_instance_entity: TaskInstanceEntity) -> Result<TaskInstanceEntity, RepositoryError>;
     async fn get_task_instance_entity(&self, id: String) -> Result<TaskInstanceEntity, RepositoryError>;
     async fn get_task_instance_entity_scoped(&self, tenant_id: &str, id: &str) -> Result<TaskInstanceEntity, RepositoryError>;
-    async fn list_task_instance_entities(&self, tenant_id: &str) -> Result<Vec<TaskInstanceEntity>, RepositoryError>;
+    async fn list_task_instance_entities(&self, query: &TaskInstanceQuery) -> Result<PaginatedData<TaskInstanceEntity>, RepositoryError>;
     async fn update_task_instance_entity(&self, task_instance_entity: TaskInstanceEntity) -> Result<TaskInstanceEntity, RepositoryError>;
 
     /// CAS-style atomic status transition.

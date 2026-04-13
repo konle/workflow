@@ -5,7 +5,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 use crate::shared::job::WorkflowCallerContext;
 use crate::shared::workflow::{TaskInstanceStatus, TaskType, WorkflowInstanceStatus, WorkflowStatus};
-use crate::task::entity::TaskInstanceEntity;
+use crate::task::entity::task_definition::TaskInstanceEntity;
 use crate::task::service::TaskInstanceService;
 use crate::workflow::entity::query::WorkflowInstanceQuery;
 use crate::workflow::entity::workflow_definition::{

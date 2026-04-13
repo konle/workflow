@@ -5,7 +5,7 @@ use axum::{
     Json, Router,
 };
 use domain::shared::workflow::{TaskStatus, TaskType};
-use domain::task::entity::{TaskEntity, TaskTemplate};
+use domain::task::entity::task_definition::{TaskEntity, TaskTemplate};
 use domain::task::service::{CreateTaskCommand, UpdateTaskCommand, TaskService};
 use domain::user::entity::Permission;
 use crate::error::ApiError;

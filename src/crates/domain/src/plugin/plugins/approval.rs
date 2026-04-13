@@ -5,7 +5,7 @@ use crate::approval::entity::ApprovalStatus;
 use crate::approval::service::ApprovalService;
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::workflow::TaskType;
-use crate::task::entity::TaskTemplate;
+use crate::task::entity::task_definition::TaskTemplate;
 use crate::workflow::entity::workflow_definition::{
     NodeExecutionStatus, WorkflowInstanceEntity, WorkflowNodeInstanceEntity,
 };

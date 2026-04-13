@@ -217,7 +217,7 @@ impl Sweeper {
 
         let task_template = &node.task_instance.task_template;
 
-        use crate::task::entity::TaskTemplate;
+        use crate::task::entity::task_definition::TaskTemplate;
 
         match task_template {
             TaskTemplate::Parallel(_) | TaskTemplate::ForkJoin(_) => {

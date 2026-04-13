@@ -5,7 +5,7 @@ use tracing::{debug, warn, error};
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::job::{ExecuteTaskJob, WorkflowCallerContext};
 use crate::shared::workflow::TaskType;
-use crate::task::entity::{ParallelMode, TaskTemplate};
+use crate::task::entity::task_definition::{ParallelMode, TaskTemplate};
 use crate::workflow::entity::workflow_definition::{
     NodeExecutionStatus, WorkflowInstanceEntity, WorkflowNodeInstanceEntity,
 };
@@ -18,7 +18,7 @@ impl ForkJoinPlugin {
     }
 
     fn resolve_task_key_by_child_id<'a>(
-        template: &'a crate::task::entity::ForkJoinTemplate,
+        template: &'a crate::task::entity::task_definition::ForkJoinTemplate,
         child_task_id: &str,
     ) -> Option<&'a str> {
         let suffix = child_task_id.rsplit('-').next()?;
@@ -315,7 +315,7 @@ mod tests {
     use super::*;
     use crate::plugin::interface::{PluginExecutor, PluginInterface};
     use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
-    use crate::task::entity::{
+    use crate::task::entity::task_definition::{
         ForkJoinTaskItem, ForkJoinTemplate, HttpMethod, TaskHttpTemplate, TaskTemplate,
     };
     use chrono::Utc;
@@ -390,7 +390,7 @@ mod tests {
         WorkflowNodeInstanceEntity {
             node_id: node_id.into(),
             node_type: TaskType::ForkJoin,
-            task_instance: crate::task::entity::TaskInstanceEntity {
+            task_instance: crate::task::entity::task_definition::TaskInstanceEntity {
                 id: format!("ti-{}", node_id),
                 tenant_id: "t1".into(),
                 task_id: "".into(),

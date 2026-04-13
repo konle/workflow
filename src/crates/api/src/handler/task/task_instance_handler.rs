@@ -1,18 +1,16 @@
 use axum::{
-    extract::{Extension, Path, State},
-    middleware::from_fn,
-    routing::{get, post},
-    Json, Router,
+    Json, Router, extract::{Extension, Path, Query, State}, middleware::from_fn, routing::{get, post}
 };
 use chrono::Utc;
+use common::pagination::PaginatedData;
 use tracing::{info, error};
 use uuid::Uuid;
-use domain::shared::job::{ExecuteTaskJob, TaskDispatcher};
+use domain::{shared::job::{ExecuteTaskJob, TaskDispatcher}, task::entity::query::TaskInstanceQuery};
 use domain::shared::workflow::TaskInstanceStatus;
-use domain::task::entity::TaskInstanceEntity;
+use domain::task::entity::task_definition::TaskInstanceEntity;
 use domain::task::service::{TaskService, TaskInstanceService};
 use domain::user::entity::Permission;
-use crate::error::ApiError;
+use crate::{error::ApiError, handler::task::task_instance_request::ListTaskInstancesRequest};
 use crate::middleware::auth::AuthContext;
 use crate::middleware::permission::require_permission;
 use crate::response::response::Response;
@@ -88,8 +86,12 @@ async fn create_task_instance(
 async fn list_task_instances(
     State(handler): State<Arc<TaskInstanceHandler>>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Response<Vec<TaskInstanceEntity>>>, ApiError> {
-    let result = handler.service.list_task_instance_entities(&auth.tenant_id).await?;
+    Query(req): Query<ListTaskInstancesRequest>,
+) -> Result<Json<Response<PaginatedData<TaskInstanceEntity>>>, ApiError> {
+    let mut query = TaskInstanceQuery::from(req);
+    query.tenant_id = auth.tenant_id.clone();
+    info!("list_task_instances query: {:?} tenant_id: {}", query, auth.tenant_id);
+    let result = handler.service.list_task_instance_entities(&query).await?;
     Ok(Json(Response::success(result)))
 }
 

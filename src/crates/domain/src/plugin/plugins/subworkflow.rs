@@ -4,7 +4,7 @@ use tracing::{info, error};
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::job::{ExecuteWorkflowJob, WorkflowCallerContext, WorkflowEvent};
 use crate::shared::workflow::TaskType;
-use crate::task::entity::TaskTemplate;
+use crate::task::entity::task_definition::TaskTemplate;
 use crate::workflow::entity::workflow_definition::{WorkflowInstanceEntity, WorkflowNodeInstanceEntity};
 use crate::workflow::service::{WorkflowDefinitionService, WorkflowInstanceService};
 

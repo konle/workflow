@@ -4,7 +4,7 @@ use crate::shared::form::Form;
 use crate::shared::job::WorkflowCallerContext;
 use crate::shared::workflow::{TaskType, WorkflowInstanceStatus};
 use crate::shared::workflow::WorkflowStatus;
-use crate::task::entity::{TaskTemplate, TaskInstanceEntity};
+use crate::task::entity::task_definition::{TaskTemplate, TaskInstanceEntity};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;

@@ -1,7 +1,9 @@
 use chrono::Utc;
+use common::pagination::PaginatedData;
 use uuid::Uuid;
 use crate::shared::workflow::{TaskInstanceStatus, TaskStatus, TaskType};
-use crate::task::entity::{TaskEntity, TaskInstanceEntity, TaskTemplate};
+use crate::task::entity::query::TaskInstanceQuery;
+use crate::task::entity::task_definition::{TaskEntity, TaskInstanceEntity, TaskTemplate};
 use crate::task::repository::{TaskEntityRepository, TaskInstanceEntityRepository, RepositoryError};
 use std::sync::Arc;
 
@@ -122,8 +124,8 @@ impl TaskInstanceService {
         self.task_instance_entity_repository.get_task_instance_entity_scoped(tenant_id, id).await
     }
 
-    pub async fn list_task_instance_entities(&self, tenant_id: &str) -> Result<Vec<TaskInstanceEntity>, RepositoryError> {
-        self.task_instance_entity_repository.list_task_instance_entities(tenant_id).await
+    pub async fn list_task_instance_entities(&self, query: &TaskInstanceQuery) -> Result<PaginatedData<TaskInstanceEntity>, RepositoryError> {
+        self.task_instance_entity_repository.list_task_instance_entities(query).await
     }
 
     pub async fn update_task_instance_entity(&self, task_instance_entity: TaskInstanceEntity) -> Result<TaskInstanceEntity, RepositoryError> {
