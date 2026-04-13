@@ -156,6 +156,51 @@
       <a-tab-pane key="variables" title="模板变量">
         <meta-variable-list v-if="metaId" :meta-id="metaId" />
       </a-tab-pane>
+
+      <a-tab-pane key="instances" title="实例列表">
+        <a-card>
+          <a-form :model="instanceFilters" layout="inline" class="filter-form">
+            <a-form-item label="版本">
+              <a-input-number v-model="instanceFilters.version" :min="1" allow-clear placeholder="全部" />
+            </a-form-item>
+            <a-form-item label="状态">
+              <a-select v-model="instanceFilters.status" allow-clear placeholder="全部" style="width: 140px">
+                <a-option value="Pending">Pending</a-option>
+                <a-option value="Running">Running</a-option>
+                <a-option value="Await">Await</a-option>
+                <a-option value="Completed">Completed</a-option>
+                <a-option value="Failed">Failed</a-option>
+                <a-option value="Canceled">Canceled</a-option>
+                <a-option value="Suspended">Suspended</a-option>
+              </a-select>
+            </a-form-item>
+            <a-form-item>
+              <a-space>
+                <a-button type="primary" @click="onSearchInstances">查询</a-button>
+                <a-button @click="onResetInstanceFilters">重置</a-button>
+              </a-space>
+            </a-form-item>
+          </a-form>
+
+          <a-table
+            :data="instances"
+            :columns="instanceColumns"
+            :loading="instancesLoading"
+            row-key="workflow_instance_id"
+            :pagination="instancePagination"
+            @page-change="onInstancePageChange"
+            @page-size-change="onInstancePageSizeChange"
+          >
+            <template #status="{ record }">
+              <status-tag :status="record.status" :map="WORKFLOW_INSTANCE_STATUS_MAP" />
+            </template>
+            <template #created_at="{ record }">{{ formatDate(record.created_at) }}</template>
+            <template #action="{ record }">
+              <a-button type="text" size="small" @click="$router.push(`/workflows/instances/${record.workflow_instance_id}`)">详情</a-button>
+            </template>
+          </a-table>
+        </a-card>
+      </a-tab-pane>
     </a-tabs>
   </div>
 </template>
@@ -165,11 +210,13 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { workflowApi } from '../../../api/workflow'
 import { usePermission } from '../../../composables/use-permission'
+import { WORKFLOW_INSTANCE_STATUS_MAP } from '../../../utils/constants'
 import { formatDate } from '../../../utils/format'
+import StatusTag from '../../../components/common/status-tag.vue'
 import { Notification } from '@arco-design/web-vue'
 import { IconDelete } from '@arco-design/web-vue/es/icon'
 import MetaVariableList from '../../variable/meta-list.vue'
-import type { WorkflowMetaEntity, WorkflowEntity, FormField, WorkflowStatus } from '../../../types/workflow'
+import type { WorkflowMetaEntity, WorkflowEntity, WorkflowInstanceEntity, FormField, WorkflowStatus, WorkflowInstanceStatus, ListWorkflowInstancesParams } from '../../../types/workflow'
 
 const route = useRoute()
 const router = useRouter()
@@ -274,10 +321,87 @@ function versionStatusLabel(status: WorkflowStatus): string {
 
 const versionsLoaded = ref(false)
 
+const instances = ref<WorkflowInstanceEntity[]>([])
+const instancesLoading = ref(false)
+const instancesLoaded = ref(false)
+
+const instanceFilters = reactive<{
+  version: number | undefined
+  status: WorkflowInstanceStatus | undefined
+}>({
+  version: undefined,
+  status: undefined,
+})
+
+const instancePagination = reactive({
+  current: 1,
+  pageSize: 10,
+  total: 0,
+  showTotal: true,
+  showPageSize: true,
+  pageSizeOptions: [10, 20, 50, 100],
+})
+
+const instanceColumns = [
+  { title: '实例ID', dataIndex: 'workflow_instance_id', ellipsis: true, width: 200 },
+  { title: '版本', dataIndex: 'workflow_version', width: 80 },
+  { title: '状态', slotName: 'status', width: 100 },
+  { title: '当前节点', dataIndex: 'current_node', ellipsis: true },
+  { title: '创建时间', slotName: 'created_at', width: 180 },
+  { title: '操作', slotName: 'action', width: 100 },
+]
+
+function buildInstanceParams(): ListWorkflowInstancesParams {
+  const p: ListWorkflowInstancesParams = {
+    workflow_meta_id: metaId,
+    page: instancePagination.current,
+    page_size: instancePagination.pageSize,
+  }
+  if (instanceFilters.version != null && instanceFilters.version > 0) p.version = instanceFilters.version
+  if (instanceFilters.status) p.status = instanceFilters.status
+  return p
+}
+
+async function fetchInstances() {
+  instancesLoading.value = true
+  try {
+    const res = await workflowApi.listInstances(buildInstanceParams())
+    instances.value = res.data.items
+    instancePagination.total = Number(res.data.total)
+  } catch {} finally { instancesLoading.value = false }
+}
+
+function onInstancePageChange(page: number) {
+  instancePagination.current = page
+  fetchInstances()
+}
+
+function onInstancePageSizeChange(size: number) {
+  instancePagination.pageSize = size
+  instancePagination.current = 1
+  fetchInstances()
+}
+
+function onSearchInstances() {
+  instancePagination.current = 1
+  fetchInstances()
+}
+
+function onResetInstanceFilters() {
+  instanceFilters.version = undefined
+  instanceFilters.status = undefined
+  instancePagination.current = 1
+  fetchInstances()
+}
+
 function handleTabChange(key: string) {
   if (key === 'versions' && !versionsLoaded.value) {
     versionsLoaded.value = true
     fetchVersions()
+  }
+  if (key === 'instances' && !instancesLoaded.value) {
+    instancesLoaded.value = true
+    fetchInstances()
   }
 }
 
