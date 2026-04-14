@@ -694,6 +694,14 @@ impl WorkflowInstanceService {
         self.repository.scan_zombie_instances(limit).await
     }
 
+    pub async fn scan_instances_by_status(
+        &self,
+        status: &WorkflowInstanceStatus,
+        limit: u32,
+    ) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError> {
+        self.repository.scan_instances_by_status(status, limit).await
+    }
+
     pub async fn force_clear_lock(
         &self,
         workflow_instance_id: &str,

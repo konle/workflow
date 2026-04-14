@@ -22,7 +22,7 @@ use crate::middleware::auth::AuthContext;
 use crate::middleware::permission::require_permission;
 use crate::middleware::permission_guard::{PermissionLevel, RequireDraftInstanceCreate};
 use crate::response::response::Response;
-use crate::handler::workflow::workflow_instance_request::{CreateWorkflowInstanceRequest, RetryWorkflowNodeRequest, SkipWorkflowNodeRequest, ListWorkflowInstancesRequest};
+use crate::handler::workflow::workflow_instance_request::{CreateWorkflowInstanceRequest, RetryWorkflowNodeRequest, SkipWorkflowNodeRequest, ListWorkflowInstancesRequest, ResumeNodeRequest};
 use std::sync::Arc;
 
 
@@ -55,6 +55,7 @@ pub fn routes(handler: Arc<WorkflowInstanceHandler>) -> Router {
         .route("/{id}/resume", post(resume_instance))
         .route("/{id}/skip-node", post(skip_node))
         .route("/{id}/retry-node", post(retry_node))
+        .route("/{id}/resume-node", post(resume_node))
         .layer(from_fn(require_permission(Permission::InstanceExecute)));
 
     Router::new()
@@ -291,6 +292,84 @@ async fn skip_node(
         })?;
 
     info!(workflow_instance_id = %id, node_id = %req.node_id, child_task_id = ?req.child_task_id, "skip-node persisted and NodeCallback dispatched");
+
+    Ok(Json(Response::success(updated)))
+}
+
+async fn resume_node(
+    State(handler): State<Arc<WorkflowInstanceHandler>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Json(req): Json<ResumeNodeRequest>,
+) -> Result<Json<Response<WorkflowInstanceEntity>>, ApiError> {
+    use domain::task::entity::task_definition::{TaskTemplate, PauseMode};
+
+    let instance = handler
+        .instance_service
+        .get_workflow_instance_scoped(&auth.tenant_id, &id)
+        .await?;
+
+    let node = instance
+        .nodes
+        .iter()
+        .find(|n| n.node_id == req.node_id)
+        .ok_or_else(|| ApiError::bad_request(format!("Node not found: {}", req.node_id)))?;
+
+    if node.status != NodeExecutionStatus::Suspended {
+        return Err(ApiError::bad_request(format!(
+            "Node {} is not suspended (current: {:?})", req.node_id, node.status
+        )));
+    }
+
+    let is_manual_pause = matches!(&node.task_instance.task_template, TaskTemplate::Pause(t) if t.mode == PauseMode::Manual);
+    if !is_manual_pause {
+        return Err(ApiError::bad_request("resume-node only applies to Manual Pause nodes"));
+    }
+
+    let resume_at = node
+        .task_instance
+        .output
+        .as_ref()
+        .and_then(|o| o.get("resume_at"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .ok_or_else(|| ApiError::bad_request("Pause node missing valid resume_at in output"))?;
+
+    if chrono::Utc::now() < resume_at {
+        return Err(ApiError::bad_request(format!(
+            "Pause timer not expired yet, please wait until {}",
+            resume_at.to_rfc3339()
+        )));
+    }
+
+    let child_task_id = node_callback_child_task_id(&instance, node);
+
+    handler
+        .dispatcher
+        .dispatch_workflow(ExecuteWorkflowJob {
+            workflow_instance_id: instance.workflow_instance_id.clone(),
+            tenant_id: auth.tenant_id.clone(),
+            event: WorkflowEvent::NodeCallback {
+                node_id: req.node_id.clone(),
+                child_task_id,
+                status: NodeExecutionStatus::Success,
+                output: node.task_instance.output.clone(),
+                error_message: None,
+                input: None,
+            },
+        })
+        .await
+        .map_err(|e| {
+            error!(workflow_instance_id = %id, error = %e, "failed to dispatch resume NodeCallback");
+            ApiError::internal(e.to_string())
+        })?;
+
+    info!(workflow_instance_id = %id, node_id = %req.node_id, "resume-node: manual pause confirmed");
+
+    let updated = handler
+        .instance_service
+        .get_workflow_instance_scoped(&auth.tenant_id, &id)
+        .await?;
 
     Ok(Json(Response::success(updated)))
 }

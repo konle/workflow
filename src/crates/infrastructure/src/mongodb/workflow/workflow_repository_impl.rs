@@ -638,4 +638,26 @@ impl WorkflowInstanceRepository for WorkflowInstanceRepositoryImpl {
         }
         Ok(())
     }
+
+    async fn scan_instances_by_status(
+        &self,
+        status: &WorkflowInstanceStatus,
+        limit: u32,
+    ) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError> {
+        let status_bson = mongodb::bson::to_bson(status)
+            .map_err(|e| format!("serialize status: {e}"))?;
+        let filter = doc! { "status": status_bson };
+
+        let mut cursor = self
+            .workflow_instance_collection
+            .find(filter)
+            .limit(limit as i64)
+            .await?;
+
+        let mut results = Vec::new();
+        while cursor.advance().await? {
+            results.push(cursor.deserialize_current()?);
+        }
+        Ok(results)
+    }
 }

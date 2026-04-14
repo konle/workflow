@@ -141,6 +141,7 @@ pub enum TaskType {
     SubWorkflow,
     Grpc,
     Approval,
+    Pause,
 }
 
 #[cfg(test)]

@@ -69,4 +69,7 @@ export const workflowApi = {
 
   retryNode: (id: string, body: { node_id: string; child_task_id?: string }) =>
     request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/retry-node`, body),
+
+  resumeNode: (id: string, body: { node_id: string }) =>
+    request.post<any, { data: WorkflowInstanceEntity }>(`/workflow/instance/${id}/resume-node`, body),
 }

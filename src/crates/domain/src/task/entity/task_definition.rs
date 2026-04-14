@@ -16,6 +16,7 @@ pub enum TaskTemplate {
     Parallel(ParallelTemplate),
     ForkJoin(ForkJoinTemplate),
     SubWorkflow(SubWorkflowTemplate),
+    Pause(PauseTemplate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +71,18 @@ pub struct SubWorkflowTemplate {
     #[serde(default)]
     pub form: Vec<Form>,
     pub timeout: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PauseMode {
+    Auto,
+    Manual,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PauseTemplate {
+    pub wait_seconds: u64,
+    pub mode: PauseMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -169,6 +182,7 @@ impl TaskTemplate {
             TaskTemplate::Parallel(_) => TaskType::Parallel,
             TaskTemplate::ForkJoin(_) => TaskType::ForkJoin,
             TaskTemplate::SubWorkflow(_) => TaskType::SubWorkflow,
+            TaskTemplate::Pause(_) => TaskType::Pause,
         }
     }
 }

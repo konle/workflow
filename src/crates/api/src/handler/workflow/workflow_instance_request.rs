@@ -18,6 +18,11 @@ pub struct RetryWorkflowNodeRequest {
 }
 
 #[derive(Deserialize)]
+pub struct ResumeNodeRequest {
+    pub node_id: String,
+}
+
+#[derive(Deserialize)]
 pub struct CreateWorkflowInstanceRequest {
     pub workflow_meta_id: String,
     pub version: u32,

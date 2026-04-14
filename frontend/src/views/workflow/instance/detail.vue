@@ -101,6 +101,31 @@
               </router-link>
             </template>
 
+            <template v-if="selectedNode.node_type === 'Pause' && selectedNode.status === 'Suspended'">
+              <a-divider>暂停节点</a-divider>
+              <a-descriptions :column="1" size="small">
+                <a-descriptions-item label="模式">
+                  {{ pauseNodeMode === 'Auto' ? '自动' : '手动' }}
+                </a-descriptions-item>
+                <a-descriptions-item label="恢复时间">
+                  {{ pauseResumeAt ? formatDate(pauseResumeAt) : '-' }}
+                </a-descriptions-item>
+                <a-descriptions-item label="状态">
+                  <a-tag v-if="pauseExpired" color="green">计时已到期</a-tag>
+                  <a-tag v-else color="orange">等待中（{{ pauseCountdown }}s）</a-tag>
+                </a-descriptions-item>
+              </a-descriptions>
+              <a-button
+                v-if="pauseNodeMode === 'Manual' && pauseExpired && canExecute"
+                type="primary"
+                style="margin-top: 8px"
+                :loading="resumingNode"
+                @click="handleResumeNode"
+              >
+                确认继续
+              </a-button>
+            </template>
+
             <a-divider>节点上下文</a-divider>
             <p class="node-context-hint">
               执行本节点前用于模板 / Rhai 解析的合并上下文（含变量合并与系统注入的 <code>nodes</code>）。
@@ -125,7 +150,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -266,6 +291,12 @@ watch(() => instance.value?.status, (status) => {
   }
 })
 
+watch(() => instance.value, () => {
+  if (selectedNode.value && instance.value) {
+    selectedNode.value = instance.value.nodes.find(n => n.node_id === selectedNode.value!.node_id) || null
+  }
+})
+
 function handleNodeClick(nodeId: string) {
   selectedNode.value = instance.value?.nodes.find(n => n.node_id === nodeId) || null
 }
@@ -382,6 +413,55 @@ const subWorkflowInstanceId = computed<string | null>(() => {
   if (!output || typeof output !== 'object') return null
   return (output as any).child_workflow_instance_id || null
 })
+
+const pauseNodeMode = computed(() => {
+  const output = selectedNode.value?.task_instance?.output as any
+  return output?.mode || 'Auto'
+})
+
+const pauseResumeAt = computed(() => {
+  const output = selectedNode.value?.task_instance?.output as any
+  return output?.resume_at || null
+})
+
+const pauseCountdown = ref(0)
+const pauseExpired = computed(() => pauseCountdown.value <= 0 && !!pauseResumeAt.value)
+
+let pauseTimer: ReturnType<typeof setInterval> | null = null
+
+function updatePauseCountdown() {
+  if (!pauseResumeAt.value) {
+    pauseCountdown.value = 0
+    return
+  }
+  pauseCountdown.value = Math.max(0, Math.ceil((new Date(pauseResumeAt.value).getTime() - Date.now()) / 1000))
+}
+
+watch(pauseResumeAt, (val) => {
+  if (pauseTimer) { clearInterval(pauseTimer); pauseTimer = null }
+  if (val) {
+    updatePauseCountdown()
+    pauseTimer = setInterval(updatePauseCountdown, 1000)
+  }
+}, { immediate: true })
+
+onUnmounted(() => { if (pauseTimer) clearInterval(pauseTimer) })
+
+const resumingNode = ref(false)
+
+async function handleResumeNode() {
+  if (!instance.value || !selectedNode.value) return
+  resumingNode.value = true
+  try {
+    await workflowApi.resumeNode(instanceId, { node_id: selectedNode.value.node_id })
+    Notification.success({ content: '已确认继续' })
+    fetchInstance()
+  } catch (e: any) {
+    Notification.error({ content: e?.message || '操作失败' })
+  } finally {
+    resumingNode.value = false
+  }
+}
 
 function childStatusColor(status: string): string {
   switch (status) {

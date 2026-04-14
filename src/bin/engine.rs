@@ -174,6 +174,7 @@ fn create_plugin_manager(
         workflow_definition_svc,
         (*workflow_instance_svc).clone(),
     )));
+    manager.register(Box::new(domain::plugin::plugins::pause::PausePlugin::new()));
     Arc::new(manager)
 }
 

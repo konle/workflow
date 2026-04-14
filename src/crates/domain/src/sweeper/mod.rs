@@ -5,7 +5,7 @@ use crate::approval::service::ApprovalService;
 use crate::shared::job::{
     ExecuteTaskJob, ExecuteWorkflowJob, TaskDispatcher, WorkflowCallerContext, WorkflowEvent,
 };
-use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
+use crate::shared::workflow::{TaskInstanceStatus, TaskType, WorkflowInstanceStatus};
 use crate::task::service::TaskInstanceService;
 use crate::workflow::entity::workflow_definition::{NodeExecutionStatus, WorkflowInstanceEntity};
 use crate::workflow::service::WorkflowInstanceService;
@@ -116,6 +116,7 @@ impl Sweeper {
         }
 
         let expired_approvals = self.sweep_expired_approvals().await;
+        let expired_pauses = self.sweep_expired_pause_nodes().await;
 
         info!(
             scanned = zombies.len(),
@@ -123,6 +124,7 @@ impl Sweeper {
             recovered_await,
             skipped_cas,
             expired_approvals,
+            expired_pauses,
             "sweeper cycle completed"
         );
     }
@@ -468,6 +470,94 @@ impl Sweeper {
                 "sweeper: expired approval → rejected + callback dispatched"
             );
             count += 1;
+        }
+        count
+    }
+
+    async fn sweep_expired_pause_nodes(&self) -> u32 {
+        use crate::task::entity::task_definition::{PauseMode, TaskTemplate};
+
+        let instances = match self
+            .workflow_instance_svc
+            .scan_instances_by_status(
+                &WorkflowInstanceStatus::Suspended,
+                self.config.max_recover_per_cycle,
+            )
+            .await
+        {
+            Ok(list) => list,
+            Err(e) => {
+                error!(error = %e, "sweeper: failed to scan suspended instances for pause");
+                return 0;
+            }
+        };
+
+        let now = chrono::Utc::now();
+        let mut count = 0u32;
+
+        for instance in &instances {
+            for node in &instance.nodes {
+                if node.node_type != TaskType::Pause {
+                    continue;
+                }
+                if node.status != NodeExecutionStatus::Suspended {
+                    continue;
+                }
+
+                let is_auto = matches!(
+                    &node.task_instance.task_template,
+                    TaskTemplate::Pause(t) if t.mode == PauseMode::Auto
+                );
+                if !is_auto {
+                    continue;
+                }
+
+                let resume_at = node
+                    .task_instance
+                    .output
+                    .as_ref()
+                    .and_then(|o| o.get("resume_at"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+
+                let expired = resume_at.map(|t| now >= t).unwrap_or(false);
+                if !expired {
+                    continue;
+                }
+
+                let child_task_id = format!(
+                    "{}-{}",
+                    instance.workflow_instance_id, node.node_id
+                );
+
+                if let Err(e) = self
+                    .supplement_callback(
+                        instance,
+                        &node.node_id,
+                        &child_task_id,
+                        NodeExecutionStatus::Success,
+                        node.task_instance.output.clone(),
+                        None,
+                        None,
+                    )
+                    .await
+                {
+                    warn!(
+                        workflow_instance_id = %instance.workflow_instance_id,
+                        node_id = %node.node_id,
+                        error = %e,
+                        "sweeper: failed to dispatch pause auto callback"
+                    );
+                    continue;
+                }
+
+                info!(
+                    workflow_instance_id = %instance.workflow_instance_id,
+                    node_id = %node.node_id,
+                    "sweeper: pause auto timer expired → Success callback dispatched"
+                );
+                count += 1;
+            }
         }
         count
     }

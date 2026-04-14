@@ -170,6 +170,19 @@
               </a-form-item>
             </template>
 
+            <!-- ===== Pause ===== -->
+            <template v-else-if="selectedNode.data.nodeType === 'Pause'">
+              <a-form-item label="等待时间（秒）">
+                <a-input-number v-model="selectedNode.data.config.wait_seconds" :min="1" :disabled="readonly" />
+              </a-form-item>
+              <a-form-item label="模式">
+                <a-select v-model="selectedNode.data.config.mode" :disabled="readonly">
+                  <a-option value="Auto">自动（到期后自动完成）</a-option>
+                  <a-option value="Manual">手动（到期后需人工确认）</a-option>
+                </a-select>
+              </a-form-item>
+            </template>
+
             <a-form-item label="Context (JSON)">
               <a-textarea v-model="selectedNode.data.contextJson" :auto-size="{ minRows: 2 }" :disabled="readonly" />
             </a-form-item>
@@ -264,6 +277,7 @@ const nodeTypes = [
   { type: 'SubWorkflow', label: '子工作流', color: '#86909C' },
   { type: 'Grpc', label: 'gRPC', color: '#722ED1' },
   { type: 'Approval', label: '审批', color: '#F77234' },
+  { type: 'Pause', label: '暂停', color: '#F5A623' },
 ]
 
 function parallelNodeDataDefaults() {
@@ -284,6 +298,7 @@ function parallelNodeDataDefaults() {
 function getDefaultConfig(type: string): any {
   switch (type) {
     case 'Http': case 'Approval': case 'Grpc': return {}
+    case 'Pause': return { wait_seconds: 10, mode: 'Auto' }
     case 'SubWorkflow': return { timeout: null }
     case 'IfCondition': return { name: '', condition: '' }
     case 'ContextRewrite': return { name: '', script: '', merge_mode: 'Merge' }
@@ -714,6 +729,8 @@ function buildWorkflowEntity(): any {
           let tasks: any[] = []; try { tasks = JSON.parse(d.config.tasksJson || '[]') } catch {}
           config = { ForkJoin: { tasks, concurrency: d.config.concurrency || 5, mode: d.config.mode || 'Rolling', max_failures: d.config.max_failures } }; break
         }
+        case 'Pause':
+          config = { Pause: { wait_seconds: d.config.wait_seconds || 10, mode: d.config.mode || 'Auto' } }; break
         default: config = d.nodeType
       }
     }
@@ -818,6 +835,8 @@ async function loadFromEntity(entity: any) {
     } else if (type === 'ForkJoin' && n.config?.ForkJoin) {
       const f = n.config.ForkJoin
       config = { concurrency: f.concurrency, mode: f.mode, max_failures: f.max_failures, tasksJson: JSON.stringify(f.tasks, null, 2) }
+    } else if (type === 'Pause' && n.config?.Pause) {
+      config = { wait_seconds: n.config.Pause.wait_seconds, mode: n.config.Pause.mode }
     }
 
     const data: Record<string, unknown> = {

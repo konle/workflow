@@ -77,4 +77,11 @@ pub trait WorkflowInstanceRepository: Send + Sync {
         workflow_instance_id: &str,
         expected_epoch: u64,
     ) -> Result<(), RepositoryError>;
+
+    /// Scan instances by status (for sweeper use).
+    async fn scan_instances_by_status(
+        &self,
+        status: &WorkflowInstanceStatus,
+        limit: u32,
+    ) -> Result<Vec<WorkflowInstanceEntity>, RepositoryError>;
 }

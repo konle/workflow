@@ -1,6 +1,6 @@
 import type { JsonValue } from './common'
 
-export type TaskType = 'Http' | 'IfCondition' | 'ContextRewrite' | 'Parallel' | 'ForkJoin' | 'SubWorkflow' | 'Grpc' | 'Approval'
+export type TaskType = 'Http' | 'IfCondition' | 'ContextRewrite' | 'Parallel' | 'ForkJoin' | 'SubWorkflow' | 'Grpc' | 'Approval' | 'Pause'
 export type TaskStatus = 'Draft' | 'Published'
 export type TaskInstanceStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Canceled' | 'Skipped'
 export type HttpMethod = 'Get' | 'Post' | 'Put' | 'Delete' | 'Head'
@@ -88,6 +88,13 @@ export interface ApprovalTemplate {
   timeout: number | null
 }
 
+export type PauseMode = 'Auto' | 'Manual'
+
+export interface PauseTemplate {
+  wait_seconds: number
+  mode: PauseMode
+}
+
 export type TaskTemplate =
   | { Http: TaskHttpTemplate }
   | { IfCondition: IfConditionTemplate }
@@ -96,6 +103,7 @@ export type TaskTemplate =
   | { ForkJoin: ForkJoinTemplate }
   | { SubWorkflow: SubWorkflowTemplate }
   | { Approval: ApprovalTemplate }
+  | { Pause: PauseTemplate }
   | 'Grpc'
 
 export interface TaskEntity {
