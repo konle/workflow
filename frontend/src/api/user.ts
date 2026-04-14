@@ -1,16 +1,19 @@
 import request from './request'
-import type { UserTenantRole, AssignRoleRequest } from '../types/user'
+import type { UserRoleInfo, AssignRoleRequest, CreateUserRequest, CreateUserResponse } from '../types/user'
 
 export const userApi = {
   list: () =>
-    request.get<any, { data: UserTenantRole[] }>('/users'),
+    request.get<any, { data: UserRoleInfo[] }>('/users'),
 
   assignRole: (data: AssignRoleRequest) =>
-    request.post<any, { data: UserTenantRole }>('/users', data),
+    request.post<any, { data: any }>('/users', data),
 
-  updateRole: (userId: string, data: AssignRoleRequest) =>
-    request.put<any, { data: UserTenantRole }>(`/users/${userId}`, data),
+  updateRole: (username: string, data: AssignRoleRequest) =>
+    request.put<any, { data: any }>(`/users/${username}`, data),
 
-  removeRole: (userId: string) =>
-    request.delete<any, { data: void }>(`/users/${userId}`),
+  removeRole: (username: string) =>
+    request.delete<any, { data: void }>(`/users/${username}`),
+
+  createUser: (data: CreateUserRequest) =>
+    request.post<any, { data: CreateUserResponse }>('/users/create', data),
 }

@@ -9,8 +9,19 @@
         <a-form-item field="password" label="密码" :rules="[{ required: true, message: '请输入密码' }]">
           <a-input-password v-model="form.password" placeholder="请输入密码" />
         </a-form-item>
-        <a-form-item field="tenant_id" label="租户ID" :rules="[{ required: true, message: '请输入租户ID' }]">
-          <a-input v-model="form.tenant_id" placeholder="请输入租户ID" />
+        <a-form-item field="tenant_id" label="租户" :rules="[{ required: true, message: '请选择租户' }]">
+          <a-select
+            v-model="form.tenant_id"
+            placeholder="请选择租户"
+            :loading="tenantsLoading"
+          >
+            <a-option
+              v-for="t in tenants"
+              :key="t.tenant_id"
+              :value="t.tenant_id"
+              :label="t.name"
+            />
+          </a-select>
         </a-form-item>
         <a-form-item>
           <a-button type="primary" html-type="submit" :loading="loading" long>
@@ -26,16 +37,31 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { authApi } from '../../api/auth'
 import { Notification } from '@arco-design/web-vue'
+import type { TenantOption } from '../../types/auth'
 
 const router = useRouter()
 const auth = useAuthStore()
 const loading = ref(false)
+const tenantsLoading = ref(false)
+const tenants = ref<TenantOption[]>([])
 const form = reactive({ username: '', password: '', tenant_id: '' })
+
+onMounted(async () => {
+  tenantsLoading.value = true
+  try {
+    const res = await authApi.listTenants()
+    tenants.value = res.data
+    if (tenants.value.length === 1) {
+      form.tenant_id = tenants.value[0].tenant_id
+    }
+  } catch { /* ignore */ }
+  finally { tenantsLoading.value = false }
+})
 
 async function handleLogin() {
   loading.value = true

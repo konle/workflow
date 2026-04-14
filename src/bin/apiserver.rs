@@ -155,7 +155,7 @@ async fn main() {
         bootstrap(&config, &user_service, &tenant_service).await;
     }
 
-    let auth_handler = Arc::new(AuthHandler::new(user_service.clone()));
+    let auth_handler = Arc::new(AuthHandler::new(user_service.clone(), tenant_service.clone()));
     let tenant_handler = Arc::new(TenantHandler::new(tenant_service));
     let user_handler = Arc::new(UserHandler::new(user_service));
     let approval_handler = Arc::new(ApprovalHandler::new(approval_service, dispatcher.clone()));

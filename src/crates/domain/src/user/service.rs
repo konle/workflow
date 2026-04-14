@@ -25,6 +25,9 @@ impl UserService {
         password_hash: String,
         is_super_admin: bool,
     ) -> Result<UserEntity, RepositoryError> {
+        if self.user_repo.get_by_username(&username).await.is_ok() {
+            return Err(format!("Username already exists: {}", username).into());
+        }
         let now = Utc::now();
         let entity = UserEntity {
             user_id: Uuid::new_v4().to_string(),
@@ -45,6 +48,17 @@ impl UserService {
 
     pub async fn get_user_by_username(&self, username: &str) -> Result<UserEntity, RepositoryError> {
         self.user_repo.get_by_username(username).await
+    }
+
+    pub async fn change_password(
+        &self,
+        user_id: &str,
+        new_password_hash: String,
+    ) -> Result<(), RepositoryError> {
+        let mut user = self.user_repo.get_by_id(user_id).await?;
+        user.password_hash = new_password_hash;
+        user.updated_at = Utc::now();
+        self.user_repo.update(&user).await
     }
 
     pub async fn assign_role(

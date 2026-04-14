@@ -2,6 +2,7 @@ import axios from 'axios'
 import { getToken, clearToken } from '../utils/token'
 import { Notification } from '@arco-design/web-vue'
 import router from '../router'
+import { useAuthStore } from '../stores/auth'
 
 const instance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
@@ -12,6 +13,10 @@ instance.interceptors.request.use(config => {
   const token = getToken()
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
+    const auth = useAuthStore()
+    if (auth.isSuperAdmin && auth.tenantId) {
+      config.headers['X-Tenant-Id'] = auth.tenantId
+    }
   }
   return config
 })

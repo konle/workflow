@@ -1,12 +1,17 @@
-use axum::{extract::State, routing::post, Json, Router};
-use serde::Deserialize;
+use axum::{
+    extract::{Extension, State},
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{info, warn, error};
 use crate::error::ApiError;
-use crate::middleware::auth::{Claims, create_token};
+use crate::middleware::auth::{Claims, create_token, AuthContext};
 use crate::response::response::Response;
 use domain::user::service::UserService;
 use domain::user::entity::UserStatus;
+use domain::tenant::service::TenantService;
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
@@ -22,22 +27,58 @@ pub struct RegisterRequest {
     pub password: String,
 }
 
+#[derive(Deserialize)]
+pub struct ChangePasswordRequest {
+    pub old_password: String,
+    pub new_password: String,
+}
+
+#[derive(Serialize)]
+pub struct TenantOption {
+    pub tenant_id: String,
+    pub name: String,
+}
+
 #[derive(Clone)]
 pub struct AuthHandler {
     pub user_service: UserService,
+    pub tenant_service: TenantService,
 }
 
 impl AuthHandler {
-    pub fn new(user_service: UserService) -> Self {
-        Self { user_service }
+    pub fn new(user_service: UserService, tenant_service: TenantService) -> Self {
+        Self { user_service, tenant_service }
     }
 }
 
-pub fn routes(handler: Arc<AuthHandler>) -> Router {
+pub fn public_routes(handler: Arc<AuthHandler>) -> Router {
     Router::new()
         .route("/login", post(login))
         .route("/register", post(register))
+        .route("/tenants", get(list_tenants))
         .with_state(handler)
+}
+
+pub fn protected_routes(handler: Arc<AuthHandler>) -> Router {
+    Router::new()
+        .route("/change-password", post(change_password))
+        .route("/profile", get(get_profile))
+        .with_state(handler)
+}
+
+async fn list_tenants(
+    State(handler): State<Arc<AuthHandler>>,
+) -> Result<Json<Response<Vec<TenantOption>>>, ApiError> {
+    let tenants = handler.tenant_service.list_tenants().await?;
+    let options: Vec<TenantOption> = tenants
+        .into_iter()
+        .filter(|t| t.status == domain::tenant::entity::TenantStatus::Active)
+        .map(|t| TenantOption {
+            tenant_id: t.tenant_id,
+            name: t.name,
+        })
+        .collect();
+    Ok(Json(Response::success(options)))
 }
 
 async fn login(
@@ -68,6 +109,15 @@ async fn login(
         warn!(username = %req.username, "login failed: wrong password");
         return Err(ApiError::bad_request("Invalid username or password"));
     }
+
+    handler
+        .tenant_service
+        .get_tenant(&req.tenant_id)
+        .await
+        .map_err(|_| {
+            warn!(tenant_id = %req.tenant_id, "login failed: tenant not found");
+            ApiError::bad_request("Tenant not found")
+        })?;
 
     let role = if user.is_super_admin {
         "SuperAdmin".to_string()
@@ -128,5 +178,66 @@ async fn register(
     Ok(Json(Response::success(serde_json::json!({
         "user_id": user.user_id,
         "username": user.username,
+    }))))
+}
+
+async fn change_password(
+    State(handler): State<Arc<AuthHandler>>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<ChangePasswordRequest>,
+) -> Result<Json<Response<()>>, ApiError> {
+    let user = handler
+        .user_service
+        .get_user(&ctx.user_id)
+        .await
+        .map_err(|_| ApiError::bad_request("User not found"))?;
+
+    let valid = bcrypt::verify(&req.old_password, &user.password_hash)
+        .map_err(|e| {
+            error!(user_id = %ctx.user_id, error = %e, "bcrypt verification error");
+            ApiError::internal("Password verification failed")
+        })?;
+
+    if !valid {
+        return Err(ApiError::bad_request("Old password is incorrect"));
+    }
+
+    if req.new_password.len() < 6 {
+        return Err(ApiError::bad_request("New password must be at least 6 characters"));
+    }
+
+    let new_hash = bcrypt::hash(&req.new_password, bcrypt::DEFAULT_COST)
+        .map_err(|e| {
+            error!(error = %e, "password hashing failed");
+            ApiError::internal(format!("Password hashing failed: {}", e))
+        })?;
+
+    handler
+        .user_service
+        .change_password(&ctx.user_id, new_hash)
+        .await?;
+
+    info!(user_id = %ctx.user_id, username = %ctx.username, "password changed");
+
+    Ok(Json(Response::success(())))
+}
+
+async fn get_profile(
+    State(handler): State<Arc<AuthHandler>>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Response<serde_json::Value>>, ApiError> {
+    let user = handler
+        .user_service
+        .get_user(&ctx.user_id)
+        .await
+        .map_err(|_| ApiError::bad_request("User not found"))?;
+
+    Ok(Json(Response::success(serde_json::json!({
+        "user_id": user.user_id,
+        "username": user.username,
+        "email": user.email,
+        "is_super_admin": user.is_super_admin,
+        "status": format!("{}", user.status),
+        "created_at": user.created_at.to_rfc3339(),
     }))))
 }

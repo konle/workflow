@@ -1,7 +1,7 @@
 use axum::{middleware, Router};
 use std::sync::Arc;
 use crate::handler::approval::{ApprovalHandler, routes as approval_routes};
-use crate::handler::auth::{AuthHandler, routes as auth_routes};
+use crate::handler::auth::{AuthHandler, public_routes as auth_public_routes, protected_routes as auth_protected_routes};
 use crate::handler::task::{TaskHandler, TaskInstanceHandler, routes as task_routes};
 use crate::handler::tenant::{TenantHandler, routes as tenant_routes};
 use crate::handler::user::{UserHandler, routes as user_routes};
@@ -24,7 +24,7 @@ pub fn create_router(
     workflow_instance_handler: Arc<WorkflowInstanceHandler>,
 ) -> Router {
     let public = Router::new()
-        .nest("/auth", auth_routes(auth_handler));
+        .nest("/auth", auth_public_routes(auth_handler.clone()));
 
     let tenant_mgmt = tenant_routes(tenant_handler)
         .layer(middleware::from_fn(require_super_admin()));
@@ -33,6 +33,7 @@ pub fn create_router(
         .layer(middleware::from_fn(require_permission(Permission::UserManage)));
 
     let protected = Router::new()
+        .nest("/auth", auth_protected_routes(auth_handler))
         .nest("/tenants", tenant_mgmt)
         .nest("/users", user_mgmt)
         .nest("/variables", tenant_variable_routes(variable_handler.clone()))
