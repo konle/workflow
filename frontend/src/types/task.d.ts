@@ -1,6 +1,6 @@
 import type { JsonValue } from './common'
 
-export type TaskType = 'Http' | 'IfCondition' | 'ContextRewrite' | 'Parallel' | 'ForkJoin' | 'SubWorkflow' | 'Grpc' | 'Approval' | 'Pause'
+export type TaskType = 'Http' | 'IfCondition' | 'ContextRewrite' | 'Parallel' | 'ForkJoin' | 'SubWorkflow' | 'Grpc' | 'Approval' | 'Pause' | 'Llm'
 export type TaskStatus = 'Draft' | 'Published'
 export type TaskInstanceStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Canceled' | 'Skipped'
 export type HttpMethod = 'Get' | 'Post' | 'Put' | 'Delete' | 'Head'
@@ -95,6 +95,22 @@ export interface PauseTemplate {
   mode: PauseMode
 }
 
+export type LlmResponseFormat = 'Text' | 'JsonObject'
+
+export interface LlmTemplate {
+  base_url: string
+  model: string
+  api_key_ref: string
+  system_prompt: string | null
+  user_prompt: string
+  temperature: number | null
+  max_tokens: number | null
+  timeout: number
+  retry_count: number
+  retry_delay: number
+  response_format: LlmResponseFormat | null
+}
+
 export type TaskTemplate =
   | { Http: TaskHttpTemplate }
   | { IfCondition: IfConditionTemplate }
@@ -104,6 +120,7 @@ export type TaskTemplate =
   | { SubWorkflow: SubWorkflowTemplate }
   | { Approval: ApprovalTemplate }
   | { Pause: PauseTemplate }
+  | { Llm: LlmTemplate }
   | 'Grpc'
 
 export interface TaskEntity {

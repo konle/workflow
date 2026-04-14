@@ -116,62 +116,89 @@ impl PluginManager {
         task_instance.execution_duration = None;
         task_instance.task_status = TaskInstanceStatus::Pending;
 
-        if let TaskTemplate::Http(ref tpl) = task_instance.task_template {
-            match &parent.task_template {
-                TaskTemplate::Parallel(pt) => {
-                    let idx = job
-                        .caller_context
-                        .as_ref()
-                        .and_then(|c| c.item_index)
-                        .unwrap_or(0);
-                    let ctx = crate::task::http_template_resolve::context_with_parallel_item(
-                        parent_node_ctx,
-                        &pt.items_path,
-                        &pt.item_alias,
-                        idx,
-                    );
-                    task_instance.input = Some(
-                        crate::task::http_template_resolve::resolved_http_request_snapshot(tpl, &ctx),
-                    );
-                }
-                TaskTemplate::ForkJoin(_) => {
-                    task_instance.input = Some(
-                        crate::task::http_template_resolve::resolved_http_request_snapshot(
-                            tpl,
+        match &task_instance.task_template {
+            TaskTemplate::Http(tpl) => {
+                match &parent.task_template {
+                    TaskTemplate::Parallel(pt) => {
+                        let idx = job
+                            .caller_context
+                            .as_ref()
+                            .and_then(|c| c.item_index)
+                            .unwrap_or(0);
+                        let ctx = crate::task::http_template_resolve::context_with_parallel_item(
                             parent_node_ctx,
-                        ),
-                    );
-                }
-                TaskTemplate::Http(_) => {
-                    // Graph HTTP node: `run_node` already wrote the resolved snapshot on the embedded
-                    // `task_instance` in the workflow document. The task worker loads this separate
-                    // `task_instances` row (id = `{workflow_id}-{node_id}`), which must carry the same
-                    // input — otherwise `HttpTaskExecutor` sees `input == None` and re-resolves with
-                    // an empty context, leaving `{{placeholders}}` untouched.
-                    let has_resolved_url = parent
-                        .input
-                        .as_ref()
-                        .and_then(|i| i.get("url"))
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    task_instance.input = if has_resolved_url {
-                        parent.input.clone()
-                    } else {
-                        Some(
+                            &pt.items_path,
+                            &pt.item_alias,
+                            idx,
+                        );
+                        task_instance.input = Some(
+                            crate::task::http_template_resolve::resolved_http_request_snapshot(tpl, &ctx),
+                        );
+                    }
+                    TaskTemplate::ForkJoin(_) => {
+                        task_instance.input = Some(
+                            crate::task::http_template_resolve::resolved_http_request_snapshot(
+                                tpl,
+                                parent_node_ctx,
+                            ),
+                        );
+                    }
+                    TaskTemplate::Http(_) => {
+                        let has_resolved_url = parent
+                            .input
+                            .as_ref()
+                            .and_then(|i| i.get("url"))
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|s| !s.is_empty());
+                        task_instance.input = if has_resolved_url {
+                            parent.input.clone()
+                        } else {
+                            Some(
+                                crate::task::http_template_resolve::resolved_http_request_snapshot(
+                                    tpl, parent_node_ctx,
+                                ),
+                            )
+                        };
+                    }
+                    _ => {
+                        task_instance.input = Some(
                             crate::task::http_template_resolve::resolved_http_request_snapshot(
                                 tpl, parent_node_ctx,
                             ),
-                        )
-                    };
-                }
-                _ => {
-                    task_instance.input = Some(
-                        crate::task::http_template_resolve::resolved_http_request_snapshot(
-                            tpl, parent_node_ctx,
-                        ),
-                    );
+                        );
+                    }
                 }
             }
+            TaskTemplate::Llm(tpl) => {
+                let ctx = match &parent.task_template {
+                    TaskTemplate::Parallel(pt) => {
+                        let idx = job
+                            .caller_context
+                            .as_ref()
+                            .and_then(|c| c.item_index)
+                            .unwrap_or(0);
+                        crate::task::http_template_resolve::context_with_parallel_item(
+                            parent_node_ctx,
+                            &pt.items_path,
+                            &pt.item_alias,
+                            idx,
+                        )
+                    }
+                    TaskTemplate::Llm(_) => {
+                        if parent.input.is_some() {
+                            task_instance.input = parent.input.clone();
+                            // already resolved by run_node
+                            task_instance.input.clone().unwrap_or_default();
+                        }
+                        parent_node_ctx.clone()
+                    }
+                    _ => parent_node_ctx.clone(),
+                };
+                if task_instance.input.is_none() {
+                    task_instance.input = Some(super::workflow::resolved_llm_request_snapshot(tpl, &ctx));
+                }
+            }
+            _ => {}
         }
 
         task_svc

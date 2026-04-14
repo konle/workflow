@@ -36,6 +36,7 @@ async fn handle_workflow_job(job: ExecuteWorkflowJob, manager: Data<Arc<PluginMa
 
 use domain::task::manager::TaskManager;
 use domain::task::executors::http::HttpTaskExecutor;
+use domain::task::executors::llm::LlmTaskExecutor;
 
 async fn handle_task_job(
     job: ExecuteTaskJob,
@@ -175,12 +176,14 @@ fn create_plugin_manager(
         (*workflow_instance_svc).clone(),
     )));
     manager.register(Box::new(domain::plugin::plugins::pause::PausePlugin::new()));
+    manager.register(Box::new(domain::plugin::plugins::llm::LlmPlugin::new()));
     Arc::new(manager)
 }
 
 fn create_task_manager(task_instance_svc: Arc<TaskInstanceService>) -> Arc<TaskManager> {
     let mut manager = TaskManager::new(task_instance_svc);
     manager.register(Box::new(HttpTaskExecutor::new()));
+    manager.register(Box::new(LlmTaskExecutor::new()));
     Arc::new(manager)
 }
 

@@ -17,6 +17,7 @@ pub enum TaskTemplate {
     ForkJoin(ForkJoinTemplate),
     SubWorkflow(SubWorkflowTemplate),
     Pause(PauseTemplate),
+    Llm(LlmTemplate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +84,27 @@ pub enum PauseMode {
 pub struct PauseTemplate {
     pub wait_seconds: u64,
     pub mode: PauseMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LlmResponseFormat {
+    Text,
+    JsonObject,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LlmTemplate {
+    pub base_url: String,
+    pub model: String,
+    pub api_key_ref: String,
+    pub system_prompt: Option<String>,
+    pub user_prompt: String,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u32>,
+    pub timeout: u32,
+    pub retry_count: u32,
+    pub retry_delay: u32,
+    pub response_format: Option<LlmResponseFormat>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -183,6 +205,7 @@ impl TaskTemplate {
             TaskTemplate::ForkJoin(_) => TaskType::ForkJoin,
             TaskTemplate::SubWorkflow(_) => TaskType::SubWorkflow,
             TaskTemplate::Pause(_) => TaskType::Pause,
+            TaskTemplate::Llm(_) => TaskType::Llm,
         }
     }
 }

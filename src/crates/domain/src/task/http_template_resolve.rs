@@ -14,6 +14,10 @@ use crate::shared::form::{Form, FormValue, FormValueType};
 use crate::task::entity::task_definition::{HttpMethod, TaskHttpTemplate};
 use serde_json::{json, Map, Value as JsonValue};
 
+pub fn get_by_path_pub(ctx: &JsonValue, path: &str) -> Option<JsonValue> {
+    get_by_path(ctx, path)
+}
+
 fn get_by_path(ctx: &JsonValue, path: &str) -> Option<JsonValue> {
     let path = path.trim();
     if path.is_empty() {

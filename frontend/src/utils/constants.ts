@@ -41,6 +41,7 @@ export const TASK_TYPE_MAP: Record<string, { label: string; color: string }> = {
   ForkJoin: { label: '异构并发', color: '#009A29' },
   SubWorkflow: { label: '子工作流', color: '#86909C' },
   Pause: { label: '暂停', color: '#F5A623' },
+  Llm: { label: 'LLM 大模型', color: '#7B61FF' },
 }
 
 export const TENANT_STATUS_MAP: Record<string, { label: string; color: string }> = {

@@ -3,6 +3,7 @@ pub mod contextrewrite;
 pub mod forkjoin;
 pub mod http;
 pub mod ifcondition;
+pub mod llm;
 pub mod parallel;
 pub mod pause;
 pub mod subworkflow;

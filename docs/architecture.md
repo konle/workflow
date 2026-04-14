@@ -1692,7 +1692,401 @@ Response (200): { "data": null }
 
 ---
 
-## 15. 总结与扩展
+## 15. LLM 大模型插件 (LLM Plugin)
+
+### 15.1 设计总则
+
+LLM 插件为工作流提供大语言模型调用能力，遵循与 HTTP 任务完全对齐的架构模式：**Prompt 模板预设 + 运行时变量插值 + 异步 Task Worker 执行**。
+
+#### 边界定义
+
+**边界内**（task_llm 该做的）：
+- 预设好的 Prompt 模板 + 运行时 `{{变量}}` 插值
+- 调用 LLM API 获取结果
+- 结果结构化写入 output，供下游节点使用
+- 重试、超时、错误处理
+- 独立可调用（TaskEntity）+ 工作流可编排（内嵌节点）
+
+**边界外**（task_llm 不该做的）：
+- 不是对话机器人（没有多轮会话管理）
+- 不是 Agent 框架（不自主决策下一步行动）
+- 不是 Prompt 工程平台（不做 A/B 测试、Prompt 版本管理）
+- 不自己管理 API Key（复用已有的 Variable 加密存储）
+
+#### 关键设计决策
+
+| 决策 | 选项 | 结论 |
+|------|------|------|
+| Provider 抽象 | A. 统一 OpenAI 兼容 / B. 多适配器 / C. 仅 OpenAI + 退回 HTTP | **A. 统一 OpenAI 兼容接口**——覆盖 OpenAI/Azure/Ollama/vLLM/LiteLLM/各大云厂商兼容 API |
+| API Key 管理 | A. 模板明文 / B. 引用变量 / C. 新实体 | **B. 引用 Variable 系统**——复用 §8 变量系统的 Secret 加密存储，零新增实体 |
+| 输出处理 | A. 原始返回 / B. 结构化提取 / C. JSON Mode | **B+C 结合**——content 提取 + usage 元信息 + 可选 JSON Mode 自动 parse |
+| 流式 vs 非流式 | A. 非流式 / B. 流式 | **A. 仅非流式**——工作流需要完整结果，流式对编排无价值 |
+| 多轮对话 | A. 单次调用 / B. 从 context 读历史 | **A. V1 仅单次调用**——system_prompt + user_prompt 覆盖主要场景 |
+| Function Calling | A. 不支持 / B. 支持 | **A. V1 不支持**——编排逻辑应在工作流层面，不交给 LLM 决策 |
+
+### 15.2 模板定义
+
+```rust
+pub enum LlmResponseFormat {
+    Text,       // 默认，不约束输出格式
+    JsonObject, // 约束 LLM 输出为 JSON 对象
+}
+
+pub struct LlmTemplate {
+    pub base_url: String,                         // OpenAI 兼容 API 地址，如 "https://api.openai.com/v1"
+    pub model: String,                            // 模型名称，如 "gpt-4o", "claude-sonnet-4-20250514"
+    pub api_key_ref: String,                      // 引用 Variable 的 key（Secret 类型，加密存储）
+    pub system_prompt: Option<String>,            // 系统提示词，支持 {{变量}} 模板插值
+    pub user_prompt: String,                      // 用户提示词，支持 {{变量}} 模板插值
+    pub temperature: Option<f64>,                 // 温度 0.0-2.0，None 使用模型默认值
+    pub max_tokens: Option<u32>,                  // 最大输出 token 数，None 使用模型默认值
+    pub timeout: u32,                             // 超时秒数
+    pub retry_count: u32,                         // 重试次数（0 = 不重试）
+    pub retry_delay: u32,                         // 重试间隔秒数
+    pub response_format: Option<LlmResponseFormat>, // 输出格式约束
+}
+```
+
+**与 HTTP 模板的类比**：
+
+| HTTP 模板字段 | LLM 模板字段 | 说明 |
+|--------------|-------------|------|
+| `url` | `base_url` + `model` | 请求目标 |
+| `headers` (API Key) | `api_key_ref` → Variable | 认证凭证 |
+| `body` | `system_prompt` + `user_prompt` | 请求内容 |
+| `retry_count` / `retry_delay` / `timeout` | 同名 | 重试与超时策略 |
+| `success_condition` | `response_format` | 输出校验 |
+
+### 15.3 Prompt 插值机制
+
+Prompt 支持 `{{变量}}` 模板插值，与 HTTP 任务的 `Variable` 类型表单行使用同一套解析机制（`{{点路径}}` 占位符替换）。解析上下文来自 `resolve_variables` + `nodes` 注入后的合并结果（见 §8.5-8.6）。
+
+**示例**：
+
+模板定义：
+```
+system_prompt: "你是一个文本分类专家，可选类别为：{{categories}}"
+user_prompt: "请将以下文本分类到上述类别中：\n\n{{input_text}}\n\n返回 JSON 格式：{\"category\": \"...\", \"confidence\": 0.0}"
+```
+
+运行时 context：
+```json
+{
+  "categories": "科技, 金融, 医疗, 教育",
+  "input_text": "OpenAI 发布了新版 GPT 模型..."
+}
+```
+
+渲染后的实际请求：
+```
+system_prompt: "你是一个文本分类专家，可选类别为：科技, 金融, 医疗, 教育"
+user_prompt: "请将以下文本分类到上述类别中：\n\nOpenAI 发布了新版 GPT 模型...\n\n返回 JSON 格式：{\"category\": \"...\", \"confidence\": 0.0}"
+```
+
+**引用前序节点输出**：
+
+```
+user_prompt: "基于以下 HTTP 响应内容进行摘要：\n\n{{nodes.http_1.output.body}}"
+```
+
+### 15.4 架构集成
+
+LLM 插件完全遵循 §1.2 / §2 的双层架构（编排插件 + 执行器）：
+
+```
+┌─ Workflow Worker (编排侧) ─────────────────────────────────────────┐
+│  LlmPlugin implements PluginInterface                              │
+│    execute():                                                      │
+│      1. 解析 LlmTemplate                                          │
+│      2. 构造 ExecuteTaskJob (包含 caller_context)                   │
+│      3. 返回 ExecutionResult::async_dispatch(job)                  │
+│    handle_callback():                                              │
+│      → 默认实现（拷贝结果，映射状态）                                 │
+└────────────────────────────────────────────────────────────────────┘
+         │ dispatch via Redis Queue
+         ▼
+┌─ Task Worker (执行侧) ────────────────────────────────────────────┐
+│  LlmTaskExecutor implements TaskExecutor                           │
+│    execute_task():                                                 │
+│      1. 从 TaskInstanceEntity 提取 LlmTemplate                    │
+│      2. 从 task_instance.input 获取渲染后的 prompts                │
+│      3. 从 task_instance.input 获取解密后的 API Key                │
+│      4. 构造 OpenAI Chat Completions 请求                          │
+│      5. 发送 HTTP 请求（重试 + 超时）                               │
+│      6. 解析响应，结构化输出                                        │
+│      7. 返回 TaskExecutionResult                                   │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### 15.5 执行时序
+
+```mermaid
+sequenceDiagram
+    participant WW as Workflow Worker
+    participant RQ as Redis Queue
+    participant TW as Task Worker
+    participant LLM as LLM API (OpenAI 兼容)
+    participant DB as MongoDB
+
+    Note over WW, DB: 1. 工作流命中 LLM 节点
+    WW->>WW: resolve_variables() + 插值 Prompts
+    WW->>WW: LlmPlugin::execute() → async_dispatch(job)
+    WW->>RQ: 投递 ExecuteTaskJob
+    WW->>DB: 实例状态 → Await
+
+    Note over RQ, LLM: 2. Task Worker 执行 LLM 调用
+    RQ->>TW: 消费 ExecuteTaskJob
+    TW->>DB: 获取 TaskInstanceEntity (含渲染后的 prompts)
+    TW->>LLM: POST /chat/completions
+    LLM-->>TW: 响应 (content + usage)
+    TW->>DB: 更新 TaskInstanceEntity (input/output)
+
+    Note over TW, WW: 3. 回调
+    TW->>RQ: 投递 NodeCallback(Success/Failed)
+    RQ->>WW: 唤醒 Workflow Worker
+    WW->>WW: handle_callback → 拷贝结果
+    WW->>DB: 节点 Success/Failed，继续下一节点
+```
+
+### 15.6 输出结构
+
+LLM 执行器的 `output` 字段采用结构化格式：
+
+```json
+{
+  "content": "这篇文本属于科技类别...",
+  "usage": {
+    "prompt_tokens": 150,
+    "completion_tokens": 80,
+    "total_tokens": 230
+  },
+  "model": "gpt-4o",
+  "finish_reason": "stop",
+  "parsed": {
+    "category": "科技",
+    "confidence": 0.95
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `content` | LLM 回复的原始文本内容 |
+| `usage` | Token 消耗统计 |
+| `model` | 实际使用的模型（可能与请求模型不同，如别名重定向） |
+| `finish_reason` | 停止原因（`stop` / `length` / `content_filter`） |
+| `parsed` | 仅当 `response_format = JsonObject` 时存在，自动 parse content 为 JSON 对象 |
+
+下游节点引用：
+- `{{nodes.llm_1.output.content}}` — 获取回复文本
+- `{{nodes.llm_1.output.parsed.category}}` — 获取结构化字段
+- `{{nodes.llm_1.output.usage.total_tokens}}` — 获取 token 消耗
+
+### 15.7 `input` 快照
+
+与 HTTP 任务一致（§3.3），LLM 任务的 `task_instance.input` 记录渲染后的完整请求快照：
+
+```json
+{
+  "base_url": "https://api.openai.com/v1",
+  "model": "gpt-4o",
+  "system_prompt": "你是一个文本分类专家，可选类别为：科技, 金融, 医疗, 教育",
+  "user_prompt": "请将以下文本分类到上述类别中：\n\nOpenAI 发布了...",
+  "temperature": 0.3,
+  "max_tokens": 500,
+  "response_format": "JsonObject"
+}
+```
+
+**注意**：`api_key_ref` 指向的 Secret 变量解密后用于构造请求，但**不写入 input 快照**（与 §8.4 Secret 变量脱敏策略一致）。input 中仅记录 `"api_key_ref": "OPENAI_API_KEY"` 变量名，不记录值。
+
+### 15.8 API Key 凭证管理
+
+LLM 的 API Key 不引入新实体，而是复用 §8 变量系统的 **Secret 类型变量**：
+
+```
+用户操作流程:
+  1. 在租户变量（或工作流模板变量）中创建 Secret 变量:
+     key = "OPENAI_API_KEY", type = Secret, value = "sk-proj-xxxx..."
+  2. 在 LLM 模板中引用: api_key_ref = "OPENAI_API_KEY"
+  3. 运行时: resolve_variables() 解密 → 注入执行上下文 → LlmTaskExecutor 读取
+```
+
+**优势**：
+- 复用已有加密存储（AES-256-GCM）和权限控制（Secret 变量仅 TenantAdmin+ 可创建/修改值）
+- 租户变量 → 全租户所有 LLM 节点共享同一 API Key
+- 模板变量 → 不同工作流可用不同 API Key
+- 变量系统已支持 API 掩码返回，前端安全
+
+### 15.9 OpenAI Chat Completions 请求规范
+
+LlmTaskExecutor 向 `{base_url}/chat/completions` 发送标准 OpenAI 格式请求：
+
+```json
+{
+  "model": "gpt-4o",
+  "messages": [
+    { "role": "system", "content": "<渲染后的 system_prompt>" },
+    { "role": "user", "content": "<渲染后的 user_prompt>" }
+  ],
+  "temperature": 0.3,
+  "max_tokens": 500,
+  "response_format": { "type": "json_object" }
+}
+```
+
+| 字段映射 | LlmTemplate → OpenAI API |
+|----------|--------------------------|
+| `system_prompt` | `messages[0].role="system"` |
+| `user_prompt` | `messages[1].role="user"` |
+| `temperature` | `temperature`（省略则不传，用模型默认） |
+| `max_tokens` | `max_tokens`（省略则不传） |
+| `response_format = JsonObject` | `response_format: { "type": "json_object" }` |
+| `response_format = Text / None` | 不传 `response_format` 字段 |
+
+**兼容性说明**：绝大多数 OpenAI 兼容 API（Ollama、vLLM、Azure OpenAI、各大云厂商）均支持上述标准字段。非兼容的 Provider（如原生 Anthropic API）建议通过 LiteLLM 等代理服务转换为兼容接口。
+
+### 15.10 错误处理与重试
+
+```
+LlmTaskExecutor::execute_task()
+  for attempt in 0..=(retry_count):
+    构造 HTTP 请求 → POST {base_url}/chat/completions
+    ├─ 成功 (2xx):
+    │   ├─ response_format=JsonObject 且 content 不是合法 JSON:
+    │   │   → 视为失败，重试（LLM 未遵守格式约束）
+    │   └─ 正常 → return Success { content, usage, model, ... }
+    ├─ 4xx (客户端错误):
+    │   ├─ 429 (Rate Limited) → 重试（尊重 Retry-After header）
+    │   └─ 其他 4xx → 立即失败，不重试（参数错误不会因重试修复）
+    ├─ 5xx (服务端错误) → 重试
+    └─ 超时/网络错误 → 重试
+
+    if attempt < retry_count:
+      sleep(retry_delay) // 如遇 429，取 max(retry_delay, Retry-After)
+
+  全部重试耗尽 → return Failed { error_message }
+```
+
+### 15.11 与 Parallel/ForkJoin 的组合
+
+LLM 任务可作为 Parallel/ForkJoin 的子任务，实现批量 LLM 处理：
+
+**Parallel 场景**（数据并行）：对一批文本逐条调用 LLM 分类
+```json
+{
+  "task_type": "Parallel",
+  "task_template": {
+    "items_path": "texts",
+    "item_alias": "text",
+    "task_template": {
+      "Llm": {
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+        "api_key_ref": "OPENAI_API_KEY",
+        "user_prompt": "分类：{{text}}",
+        "timeout": 30,
+        "retry_count": 2,
+        "retry_delay": 3
+      }
+    },
+    "concurrency": 5,
+    "mode": "Rolling"
+  }
+}
+```
+
+**ForkJoin 场景**（任务并行）：同时调用不同模型做对比
+```json
+{
+  "task_type": "ForkJoin",
+  "task_template": {
+    "tasks": [
+      { "task_key": "gpt4", "task_template": { "Llm": { "model": "gpt-4o", "..." } } },
+      { "task_key": "claude", "task_template": { "Llm": { "model": "claude-sonnet-4-20250514", "..." } } }
+    ],
+    "concurrency": 2,
+    "mode": "Batch"
+  }
+}
+```
+
+### 15.12 前端编辑器
+
+任务模板编辑器和工作流节点编辑器均需支持 LLM 配置：
+
+| 区域 | 内容 |
+|------|------|
+| **基本配置** | base_url 输入（含默认值 `https://api.openai.com/v1`）、model 输入、api_key_ref 下拉（列出当前作用域的 Secret 变量） |
+| **Prompt 编辑** | system_prompt 多行文本框（可选）、user_prompt 多行文本框（必填），支持 `{{}}` 变量提示 |
+| **模型参数** | temperature 滑块（0.0-2.0）、max_tokens 数值输入 |
+| **格式约束** | response_format 下拉：Text / JSON Object |
+| **可靠性** | timeout 数值输入（秒）、retry_count 数值输入、retry_delay 数值输入（秒） |
+| **实例详情** | 显示渲染后的 prompts（input）、LLM 响应内容（output.content）、token 消耗（output.usage）、parsed 结果 |
+
+### 15.13 TaskType 与 TaskTemplate 扩展
+
+```rust
+// shared/workflow.rs
+pub enum TaskType {
+    Http,
+    IfCondition,
+    ContextRewrite,
+    Parallel,
+    ForkJoin,
+    SubWorkflow,
+    Grpc,
+    Approval,
+    Pause,
+    Llm,   // 新增
+}
+
+// task/entity/task_definition.rs
+pub enum TaskTemplate {
+    Http(TaskHttpTemplate),
+    Grpc,
+    Approval(ApprovalTemplate),
+    IfCondition(IfConditionTemplate),
+    ContextRewrite(ContextRewriteTemplate),
+    Parallel(ParallelTemplate),
+    ForkJoin(ForkJoinTemplate),
+    SubWorkflow(SubWorkflowTemplate),
+    Pause(PauseTemplate),
+    Llm(LlmTemplate),   // 新增
+}
+```
+
+### 15.14 涉及代码变更
+
+| 层级 | 变更 |
+|------|------|
+| `domain/shared/workflow.rs` | `TaskType` 新增 `Llm` |
+| `domain/task/entity/task_definition.rs` | `TaskTemplate` 新增 `Llm(LlmTemplate)`；新增 `LlmTemplate`、`LlmResponseFormat` 结构体 |
+| `domain/plugin/plugins/llm.rs` | 新增 `LlmPlugin`：`execute` 构造 `ExecuteTaskJob` + `async_dispatch`；`handle_callback` 使用默认实现 |
+| `domain/plugin/plugins/mod.rs` | 新增 `pub mod llm;` |
+| `domain/task/executors/llm.rs` | 新增 `LlmTaskExecutor`：Prompt 从 `input` 读取 → 构造 Chat Completions 请求 → reqwest 发送 → 解析响应 → 结构化 output |
+| `domain/task/executors/mod.rs` | 新增 `pub mod llm;` |
+| `bin/engine.rs` | 注册 `LlmPlugin` 到 `PluginManager`；注册 `LlmTaskExecutor` 到 `TaskManager` |
+| `domain/plugin/manager/` | `run_node` 对 LLM 模板做 Prompt 插值（与 HTTP 的 `effective_http_request` 类似），将渲染后 prompts + api_key（解密但不落盘）写入 `task_instance.input` |
+| 前端 `types/task.d.ts` | 新增 `LlmTemplate`、`LlmResponseFormat` 类型 |
+| 前端 `utils/constants.ts` | `TASK_TYPE_MAP` 新增 `Llm` |
+| 前端 `views/workflow/editor/` | 节点编辑器新增 LLM 配置面板 |
+| 前端 `views/task/template/editor.vue` | 任务模板编辑器新增 LLM 选项 |
+
+### 15.15 未来扩展（V2+）
+
+| 特性 | 说明 | 优先级 |
+|------|------|--------|
+| 多轮对话 | `messages_from_context: Option<String>` 从 context 读取 messages 数组 | P1 |
+| Function Calling | 定义 tools schema，LLM 返回 tool_call 后映射为子任务 | P2 |
+| 流式输出 | SSE 流式传输中间结果（需前端 UI 配合） | P3 |
+| 多 Provider 原生支持 | Anthropic Messages API、Google Gemini API 原生适配器 | P2 |
+| Token 成本追踪 | 累计 usage 数据到租户维度，支持成本统计和配额管控 | P1 |
+| Prompt 模板库 | 共享可复用的 Prompt 模板，版本管理 | P3 |
+
+---
+
+## 16. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
 
@@ -1704,7 +2098,11 @@ Response (200): { "data": null }
 
 **API Key 系统**：见 **§14 API Key 系统**，采用独立实体 + Token Exchange 模式，零侵入现有账号体系，API Key 换取短效 JWT 用于 API 调用。
 
+**LLM 大模型插件**：见 **§15 LLM Plugin**，采用统一 OpenAI 兼容接口，与 HTTP 任务完全对齐的双层架构（编排插件 + 执行器），复用 Variable 系统管理 API Key，支持 Prompt 模板插值和 JSON Mode 结构化输出。
+
 未来的扩展方案：
 1. **Prometheus metrics 埋点**：sweeper_recovered_total / sweeper_expired_approvals_total / sweeper_expired_pauses_total 等 Counter。
 2. **Webhook / 消息通知**：暂停节点到期或审批超时时推送外部通知。
 3. **JWT 即时吊销**：通过 `jti` + Redis 黑名单实现 API Key 吊销后 JWT 立即失效。
+4. **LLM 多轮对话 / Function Calling**：详见 §15.15。
+5. **LLM Token 成本追踪**：累计 usage 到租户维度，支持成本统计和配额管控。

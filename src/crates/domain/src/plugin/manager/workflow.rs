@@ -13,7 +13,7 @@ use crate::plugin::interface::{ExecutionResult, PluginExecutor};
 use crate::shared::job::{ExecuteWorkflowJob, WorkflowEvent};
 use crate::shared::workflow::{TaskInstanceStatus, WorkflowInstanceStatus};
 use crate::task::entity::task_definition::TaskTemplate;
-use crate::task::http_template_resolve::resolved_http_request_snapshot;
+use crate::task::http_template_resolve::{resolved_http_request_snapshot, resolve_template_placeholders};
 use crate::workflow::entity::workflow_definition::{NodeExecutionStatus, WorkflowInstanceEntity};
 use crate::workflow::resolution_context::augment_merged_context_with_nodes;
 use tracing::{debug, error, info, warn};
@@ -502,8 +502,14 @@ impl PluginManager {
             node.context.clone(),
         );
 
-        if let TaskTemplate::Http(ref tpl) = node.task_instance.task_template {
-            node.task_instance.input = Some(resolved_http_request_snapshot(tpl, &node.context));
+        match &node.task_instance.task_template {
+            TaskTemplate::Http(tpl) => {
+                node.task_instance.input = Some(resolved_http_request_snapshot(tpl, &node.context));
+            }
+            TaskTemplate::Llm(tpl) => {
+                node.task_instance.input = Some(resolved_llm_request_snapshot(tpl, &node.context));
+            }
+            _ => {}
         }
 
         let result = self.execute_node_instance(&mut node, instance).await;
@@ -578,4 +584,41 @@ impl PluginManager {
 
         Ok(())
     }
+}
+
+pub(super) fn resolved_llm_request_snapshot(
+    tpl: &crate::task::entity::task_definition::LlmTemplate,
+    ctx: &serde_json::Value,
+) -> serde_json::Value {
+    let system_prompt = tpl
+        .system_prompt
+        .as_deref()
+        .map(|s| resolve_template_placeholders(s, ctx))
+        .unwrap_or_default();
+    let user_prompt = resolve_template_placeholders(&tpl.user_prompt, ctx);
+    let base_url = resolve_template_placeholders(&tpl.base_url, ctx);
+    let model = resolve_template_placeholders(&tpl.model, ctx);
+
+    let api_key_ref = &tpl.api_key_ref;
+    let api_key = crate::task::http_template_resolve::get_by_path_pub(ctx, api_key_ref)
+        .and_then(|v| match v {
+            serde_json::Value::String(s) => Some(s),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    let mut snapshot = serde_json::json!({
+        "base_url": base_url,
+        "model": model,
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "api_key_ref": api_key_ref,
+        "temperature": tpl.temperature,
+        "max_tokens": tpl.max_tokens,
+        "response_format": tpl.response_format,
+    });
+    if !api_key.is_empty() {
+        snapshot["_api_key"] = serde_json::Value::String(api_key);
+    }
+    snapshot
 }

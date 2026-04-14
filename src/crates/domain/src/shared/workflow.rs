@@ -142,6 +142,7 @@ pub enum TaskType {
     Grpc,
     Approval,
     Pause,
+    Llm,
 }
 
 #[cfg(test)]

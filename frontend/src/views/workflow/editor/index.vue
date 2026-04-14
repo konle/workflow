@@ -183,6 +183,48 @@
               </a-form-item>
             </template>
 
+            <!-- ===== LLM ===== -->
+            <template v-else-if="selectedNode.data.nodeType === 'Llm'">
+              <a-form-item label="Base URL" extra="OpenAI 兼容 API 地址">
+                <a-input v-model="selectedNode.data.config.base_url" placeholder="https://api.openai.com/v1" :disabled="readonly" />
+              </a-form-item>
+              <a-form-item label="模型">
+                <a-input v-model="selectedNode.data.config.model" placeholder="gpt-4o" :disabled="readonly" />
+              </a-form-item>
+              <a-form-item label="API Key 变量引用" extra="对应 Secret 类型变量名">
+                <a-input v-model="selectedNode.data.config.api_key_ref" placeholder="openai_api_key" :disabled="readonly" />
+              </a-form-item>
+              <a-divider>Prompt</a-divider>
+              <a-form-item label="System Prompt">
+                <a-textarea v-model="selectedNode.data.config.system_prompt" :auto-size="{ minRows: 2, maxRows: 8 }" placeholder="可选，支持 {{variable}} 插值" :disabled="readonly" />
+              </a-form-item>
+              <a-form-item label="User Prompt">
+                <a-textarea v-model="selectedNode.data.config.user_prompt" :auto-size="{ minRows: 3, maxRows: 10 }" placeholder="支持 {{variable}} 插值" :disabled="readonly" />
+              </a-form-item>
+              <a-divider>参数</a-divider>
+              <a-form-item label="Temperature">
+                <a-input-number v-model="selectedNode.data.config.temperature" :min="0" :max="2" :step="0.1" placeholder="默认由模型决定" :disabled="readonly" />
+              </a-form-item>
+              <a-form-item label="Max Tokens">
+                <a-input-number v-model="selectedNode.data.config.max_tokens" :min="1" placeholder="默认由模型决定" :disabled="readonly" />
+              </a-form-item>
+              <a-form-item label="超时（秒）">
+                <a-input-number v-model="selectedNode.data.config.timeout" :min="1" :disabled="readonly" />
+              </a-form-item>
+              <a-form-item label="重试次数">
+                <a-input-number v-model="selectedNode.data.config.retry_count" :min="0" :disabled="readonly" />
+              </a-form-item>
+              <a-form-item label="重试间隔（秒）">
+                <a-input-number v-model="selectedNode.data.config.retry_delay" :min="0" :disabled="readonly" />
+              </a-form-item>
+              <a-form-item label="响应格式">
+                <a-select v-model="selectedNode.data.config.response_format" :disabled="readonly">
+                  <a-option value="Text">Text（纯文本）</a-option>
+                  <a-option value="JsonObject">JSON Object（结构化输出）</a-option>
+                </a-select>
+              </a-form-item>
+            </template>
+
             <a-form-item label="Context (JSON)">
               <a-textarea v-model="selectedNode.data.contextJson" :auto-size="{ minRows: 2 }" :disabled="readonly" />
             </a-form-item>
@@ -278,6 +320,7 @@ const nodeTypes = [
   { type: 'Grpc', label: 'gRPC', color: '#722ED1' },
   { type: 'Approval', label: '审批', color: '#F77234' },
   { type: 'Pause', label: '暂停', color: '#F5A623' },
+  { type: 'Llm', label: 'LLM 大模型', color: '#7B61FF' },
 ]
 
 function parallelNodeDataDefaults() {
@@ -299,6 +342,13 @@ function getDefaultConfig(type: string): any {
   switch (type) {
     case 'Http': case 'Approval': case 'Grpc': return {}
     case 'Pause': return { wait_seconds: 10, mode: 'Auto' }
+    case 'Llm': return {
+      base_url: '', model: '', api_key_ref: '',
+      system_prompt: '', user_prompt: '',
+      temperature: null, max_tokens: null,
+      timeout: 30, retry_count: 2, retry_delay: 3,
+      response_format: 'Text',
+    }
     case 'SubWorkflow': return { timeout: null }
     case 'IfCondition': return { name: '', condition: '' }
     case 'ContextRewrite': return { name: '', script: '', merge_mode: 'Merge' }
@@ -731,6 +781,20 @@ function buildWorkflowEntity(): any {
         }
         case 'Pause':
           config = { Pause: { wait_seconds: d.config.wait_seconds || 10, mode: d.config.mode || 'Auto' } }; break
+        case 'Llm':
+          config = { Llm: {
+            base_url: d.config.base_url || '',
+            model: d.config.model || '',
+            api_key_ref: d.config.api_key_ref || '',
+            system_prompt: d.config.system_prompt || null,
+            user_prompt: d.config.user_prompt || '',
+            temperature: d.config.temperature ?? null,
+            max_tokens: d.config.max_tokens ?? null,
+            timeout: d.config.timeout || 30,
+            retry_count: d.config.retry_count ?? 2,
+            retry_delay: d.config.retry_delay ?? 3,
+            response_format: d.config.response_format || null,
+          } }; break
         default: config = d.nodeType
       }
     }
@@ -837,6 +901,15 @@ async function loadFromEntity(entity: any) {
       config = { concurrency: f.concurrency, mode: f.mode, max_failures: f.max_failures, tasksJson: JSON.stringify(f.tasks, null, 2) }
     } else if (type === 'Pause' && n.config?.Pause) {
       config = { wait_seconds: n.config.Pause.wait_seconds, mode: n.config.Pause.mode }
+    } else if (type === 'Llm' && n.config?.Llm) {
+      const l = n.config.Llm
+      config = {
+        base_url: l.base_url || '', model: l.model || '', api_key_ref: l.api_key_ref || '',
+        system_prompt: l.system_prompt || '', user_prompt: l.user_prompt || '',
+        temperature: l.temperature ?? null, max_tokens: l.max_tokens ?? null,
+        timeout: l.timeout || 30, retry_count: l.retry_count ?? 2, retry_delay: l.retry_delay ?? 3,
+        response_format: l.response_format || 'Text',
+      }
     }
 
     const data: Record<string, unknown> = {

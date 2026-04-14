@@ -101,6 +101,35 @@
               </router-link>
             </template>
 
+            <template v-if="selectedNode.node_type === 'Llm' && selectedNode.task_instance?.output">
+              <a-divider>LLM 结果</a-divider>
+              <a-descriptions :column="1" size="small">
+                <a-descriptions-item label="模型">
+                  {{ selectedNode.task_instance.output.model || '-' }}
+                </a-descriptions-item>
+                <a-descriptions-item label="Finish Reason">
+                  {{ selectedNode.task_instance.output.finish_reason || '-' }}
+                </a-descriptions-item>
+                <a-descriptions-item v-if="selectedNode.task_instance.output.usage" label="Token 用量">
+                  prompt={{ selectedNode.task_instance.output.usage.prompt_tokens }},
+                  completion={{ selectedNode.task_instance.output.usage.completion_tokens }},
+                  total={{ selectedNode.task_instance.output.usage.total_tokens }}
+                </a-descriptions-item>
+              </a-descriptions>
+              <a-form-item label="Content" style="margin-top: 8px">
+                <a-textarea
+                  :model-value="typeof selectedNode.task_instance.output.content === 'string' ? selectedNode.task_instance.output.content : JSON.stringify(selectedNode.task_instance.output.content, null, 2)"
+                  :auto-size="{ minRows: 2, maxRows: 15 }"
+                  readonly
+                />
+              </a-form-item>
+              <template v-if="selectedNode.task_instance.output.parsed">
+                <a-form-item label="Parsed (JSON)">
+                  <json-viewer :data="selectedNode.task_instance.output.parsed" />
+                </a-form-item>
+              </template>
+            </template>
+
             <template v-if="selectedNode.node_type === 'Pause' && selectedNode.status === 'Suspended'">
               <a-divider>暂停节点</a-divider>
               <a-descriptions :column="1" size="small">
