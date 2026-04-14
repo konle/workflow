@@ -121,6 +121,12 @@ const routes: RouteRecordRaw[] = [
         name: 'ApprovalDetail',
         component: () => import('../views/approval/detail.vue'),
       },
+      {
+        path: 'api-keys',
+        name: 'ApiKeyList',
+        component: () => import('../views/apikey/list.vue'),
+        meta: { permission: 'UserManage' },
+      },
     ],
   },
   {

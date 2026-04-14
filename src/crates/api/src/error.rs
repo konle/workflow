@@ -37,6 +37,13 @@ impl ApiError {
             message: message.to_string(),
         }
     }
+
+    pub fn unauthorized(message: impl ToString) -> Self {
+        ApiError {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.to_string(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {

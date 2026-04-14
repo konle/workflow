@@ -93,5 +93,15 @@ pub async fn ensure_all_indexes(db: &Database) -> Result<(), Box<dyn std::error:
         ],
     }).await?;
 
+    // ---- api_keys: (tenant_id, id) unique + (key_prefix) unique + (tenant_id, name) unique ----
+    db.run_command(doc! {
+        "createIndexes": "api_keys",
+        "indexes": [
+            { "key": { "tenant_id": 1, "id": 1 }, "name": "uk_tenant_id_id", "unique": true },
+            { "key": { "key_prefix": 1 }, "name": "uk_key_prefix", "unique": true },
+            { "key": { "tenant_id": 1, "name": 1 }, "name": "uk_tenant_id_name", "unique": true },
+        ],
+    }).await?;
+
     Ok(())
 }

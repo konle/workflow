@@ -1,4 +1,5 @@
 pub mod approval;
+pub mod apikey;
 pub mod shared;
 pub mod sweeper;
 pub mod task;

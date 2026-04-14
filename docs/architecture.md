@@ -1426,7 +1426,273 @@ engine 进程
 
 ---
 
-## 14. 总结与扩展
+## 14. API Key 系统
+
+### 14.1 设计总则
+
+API Key 为外部系统（CI/CD、脚本、第三方集成）提供程序化 API 访问能力。采用 **独立实体 + Token Exchange** 模式：API Key 是独立于 `UserEntity` 的实体，不侵入现有账号体系；API Key 不直接用于 API 调用，而是通过 Token Exchange 端点换取短效 JWT，再用 JWT 访问业务 API。
+
+#### 设计选型
+
+| 决策 | 选项 | 结论 |
+|------|------|------|
+| 实体模型 | A. 独立实体 / B. 虚拟用户 | **A. 独立实体**——零侵入现有 `users`/`user_tenant_roles`，职责清晰（人 = User，机器 = ApiKey） |
+| 哈希算法 | SHA-256 / bcrypt | **SHA-256**——API Key 不像密码（泄露后直接吊销），查询性能优先 |
+| 认证流 | 直接认证（每次查 DB）/ Token Exchange | **Token Exchange**——auth_middleware 无需改动，JWT 本地验证零 DB 开销，API Key 减少网络暴露 |
+| API Key 角色 | 允许 TenantAdmin / 禁止 | **禁止 TenantAdmin**——防止通过 API Key 间接提权 |
+
+### 14.2 数据模型
+
+```rust
+pub enum ApiKeyStatus {
+    Active,
+    Revoked,
+}
+
+pub struct ApiKeyEntity {
+    pub id: String,                          // UUID 主键
+    pub tenant_id: String,                   // 所属租户
+    pub name: String,                        // 可读名称（如 "CI/CD Pipeline"）
+    pub key_prefix: String,                  // key 前 8 位明文（用于展示和索引，如 "wfk_a3b1"）
+    pub key_hash: String,                    // SHA-256(完整 key)
+    pub role: TenantRole,                    // Developer / Operator / Viewer（禁止 TenantAdmin）
+    pub expires_at: Option<DateTime<Utc>>,   // API Key 自身有效期，None = 永不过期
+    pub token_ttl_secs: u32,                 // 签发的 JWT 有效期（秒），默认 3600，上限 86400
+    pub last_used_at: Option<DateTime<Utc>>, // 最后一次 Token Exchange 时间
+    pub status: ApiKeyStatus,                // Active / Revoked
+    pub created_by: String,                  // 创建者 user_id
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+```
+
+### 14.3 Key 格式与存储
+
+```
+格式: wfk_{32字符Base62随机串}
+示例: wfk_a3b1c4d5e6f7g8h9i0j1k2l3m4n5o6p7
+```
+
+| 字段 | 存储内容 | 用途 |
+|------|----------|------|
+| `key_prefix` | `"wfk_a3b1"` (前 8 字符) | 唯一索引，用于快速查找和列表展示 |
+| `key_hash` | `SHA-256(完整 key)` | 验证 key 正确性 |
+
+**完整明文 key 仅在创建时返回一次**，此后不可再获取。
+
+### 14.4 认证流程（Token Exchange）
+
+```
+外部系统 使用 API Key:
+
+Phase 1 — 换取短效 JWT（低频，仅在 JWT 过期时）:
+  POST /api/v1/api-keys/token
+  Body: { "key": "wfk_a3b1c4d5e6f7g8h9i0j1k2l3m4n5o6p7" }
+
+  服务端处理:
+    1. 截取 key_prefix = "wfk_a3b1"
+    2. 查 api_keys 集合（key_prefix 唯一索引）
+    3. SHA-256(请求中的 key) == 记录.key_hash ?
+    4. 校验 status == Active
+    5. 校验 expires_at IS NULL || expires_at > now()
+    6. 更新 last_used_at = now()
+    7. 签发 JWT（Claims: sub="apikey:{id}", username=name,
+       is_super_admin=false, tenant_id, role, exp=now+token_ttl_secs）
+
+  响应:
+    {
+      "access_token": "eyJhbGciOiJIUzI1NiI...",
+      "token_type": "Bearer",
+      "expires_in": 3600
+    }
+
+Phase 2 — 用 JWT 调用业务 API（高频，纯内存验证）:
+  Authorization: Bearer eyJhbGciOiJIUzI1NiI...
+  → 现有 auth_middleware → verify_token → AuthContext
+  → 业务 Handler
+```
+
+**关键优势**：auth_middleware **无需任何改动**——Token Exchange 签发的是标准 JWT，与人类用户登录后的 JWT 格式完全一致。区别仅在 `Claims.sub` 的值前缀为 `apikey:`，用于审计追溯。
+
+### 14.5 Token Exchange 端点
+
+```
+POST /api/v1/api-keys/token  (公开端点，无需 JWT 认证)
+
+请求:
+  { "key": "wfk_xxxxxxxxxxxx" }
+
+成功响应 (200):
+  {
+    "access_token": "eyJhbG...",
+    "token_type": "Bearer",
+    "expires_in": 3600
+  }
+
+失败响应:
+  401 — key 无效、已过期、已吊销
+```
+
+### 14.6 JWT 有效期策略
+
+| 参数 | 默认值 | 上限 | 说明 |
+|------|--------|------|------|
+| `token_ttl_secs` | 3600 (1小时) | 86400 (24小时) | 创建 API Key 时指定 |
+
+**吊销生效延迟**：API Key 被吊销后，已签发的 JWT 在到期前仍有效（最长 = `token_ttl_secs`）。新的 Token Exchange 请求会被立即拒绝。
+
+对于 MVP，**不实现 JWT 黑名单**。若后续需要即时吊销，可扩展为：
+
+1. JWT Claims 增加 `jti`（JWT ID）
+2. 吊销时将 `jti` 写入 Redis 黑名单（TTL = 剩余有效期）
+3. auth_middleware 增加 Redis 黑名单检查
+
+### 14.7 API 路由
+
+```
+# API Key 管理（受保护，需要 UserManage 权限 = TenantAdmin+）
+POST   /api/v1/api-keys                 # 创建 → 返回一次性 key 明文
+GET    /api/v1/api-keys                 # 列表（仅 prefix + name + role + 状态，不含 hash）
+DELETE /api/v1/api-keys/{id}            # 吊销 → status = Revoked
+
+# Token Exchange（公开端点，挂在 public_routes，与 /auth/login 同级）
+POST   /api/v1/api-keys/token           # API Key → 短效 JWT
+```
+
+### 14.8 管理 API 详情
+
+#### 创建 API Key
+
+```
+POST /api/v1/api-keys
+Body: {
+  "name": "CI Pipeline",
+  "role": "Developer",            // Developer | Operator | Viewer（禁止 TenantAdmin）
+  "expires_at": "2027-01-01T00:00:00Z",  // 可选，null = 永不过期
+  "token_ttl_secs": 3600          // 可选，签发 JWT 有效期，默认 3600
+}
+
+Response (201):
+{
+  "id": "uuid",
+  "name": "CI Pipeline",
+  "key": "wfk_a3b1c4d5e6f7g8h9i0j1k2l3m4n5o6p7",  // 仅此一次返回明文
+  "key_prefix": "wfk_a3b1",
+  "role": "Developer",
+  "expires_at": "2027-01-01T00:00:00Z",
+  "token_ttl_secs": 3600,
+  "created_at": "..."
+}
+```
+
+#### 列表
+
+```
+GET /api/v1/api-keys
+
+Response:
+[
+  {
+    "id": "uuid",
+    "name": "CI Pipeline",
+    "key_prefix": "wfk_a3b1",
+    "role": "Developer",
+    "expires_at": "2027-01-01T00:00:00Z",
+    "token_ttl_secs": 3600,
+    "last_used_at": "2026-04-10T12:00:00Z",
+    "status": "Active",
+    "created_by": "user_uuid",
+    "created_at": "..."
+  }
+]
+```
+
+#### 吊销
+
+```
+DELETE /api/v1/api-keys/{id}
+
+Response (200): { "data": null }
+```
+
+### 14.9 角色约束
+
+| 可创建的 API Key 角色 | 说明 |
+|----------------------|------|
+| Developer | 模板读写 + 实例执行 |
+| Operator | 仅实例执行 |
+| Viewer | 只读 |
+
+**TenantAdmin 角色禁止通过 API Key 授予**——防止机器凭证获得用户管理权限。SuperAdmin 不可通过 API Key 模拟。
+
+### 14.10 审计追溯
+
+通过 API Key 签发的 JWT，其 `Claims.sub` 格式为 `apikey:{api_key_id}`。所有后续 API 调用中 `AuthContext.user_id` 均携带此前缀，可在日志和审计系统中区分人工操作与机器操作。
+
+### 14.11 MongoDB 集合
+
+```
+集合名: api_keys
+
+唯一索引:
+  - (key_prefix)       — 用于 Token Exchange 快速查找
+  - (tenant_id, name)  — 同租户内名称唯一
+
+文档结构:
+{
+  id: String,
+  tenant_id: String,
+  name: String,
+  key_prefix: String,
+  key_hash: String,
+  role: TenantRole,
+  expires_at: Option<DateTime>,
+  token_ttl_secs: u32,
+  last_used_at: Option<DateTime>,
+  status: ApiKeyStatus,
+  created_by: String,
+  created_at: DateTime,
+  updated_at: DateTime
+}
+```
+
+### 14.12 前端页面
+
+在用户管理或租户设置区域新增 "API Keys" 管理页面：
+
+| 功能 | UI |
+|------|-----|
+| **列表** | 表格展示 name、key_prefix（掩码 `wfk_a3b1****`）、角色、有效期、最后使用时间、状态 |
+| **创建** | 表单：名称、角色下拉（Developer/Operator/Viewer）、有效期日期选择器、JWT TTL 输入 |
+| **创建成功** | 弹窗显示完整 key + 复制按钮 + 警告"关闭后不可再查看" |
+| **吊销** | 确认弹窗后标记 Revoked |
+
+### 14.13 安全考量
+
+| 维度 | 策略 |
+|------|------|
+| Key 存储 | SHA-256 哈希，不存明文 |
+| 网络暴露 | API Key 仅在 Token Exchange 时传输（低频），JWT 用于高频调用 |
+| 权限上限 | API Key 不可拥有 TenantAdmin / SuperAdmin 权限 |
+| 有效期 | API Key 可设自定义过期时间；JWT 有效期独立控制（上限 24h） |
+| 吊销 | 立即阻止新 JWT 签发；已签发 JWT 在到期前仍有效（MVP 不做黑名单） |
+| Rate Limit | 后续可对 Token Exchange 端点做限速，防止暴力破解 |
+
+### 14.14 实施步骤
+
+| 步骤 | 内容 |
+|------|------|
+| 1 | `domain/apikey/entity` — ApiKeyEntity + ApiKeyStatus |
+| 2 | `domain/apikey/repository` — ApiKeyRepository trait |
+| 3 | `infrastructure/mongodb/apikey` — MongoDB 实现 + 唯一索引 |
+| 4 | `domain/apikey/service` — 创建（生成 key + SHA-256）、认证+签发 JWT、吊销、列表 |
+| 5 | `api/handler/apikey` — 管理 API（CRUD）+ Token Exchange 公开端点 |
+| 6 | `api/router` — 管理路由挂 protected（UserManage），Token Exchange 挂 public |
+| 7 | 前端：API Key 管理页面 |
+
+---
+
+## 15. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
 
@@ -1436,6 +1702,9 @@ engine 进程
 
 **暂停节点**：见 **§11 暂停节点 (Pause Plugin)**，支持 Auto（Sweeper 驱动定时唤醒）和 Manual（人工确认 + 服务端时间校验）两种模式。
 
+**API Key 系统**：见 **§14 API Key 系统**，采用独立实体 + Token Exchange 模式，零侵入现有账号体系，API Key 换取短效 JWT 用于 API 调用。
+
 未来的扩展方案：
 1. **Prometheus metrics 埋点**：sweeper_recovered_total / sweeper_expired_approvals_total / sweeper_expired_pauses_total 等 Counter。
 2. **Webhook / 消息通知**：暂停节点到期或审批超时时推送外部通知。
+3. **JWT 即时吊销**：通过 `jti` + Redis 黑名单实现 API Key 吊销后 JWT 立即失效。

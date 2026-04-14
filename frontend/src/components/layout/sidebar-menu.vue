@@ -38,6 +38,11 @@
       用户管理
     </a-menu-item>
 
+    <a-menu-item v-if="canManageUsers" key="api-keys">
+      <template #icon><icon-safe /></template>
+      API Keys
+    </a-menu-item>
+
     <a-menu-item v-if="isSuperAdmin" key="tenants">
       <template #icon><icon-apps /></template>
       租户管理
@@ -57,6 +62,7 @@ import {
   IconCheckSquare,
   IconUserGroup,
   IconApps,
+  IconSafe,
 } from '@arco-design/web-vue/es/icon'
 
 const router = useRouter()
@@ -72,6 +78,7 @@ const MENU_ROUTE_MAP: Record<string, string> = {
   variables: '/variables',
   approvals: '/approvals',
   users: '/users',
+  'api-keys': '/api-keys',
   tenants: '/tenants',
 }
 
@@ -84,6 +91,7 @@ const ROUTE_MENU_MAP: Record<string, string> = {
   '/variables': 'variables',
   '/approvals': 'approvals',
   '/users': 'users',
+  '/api-keys': 'api-keys',
   '/tenants': 'tenants',
 }
 

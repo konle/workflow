@@ -1,5 +1,6 @@
 use axum::{middleware, Router};
 use std::sync::Arc;
+use crate::handler::apikey::{self, ApiKeyHandler};
 use crate::handler::approval::{ApprovalHandler, routes as approval_routes};
 use crate::handler::auth::{AuthHandler, public_routes as auth_public_routes, protected_routes as auth_protected_routes};
 use crate::handler::task::{TaskHandler, TaskInstanceHandler, routes as task_routes};
@@ -18,18 +19,23 @@ pub fn create_router(
     user_handler: Arc<UserHandler>,
     variable_handler: Arc<VariableHandler>,
     approval_handler: Arc<ApprovalHandler>,
+    apikey_handler: Arc<ApiKeyHandler>,
     task_handler: Arc<TaskHandler>,
     task_instance_handler: Arc<TaskInstanceHandler>,
     workflow_handler: Arc<WorkflowHandler>,
     workflow_instance_handler: Arc<WorkflowInstanceHandler>,
 ) -> Router {
     let public = Router::new()
-        .nest("/auth", auth_public_routes(auth_handler.clone()));
+        .nest("/auth", auth_public_routes(auth_handler.clone()))
+        .nest("/api-keys", apikey::public_routes(apikey_handler.clone()));
 
     let tenant_mgmt = tenant_routes(tenant_handler)
         .layer(middleware::from_fn(require_super_admin()));
 
     let user_mgmt = user_routes(user_handler)
+        .layer(middleware::from_fn(require_permission(Permission::UserManage)));
+
+    let apikey_mgmt = apikey::protected_routes(apikey_handler)
         .layer(middleware::from_fn(require_permission(Permission::UserManage)));
 
     let protected = Router::new()
@@ -38,6 +44,7 @@ pub fn create_router(
         .nest("/users", user_mgmt)
         .nest("/variables", tenant_variable_routes(variable_handler.clone()))
         .nest("/approvals", approval_routes(approval_handler))
+        .nest("/api-keys", apikey_mgmt)
         .nest("/task", task_routes(task_handler, task_instance_handler))
         .nest("/workflow", workflow_routes(workflow_handler, workflow_instance_handler, variable_handler))
         .layer(middleware::from_fn(auth_middleware));
