@@ -15,6 +15,11 @@
         <template #action="{ record }">
           <a-space>
             <a-button v-if="canWrite" type="text" size="small" @click="$router.push(`/tasks/${record.id}/edit`)">编辑</a-button>
+            <a-button
+              v-if="record.status === 'Published' && isStandaloneType(record.task_type)"
+              type="text" size="small" status="success"
+              @click="$router.push(`/tasks/${record.id}/edit?tab=execute`)"
+            >执行</a-button>
             <a-popconfirm v-if="canWrite" content="确定删除？" @ok="handleDelete(record.id)">
               <a-button type="text" size="small" status="danger">删除</a-button>
             </a-popconfirm>
@@ -38,6 +43,8 @@ import type { TaskEntity } from '../../../types/task'
 const { canWrite } = usePermission()
 const list = ref<TaskEntity[]>([])
 const loading = ref(false)
+const STANDALONE_TYPES = ['Http', 'Llm']
+function isStandaloneType(t: string) { return STANDALONE_TYPES.includes(t) }
 
 const columns = [
   { title: '名称', dataIndex: 'name' },
@@ -45,7 +52,7 @@ const columns = [
   { title: '状态', slotName: 'status', width: 100 },
   { title: '描述', dataIndex: 'description', ellipsis: true },
   { title: '更新时间', slotName: 'updated_at', width: 180 },
-  { title: '操作', slotName: 'action', width: 140 },
+  { title: '操作', slotName: 'action', width: 200 },
 ]
 
 async function fetchList() {

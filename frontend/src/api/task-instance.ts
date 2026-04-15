@@ -2,8 +2,13 @@ import request from './request'
 import type { TaskInstanceEntity, ListTaskInstancesParams } from '../types/task'
 import type { PaginatedData } from '../types/pagination'
 
+export interface CreateTaskInstanceRequest {
+  task_id: string
+  context?: Record<string, unknown>
+}
+
 export const taskInstanceApi = {
-  create: (data: Partial<TaskInstanceEntity>) =>
+  create: (data: CreateTaskInstanceRequest) =>
     request.post<any, { data: TaskInstanceEntity }>('/task/instance', data),
 
   list: (params?: ListTaskInstancesParams) =>

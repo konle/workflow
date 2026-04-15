@@ -2,7 +2,7 @@
   <div>
     <a-page-header :title="isEdit ? '编辑任务模板' : '创建任务模板'" @back="$router.push('/tasks')" />
 
-    <a-tabs default-active-key="config" @change="handleTabChange">
+    <a-tabs :default-active-key="initialTab" @change="handleTabChange">
       <a-tab-pane key="config" title="模板配置">
         <a-card :loading="pageLoading">
           <a-form :model="form" layout="vertical" @submit-success="handleSave">
@@ -268,6 +268,60 @@
           </a-table>
         </a-card>
       </a-tab-pane>
+
+      <a-tab-pane v-if="isEdit && isStandaloneType" key="execute" title="执行">
+        <a-card title="独立执行">
+          <a-alert type="info" style="margin-bottom: 16px">
+            填写参数后点击「创建并执行」，系统将创建一个任务实例并立即投递执行。
+          </a-alert>
+
+          <a-form layout="vertical" size="small">
+            <template v-if="execFormDefs.length > 0">
+              <a-form-item
+                v-for="f in execFormDefs"
+                :key="f.key"
+                :label="f.key"
+                :extra="f.description || undefined"
+              >
+                <a-input
+                  v-if="f.type === 'String' || f.type === 'Variable'"
+                  v-model="execFormValues[f.key]"
+                  :placeholder="f.defaultValue != null ? String(f.defaultValue) : ''"
+                />
+                <a-input-number v-else-if="f.type === 'Number'" v-model="execFormValues[f.key]" style="width: 100%" />
+                <a-select v-else-if="f.type === 'Bool'" v-model="execFormValues[f.key]">
+                  <a-option :value="true">true</a-option>
+                  <a-option :value="false">false</a-option>
+                </a-select>
+                <a-textarea v-else v-model="execFormValues[f.key]" :auto-size="{ minRows: 2 }" placeholder="JSON" />
+              </a-form-item>
+            </template>
+
+            <a-collapse :default-active-key="[]" style="margin-bottom: 16px">
+              <a-collapse-item key="raw" header="高级：原始 Context (JSON)">
+                <a-textarea v-model="execRawContext" :auto-size="{ minRows: 3, maxRows: 10 }" placeholder='{"key": "value"}' />
+              </a-collapse-item>
+            </a-collapse>
+
+            <a-space>
+              <a-button type="primary" :loading="executing" @click="handleCreateAndExecute">创建并执行</a-button>
+            </a-space>
+          </a-form>
+
+          <template v-if="execResultInstance">
+            <a-divider />
+            <a-descriptions :column="2" size="small" bordered>
+              <a-descriptions-item label="实例ID">{{ execResultInstance.task_instance_id }}</a-descriptions-item>
+              <a-descriptions-item label="状态">
+                <status-tag :status="execResultInstance.task_status" :map="TASK_INSTANCE_STATUS_MAP" />
+              </a-descriptions-item>
+            </a-descriptions>
+            <a-space style="margin-top: 12px">
+              <a-button type="text" @click="$router.push(`/tasks/instances/${execResultInstance.id}`)">查看详情</a-button>
+            </a-space>
+          </template>
+        </a-card>
+      </a-tab-pane>
     </a-tabs>
   </div>
 </template>
@@ -288,6 +342,10 @@ const route = useRoute()
 const router = useRouter()
 const isEdit = computed(() => !!route.params.id)
 const taskId = computed(() => route.params.id as string)
+const initialTab = computed(() => {
+  const tab = route.query.tab as string
+  return (tab === 'execute' || tab === 'instances') ? tab : 'config'
+})
 const pageLoading = ref(false)
 const saving = ref(false)
 
@@ -514,6 +572,68 @@ function handleTabChange(key: string) {
   if (key === 'instances' && !instancesLoaded.value) {
     instancesLoaded.value = true
     fetchInstances()
+  }
+}
+
+// ---- 执行 Tab ----
+
+const STANDALONE_TYPES = ['Http', 'Llm']
+const isStandaloneType = computed(() => STANDALONE_TYPES.includes(form.task_type))
+
+interface ExecFormDef {
+  key: string
+  type: string
+  defaultValue: any
+  description: string
+}
+
+const execFormDefs = computed<ExecFormDef[]>(() => {
+  if (form.task_type === 'Http') {
+    return httpConfig.form
+      .filter(f => f.key.trim())
+      .map(f => ({ key: f.key, type: f.type, defaultValue: f.value, description: f.description }))
+  }
+  return []
+})
+
+const execFormValues = reactive<Record<string, any>>({})
+const execRawContext = ref('')
+const executing = ref(false)
+const execResultInstance = ref<TaskInstanceEntity | null>(null)
+
+function buildExecContext(): Record<string, any> {
+  const ctx: Record<string, any> = {}
+  let raw: Record<string, any> = {}
+  if (execRawContext.value.trim()) {
+    try { raw = JSON.parse(execRawContext.value) } catch {}
+  }
+  Object.assign(ctx, raw)
+  for (const def of execFormDefs.value) {
+    const val = execFormValues[def.key]
+    if (val !== undefined && val !== null && val !== '') {
+      ctx[def.key] = val
+    } else if (def.defaultValue !== undefined && def.defaultValue !== null && def.defaultValue !== '') {
+      ctx[def.key] = def.defaultValue
+    }
+  }
+  return ctx
+}
+
+async function handleCreateAndExecute() {
+  executing.value = true
+  execResultInstance.value = null
+  try {
+    const context = buildExecContext()
+    const createRes = await taskInstanceApi.create({ task_id: taskId.value, context })
+    const instanceId = createRes.data.id
+    await taskInstanceApi.execute(instanceId)
+    execResultInstance.value = createRes.data
+    Notification.success({ content: '已创建并提交执行' })
+    if (instancesLoaded.value) fetchInstances()
+  } catch {
+    Notification.error({ content: '执行失败' })
+  } finally {
+    executing.value = false
   }
 }
 

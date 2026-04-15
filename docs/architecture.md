@@ -2086,7 +2086,474 @@ pub enum TaskTemplate {
 
 ---
 
-## 16. 总结与扩展
+## 16. 通知系统 (Notification System)
+
+### 16.1 设计原则
+
+1. **异步解耦**：事件产生方只投递一条轻量事件到 apalis-redis 队列，零性能影响。独立的 Notification Worker 消费并分发。
+2. **两层订阅**：全局（租户级）+ 资源级（工作流模板级），用户自主选择关注的事件类型和渠道。
+3. **渠道可扩展**：V1 支持站内通知 + Webhook，架构上预留邮件 / IM 等渠道扩展点。
+4. **容器节点不冒泡**：Parallel / ForkJoin / SubWorkflow 等容器只通知容器节点自身的状态转换，内部子任务事件不独立产生通知。
+5. **Payload 精简**：通知内容简短但信息充足，附带页面跳转链接，详细信息由用户在页面查看。
+6. **审批强制推送**：`approval.pending` 等审批类事件不走用户订阅，而是**直接推送**给审批人列表中的所有用户。审批通知和用户主动订阅是两个独立的业务领域。
+7. **独立任务不通知**：V1 仅对工作流内的事件产生通知，独立执行的任务（无工作流上下文）不产生通知事件。
+
+### 16.2 事件目录 (Event Catalog)
+
+#### 16.2.1 用户可订阅的事件
+
+| 事件类别 | 事件类型标识 | 描述 |
+|---------|------------|------|
+| **工作流实例** | `workflow.started` | 工作流实例开始执行 |
+| | `workflow.completed` | 工作流实例成功完成 |
+| | `workflow.failed` | 工作流实例执行失败 |
+| | `workflow.canceled` | 工作流实例被取消 |
+| | `workflow.suspended` | 工作流实例被挂起（审批/暂停） |
+| | `workflow.resumed` | 工作流实例从挂起恢复 |
+| **节点执行** | `node.started` | 节点开始执行 |
+| | `node.success` | 节点执行成功 |
+| | `node.failed` | 节点执行失败 |
+| | `node.skipped` | 节点被跳过 |
+| | `node.suspended` | 节点进入挂起（审批/暂停） |
+| **暂停节点** | `pause.waiting` | 暂停节点进入等待 |
+| | `pause.expired` | 暂停计时到期（手动模式待确认） |
+| | `pause.resumed` | 暂停节点已恢复 |
+| **系统** | `sweeper.recovered` | Sweeper 恢复了僵尸实例 |
+
+#### 16.2.2 强制推送事件（不走订阅）
+
+以下事件**直接推送**给相关用户，不依赖订阅配置：
+
+| 事件类型标识 | 推送目标 | 描述 |
+|------------|---------|------|
+| `approval.pending` | 审批人列表 | 新审批待处理 |
+| `approval.approved` | 审批发起方（工作流创建者） | 审批已通过 |
+| `approval.rejected` | 审批发起方 | 审批已驳回 |
+| `approval.expired` | 审批人列表 + 审批发起方 | 审批超时自动驳回 |
+
+**设计理由**：审批是面向特定用户的主动通知行为（"你有一个审批需要处理"），与用户主动订阅事件（"我想关注某个工作流的状态"）是两个独立的业务领域。审批通知必须确保送达，不能因为用户没有配置订阅就遗漏。
+
+**事件产生规则**：
+- 工作流实例级事件：在 `WorkflowInstanceStatus` 变更时产生。
+- 节点级事件：仅限工作流实例的**顶层节点**（`WorkflowNodeInstanceEntity` 直属节点），容器内部子任务不独立产生通知。
+- 审批事件：在审批创建 / 审批状态变更 / Sweeper 到期处理时，强制推送。
+- 暂停事件：在暂停节点创建 / Sweeper 到期处理时产生。
+- 独立任务：**V1 不产生通知事件**。
+
+### 16.3 订阅模型
+
+两层订阅结构：
+
+```
+全局订阅（租户级）    →  用户选择事件类型 + 渠道
+                        适用于该租户下所有工作流
+
+资源级订阅（模板级）  →  用户选择事件类型 + 渠道 + 指定工作流模板 ID
+                        覆盖全局设置（额外关注或屏蔽特定模板的事件）
+```
+
+#### 16.3.1 数据模型
+
+```rust
+/// 通知订阅
+pub struct NotificationSubscription {
+    pub subscription_id: String,
+    pub tenant_id: String,
+    pub user_id: String,
+
+    /// 订阅范围
+    pub scope: SubscriptionScope,
+    /// 资源级时：资源类型，如 "workflow_meta"
+    pub resource_type: Option<String>,
+    /// 资源级时：资源 ID，如 workflow_meta_id
+    pub resource_id: Option<String>,
+
+    /// 订阅的事件类型列表（仅限 §16.2.1 中用户可订阅的事件）
+    pub event_types: Vec<String>,
+
+    /// 渠道配置
+    pub channels: Vec<NotificationChannel>,
+
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+pub enum SubscriptionScope {
+    Global,
+    Resource,
+}
+
+pub enum NotificationChannel {
+    InApp,
+    Webhook {
+        url: String,
+        /// 可选，用于 HMAC-SHA256 签名验证
+        secret: Option<String>,
+    },
+}
+```
+
+#### 16.3.2 订阅匹配逻辑
+
+当可订阅事件 `E(event_type, workflow_meta_id)` 产生时：
+1. 查找租户下所有 `enabled=true` 的订阅。
+2. **资源级优先**：如果用户对该 `workflow_meta_id` 有资源级订阅，仅使用资源级订阅的配置。
+3. **全局兜底**：如果用户没有该模板的资源级订阅，使用全局订阅的配置。
+4. 按匹配到的订阅的 `channels` 列表分别投递。
+
+### 16.4 通知记录
+
+```rust
+/// 通知记录（站内通知 + Webhook 投递记录共用）
+pub struct NotificationRecord {
+    pub notification_id: String,
+    pub tenant_id: String,
+    pub user_id: String,
+
+    pub event_type: String,
+    /// 事件简要数据（不含 output/input 大字段）
+    pub event_payload: serde_json::Value,
+
+    /// 来源信息
+    pub source_type: String,      // "workflow_instance" / "approval" / "sweeper"
+    pub source_id: String,        // 实例 ID / 审批 ID 等
+    pub workflow_meta_id: Option<String>,
+
+    /// 页面跳转链接
+    pub url: Option<String>,
+
+    /// 各渠道投递状态
+    pub channel_statuses: Vec<ChannelDeliveryStatus>,
+
+    /// 站内通知已读状态
+    pub read: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+pub struct ChannelDeliveryStatus {
+    pub channel: String,          // "in_app" / "webhook"
+    pub status: DeliveryStatus,
+    pub sent_at: Option<DateTime<Utc>>,
+    pub error: Option<String>,
+}
+
+pub enum DeliveryStatus {
+    Pending,
+    Sent,
+    Failed,
+}
+```
+
+**保留策略**：通知记录保留 **30 天**，过期由 MongoDB TTL 索引自动清理。
+
+### 16.5 架构
+
+#### 16.5.1 Dispatcher
+
+通知系统使用**独立的 `NotificationDispatcher` trait**，与现有 `TaskDispatcher` 分离：
+
+```rust
+#[async_trait]
+pub trait NotificationDispatcher: Send + Sync {
+    async fn dispatch_notification(
+        &self,
+        event: NotificationEvent,
+    ) -> anyhow::Result<()>;
+}
+
+pub struct NotificationEvent {
+    pub tenant_id: String,
+    pub event_type: String,
+    pub workflow_meta_id: Option<String>,
+    /// 强制推送的目标用户列表（审批事件使用）
+    pub target_user_ids: Option<Vec<String>>,
+    pub payload: serde_json::Value,
+}
+```
+
+**`target_user_ids`**：
+- 为 `None` 时：走订阅匹配逻辑（§16.3.2）。
+- 为 `Some(users)` 时：**强制推送**给指定用户（审批事件），不查订阅，统一使用 InApp 渠道。
+
+实现：`ApalisNotificationDispatcher`，将 `NotificationEvent` 投递到 apalis-redis 的 `notification_events` 队列。
+
+#### 16.5.2 Worker
+
+```
+事件产生方 (Workflow Worker / Sweeper / API Handler)
+       │
+       │  notification_dispatcher.dispatch_notification(event)
+       ▼
+  apalis-redis 队列 (notification_events)
+       │
+       ▼
+  NotificationWorker (Engine 进程内，独立消费)
+       │
+       ├── target_user_ids 不为空 → 强制推送模式
+       │      └── 为每个用户创建 InApp NotificationRecord
+       │
+       └── target_user_ids 为空 → 订阅匹配模式
+              ├── 1. 按 tenant_id + event_type + workflow_meta_id 查找匹配订阅
+              ├── 2. 资源级优先，全局兜底
+              ├── 3. 按渠道分发：
+              │      ├── InApp → 写入 notification_records (MongoDB)
+              │      └── Webhook → HTTP POST（失败重试 3 次）
+              └── 4. 更新 channel_statuses
+```
+
+**NotificationWorker 运行在 Engine 进程**，与 Workflow Worker / Task Worker / Sweeper 同进程，共享 apalis-redis 连接。V1 足够轻量，无需独立进程。
+
+#### 16.5.3 事件嵌入点
+
+各模块持有 `Arc<dyn NotificationDispatcher>` 并在关键时刻投递事件：
+
+| 位置 | 事件 | 方式 |
+|------|------|------|
+| **Workflow Worker** `run_node` 成功后 | `node.success` | dispatch_notification |
+| **Workflow Worker** `run_node` 失败后 | `node.failed` | dispatch_notification |
+| **Workflow Worker** `apply_exec_result` 工作流终态 | `workflow.completed` / `workflow.failed` | dispatch_notification |
+| **Workflow Worker** 工作流开始执行 | `workflow.started` | dispatch_notification |
+| **Approval Plugin** 创建审批 | `approval.pending` | dispatch_notification (target_user_ids = 审批人) |
+| **Approval Plugin** / API 审批完成 | `approval.approved` / `approval.rejected` | dispatch_notification (target_user_ids = 发起方) |
+| **Sweeper** `sweep_expired_approvals` | `approval.expired` | dispatch_notification (target_user_ids = 审批人+发起方) |
+| **Sweeper** `sweep_expired_pause_nodes` | `pause.expired` | dispatch_notification |
+| **API Handler** 取消实例 | `workflow.canceled` | dispatch_notification |
+| **API Handler** 跳过节点 | `node.skipped` | dispatch_notification |
+
+#### 16.5.4 页面链接生成
+
+Webhook payload 和站内通知中包含 `url` 字段，指向前端实例详情页面。
+
+**配置**：在应用配置文件中新增 `frontend_base_url` 字段：
+
+```toml
+[notification]
+frontend_base_url = "https://your-domain.com"
+```
+
+**链接格式**：
+- 工作流实例相关：`{frontend_base_url}/workflows/instances/{workflow_instance_id}`
+- 审批相关：`{frontend_base_url}/workflows/instances/{workflow_instance_id}`（跳到实例页查看审批节点）
+
+### 16.6 Webhook 规范
+
+#### 16.6.1 请求格式
+
+```
+POST {user_webhook_url}
+Content-Type: application/json
+X-Webhook-Event: workflow.failed
+X-Webhook-Timestamp: 2026-04-10T10:30:00Z
+X-Webhook-Signature: sha256=<hex_hmac>   (仅当配置了 secret 时)
+
+{
+    "event_type": "workflow.failed",
+    "timestamp": "2026-04-10T10:30:00Z",
+    "tenant_id": "d409a474-...",
+    "data": {
+        "workflow_instance_id": "abc123",
+        "workflow_meta_id": "def456",
+        "workflow_name": "数据同步",
+        "version": 3,
+        "status": "Failed",
+        "failed_node": "fetch_data",
+        "error_message": "HTTP 节点执行超时"
+    },
+    "url": "https://your-domain.com/workflows/instances/abc123"
+}
+```
+
+#### 16.6.2 签名验证
+
+当用户配置了 `secret` 时，请求头附带 `X-Webhook-Signature`：
+
+```
+X-Webhook-Signature: sha256=HMAC_SHA256(raw_request_body, secret)
+```
+
+接收方验签伪代码：
+```python
+import hmac, hashlib
+expected = hmac.new(secret.encode(), request.body, hashlib.sha256).hexdigest()
+actual = request.headers["X-Webhook-Signature"].removeprefix("sha256=")
+assert hmac.compare_digest(expected, actual)
+```
+
+用户不配置 secret 时，不附带签名头，正常 POST。
+
+#### 16.6.3 重试策略
+
+Webhook 投递失败（网络异常、非 2xx 响应）时重试：
+- 最多 **3 次**，间隔 5s / 15s / 30s（指数退避）。
+- 最终仍失败则标记 `channel_statuses[webhook].status = Failed`，记录错误信息。
+
+#### 16.6.4 各事件 Payload 示例
+
+**workflow.completed**：
+```json
+{
+    "event_type": "workflow.completed",
+    "timestamp": "2026-04-10T10:30:00Z",
+    "tenant_id": "d409a474-...",
+    "data": {
+        "workflow_instance_id": "abc123",
+        "workflow_meta_id": "def456",
+        "workflow_name": "数据同步",
+        "version": 3,
+        "status": "Completed"
+    },
+    "url": "https://your-domain.com/workflows/instances/abc123"
+}
+```
+
+**node.failed**：
+```json
+{
+    "event_type": "node.failed",
+    "timestamp": "2026-04-10T10:31:00Z",
+    "tenant_id": "d409a474-...",
+    "data": {
+        "workflow_instance_id": "abc123",
+        "workflow_meta_id": "def456",
+        "workflow_name": "数据同步",
+        "node_id": "fetch_data",
+        "node_type": "Http",
+        "status": "Failed",
+        "error_message": "connection timeout"
+    },
+    "url": "https://your-domain.com/workflows/instances/abc123"
+}
+```
+
+**approval.pending（强制推送）**：
+```json
+{
+    "event_type": "approval.pending",
+    "timestamp": "2026-04-10T10:32:00Z",
+    "tenant_id": "d409a474-...",
+    "data": {
+        "workflow_instance_id": "abc123",
+        "workflow_meta_id": "def456",
+        "workflow_name": "数据同步",
+        "node_id": "manager_approve",
+        "approval_id": "appr_789",
+        "approvers": ["alice", "bob"],
+        "mode": "Any",
+        "timeout_seconds": 3600
+    },
+    "url": "https://your-domain.com/workflows/instances/abc123"
+}
+```
+
+### 16.7 站内通知
+
+#### 16.7.1 API 接口
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| GET | `/api/v1/notifications` | 登录用户 | 分页查询当前用户通知列表 |
+| GET | `/api/v1/notifications/unread-count` | 登录用户 | 获取未读通知数量 |
+| PUT | `/api/v1/notifications/{id}/read` | 登录用户 | 标记单条已读 |
+| PUT | `/api/v1/notifications/read-all` | 登录用户 | 标记全部已读 |
+
+#### 16.7.2 前端交互
+
+1. **Header 铃铛**：右上角通知图标 + 未读数量角标，轮询间隔 **30 秒**。
+2. **通知下拉面板**：点击铃铛展开最近通知列表，每条显示事件类型图标 + 摘要文本 + 时间。
+3. **通知列表页**：完整的通知历史，支持按事件类型筛选、标记已读 / 全部已读。
+4. **点击跳转**：每条通知关联一个目标页面链接（如工作流实例详情页）。
+
+### 16.8 订阅管理
+
+#### 16.8.1 API 接口
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| GET | `/api/v1/subscriptions` | 登录用户 | 查询当前用户的订阅列表 |
+| POST | `/api/v1/subscriptions` | 登录用户 | 创建订阅 |
+| PUT | `/api/v1/subscriptions/{id}` | 登录用户 | 更新订阅 |
+| DELETE | `/api/v1/subscriptions/{id}` | 登录用户 | 删除订阅 |
+
+#### 16.8.2 前端交互
+
+**订阅管理页**（可放在用户中心或独立菜单）：
+1. **全局订阅卡片**：事件类型多选 + 渠道配置（站内通知开关 + Webhook URL/Secret）。
+2. **资源级订阅列表**：选择工作流模板 → 事件类型多选 + 渠道配置。
+3. 每条订阅支持启用 / 禁用开关。
+
+### 16.9 MongoDB 集合与索引
+
+**`notification_subscriptions` 集合**：
+
+```javascript
+// 唯一索引：同一用户同一范围同一资源只有一条订阅
+db.notification_subscriptions.createIndex(
+    { tenant_id: 1, user_id: 1, scope: 1, resource_type: 1, resource_id: 1 },
+    { unique: true }
+)
+```
+
+**`notification_records` 集合**：
+
+```javascript
+// 查询索引：按用户 + 租户查通知列表
+db.notification_records.createIndex({ tenant_id: 1, user_id: 1, created_at: -1 })
+// 未读计数索引
+db.notification_records.createIndex({ tenant_id: 1, user_id: 1, read: 1 })
+// TTL 索引：30 天自动过期
+db.notification_records.createIndex({ created_at: 1 }, { expireAfterSeconds: 2592000 })
+```
+
+### 16.10 代码变更清单
+
+**后端**：
+
+| 文件 | 变更 |
+|------|------|
+| `src/crates/domain/src/notification/entity/mod.rs` | `NotificationSubscription`、`NotificationRecord`、`NotificationEvent`、`NotificationChannel`、枚举等实体 |
+| `src/crates/domain/src/notification/repository/mod.rs` | `NotificationSubscriptionRepository`、`NotificationRecordRepository` trait |
+| `src/crates/domain/src/notification/service.rs` | `NotificationService`（订阅 CRUD、通知查询、已读标记、未读计数） |
+| `src/crates/domain/src/notification/dispatcher.rs` | `NotificationDispatcher` trait 定义 |
+| `src/crates/domain/src/notification/mod.rs` | 模块声明 |
+| `src/crates/domain/src/lib.rs` | `pub mod notification;` |
+| `src/crates/infrastructure/src/mongodb/notification/` | MongoDB Repository 实现 + 索引创建 |
+| `src/crates/infrastructure/src/queue/dispatcher.rs` | `ApalisNotificationDispatcher` 实现（投递到 apalis-redis） |
+| `src/crates/api/src/handler/notification/mod.rs` | 通知 API Handler（列表、未读数、已读） |
+| `src/crates/api/src/handler/subscription/mod.rs` | 订阅管理 API Handler（CRUD） |
+| `src/crates/api/src/router.rs` | 注册通知和订阅路由 |
+| `src/crates/domain/src/plugin/manager/workflow.rs` | `PluginManager` 持有 `NotificationDispatcher`，节点/工作流状态变更时投递事件 |
+| `src/crates/domain/src/plugin/plugins/approval.rs` | 审批创建时投递 `approval.pending` 强制推送 |
+| `src/crates/domain/src/sweeper/mod.rs` | Sweeper 持有 `NotificationDispatcher`，各处理函数追加通知投递 |
+| `src/bin/apiserver.rs` | 初始化 `NotificationService`、`NotificationDispatcher`、注册 Handler |
+| `src/bin/engine.rs` | 初始化 `NotificationDispatcher`、注册 `NotificationWorker`、传递给 `PluginManager` 和 `Sweeper` |
+| `config.toml` (或等效) | 新增 `[notification]` 段：`frontend_base_url` |
+
+**前端**：
+
+| 文件 | 变更 |
+|------|------|
+| `frontend/src/types/notification.d.ts` | 通知 + 订阅类型定义 |
+| `frontend/src/api/notification.ts` | 通知 API 客户端 |
+| `frontend/src/api/subscription.ts` | 订阅 API 客户端 |
+| `frontend/src/components/layout/header-bar.vue` | 铃铛图标 + 未读角标 + 通知下拉面板 |
+| `frontend/src/views/notification/list.vue` | 通知列表页 |
+| `frontend/src/views/subscription/list.vue` | 订阅管理页 |
+| `frontend/src/router/index.ts` | 新增路由 |
+| `frontend/src/components/layout/sidebar-menu.vue` | 新增菜单项 |
+
+### 16.11 未来扩展
+
+1. **Notification 节点类型**：允许用户在工作流中主动插入通知步骤，作为可编排节点。
+2. **邮件渠道 (SMTP)**：`NotificationChannel::Email { smtp_config }`。
+3. **IM 渠道**：直接对接企业微信 / 钉钉 / Slack API（非 Webhook）。
+4. **WebSocket / SSE 实时推送**：替代前端轮询，实现真正的实时通知。
+5. **通知模板**：支持自定义通知文本模板（Webhook Payload / 站内通知摘要），使用 `{{variable}}` 插值。
+6. **通知静默期**：用户可设置免打扰时间段。
+7. **通知聚合 (Digest)**：高频事件在指定时间窗口内聚合为一条摘要通知。
+8. **独立任务通知**：为独立执行的任务（HTTP / LLM）增加 `task.completed` / `task.failed` 事件。
+
+## 17. 总结与扩展
 
 当前基于 **PluginFactory -> Queue -> Executor -> Callback Event -> Plugin.handle_callback** 的大闭环，使得这个 Rust 工作流引擎从玩具级别跃升至了企业级微服务架构。
 
@@ -2100,9 +2567,11 @@ pub enum TaskTemplate {
 
 **LLM 大模型插件**：见 **§15 LLM Plugin**，采用统一 OpenAI 兼容接口，与 HTTP 任务完全对齐的双层架构（编排插件 + 执行器），复用 Variable 系统管理 API Key，支持 Prompt 模板插值和 JSON Mode 结构化输出。
 
+**通知系统**：见 **§16 通知系统 (Notification System)**，异步队列驱动，两层订阅（全局 + 资源级），V1 支持站内通知 + Webhook（HMAC-SHA256 签名），30 天自动过期，容器节点不冒泡。
+
 未来的扩展方案：
 1. **Prometheus metrics 埋点**：sweeper_recovered_total / sweeper_expired_approvals_total / sweeper_expired_pauses_total 等 Counter。
-2. **Webhook / 消息通知**：暂停节点到期或审批超时时推送外部通知。
-3. **JWT 即时吊销**：通过 `jti` + Redis 黑名单实现 API Key 吊销后 JWT 立即失效。
-4. **LLM 多轮对话 / Function Calling**：详见 §15.15。
-5. **LLM Token 成本追踪**：累计 usage 到租户维度，支持成本统计和配额管控。
+2. **JWT 即时吊销**：通过 `jti` + Redis 黑名单实现 API Key 吊销后 JWT 立即失效。
+3. **LLM 多轮对话 / Function Calling**：详见 §15.15。
+4. **LLM Token 成本追踪**：累计 usage 到租户维度，支持成本统计和配额管控。
+5. **通知渠道扩展**：邮件 (SMTP)、IM 直连（企业微信/钉钉/Slack）、WebSocket/SSE 实时推送。详见 §16.11。

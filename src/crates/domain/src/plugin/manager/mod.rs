@@ -6,6 +6,8 @@ mod ensure_task_job;
 mod loop_action;
 mod workflow;
 
+pub use workflow::resolved_llm_request_snapshot;
+
 use crate::plugin::interface::{ExecutionResult, PluginExecutor, PluginInterface};
 use crate::shared::workflow::TaskType;
 use crate::task::service::TaskInstanceService;

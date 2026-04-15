@@ -120,6 +120,32 @@ impl VariableService {
         Ok(JsonValue::Object(merged))
     }
 
+    /// Resolve variables for standalone task execution (no workflow context).
+    /// Merges: tenant variables → user-provided context (overwrites).
+    pub async fn resolve_standalone_context(
+        &self,
+        tenant_id: &str,
+        user_context: &JsonValue,
+    ) -> Result<JsonValue, RepositoryError> {
+        let mut merged = serde_json::Map::new();
+
+        let tenant_vars = self.repository.list_by_scope(
+            tenant_id, &VariableScope::Tenant, tenant_id,
+        ).await?;
+        for var in tenant_vars {
+            let val = self.to_json_value(&var)?;
+            merged.insert(var.key, val);
+        }
+
+        if let Some(obj) = user_context.as_object() {
+            for (k, v) in obj {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+
+        Ok(JsonValue::Object(merged))
+    }
+
     fn to_json_value(&self, var: &VariableEntity) -> Result<JsonValue, RepositoryError> {
         let raw = if var.variable_type.is_secret() {
             self.decrypt(&var.value)?

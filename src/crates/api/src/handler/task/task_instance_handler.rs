@@ -3,35 +3,47 @@ use axum::{
 };
 use chrono::Utc;
 use common::pagination::PaginatedData;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 use uuid::Uuid;
 use domain::{shared::job::{ExecuteTaskJob, TaskDispatcher}, task::entity::query::TaskInstanceQuery};
 use domain::shared::workflow::TaskInstanceStatus;
-use domain::task::entity::task_definition::TaskInstanceEntity;
+use domain::task::entity::task_definition::{TaskInstanceEntity, TaskTemplate};
+use domain::task::http_template_resolve::resolved_http_request_snapshot;
+use domain::plugin::manager::resolved_llm_request_snapshot;
 use domain::task::service::{TaskService, TaskInstanceService};
+use domain::variable::service::VariableService;
 use domain::user::entity::Permission;
 use crate::{error::ApiError, handler::task::task_instance_request::ListTaskInstancesRequest};
 use crate::middleware::auth::AuthContext;
 use crate::middleware::permission::require_permission;
 use crate::response::response::Response;
 use serde::Deserialize;
+use serde_json::json;
 use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub struct CreateTaskInstanceRequest {
     pub task_id: String,
+    #[serde(default)]
+    pub context: Option<serde_json::Value>,
 }
 
 #[derive(Clone)]
 pub struct TaskInstanceHandler {
     service: TaskInstanceService,
     task_service: TaskService,
+    variable_service: VariableService,
     dispatcher: Arc<dyn TaskDispatcher>,
 }
 
 impl TaskInstanceHandler {
-    pub fn new(service: TaskInstanceService, task_service: TaskService, dispatcher: Arc<dyn TaskDispatcher>) -> Self {
-        Self { service, task_service, dispatcher }
+    pub fn new(
+        service: TaskInstanceService,
+        task_service: TaskService,
+        variable_service: VariableService,
+        dispatcher: Arc<dyn TaskDispatcher>,
+    ) -> Self {
+        Self { service, task_service, variable_service, dispatcher }
     }
 }
 
@@ -59,6 +71,22 @@ async fn create_task_instance(
     Json(req): Json<CreateTaskInstanceRequest>,
 ) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
     let task = handler.task_service.get_task_entity_scoped(&auth.tenant_id, &req.task_id).await?;
+    let user_ctx = req.context.unwrap_or_else(|| json!({}));
+
+    let resolved_ctx = handler.variable_service
+        .resolve_standalone_context(&auth.tenant_id, &user_ctx)
+        .await
+        .map_err(|e| {
+            warn!(error = %e, "variable resolution failed for standalone task, using raw context");
+            ApiError::internal(format!("variable resolution failed: {}", e))
+        })?;
+
+    let input = match &task.task_template {
+        TaskTemplate::Http(tpl) => Some(resolved_http_request_snapshot(tpl, &resolved_ctx)),
+        TaskTemplate::Llm(tpl) => Some(resolved_llm_request_snapshot(tpl, &resolved_ctx)),
+        _ => None,
+    };
+
     let now = Utc::now();
     let instance_id = Uuid::new_v4().to_string();
     let entity = TaskInstanceEntity {
@@ -73,7 +101,7 @@ async fn create_task_instance(
         created_at: now,
         updated_at: now,
         deleted_at: None,
-        input: None,
+        input,
         output: None,
         error_message: None,
         execution_duration: None,
@@ -109,11 +137,14 @@ async fn execute_task_instance(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
-    handler.service.get_task_instance_entity_scoped(&auth.tenant_id, &id).await?;
-    let updated = handler.service.submit_instance(&id).await?;
+    let task_instance_entity = handler.service.get_task_instance_entity_scoped(&auth.tenant_id, &id).await?;
+    //let updated = handler.service.submit_instance(&id).await?;
+    if task_instance_entity.task_status != TaskInstanceStatus::Pending {
+        return Err(ApiError::bad_request("Task instance is not pending"));
+    }
 
     handler.dispatcher.dispatch_task(ExecuteTaskJob {
-        task_instance_id: updated.task_instance_id.clone(),
+        task_instance_id: id.clone(),
         tenant_id: auth.tenant_id,
         caller_context: None,
     }).await.map_err(|e| {
@@ -123,7 +154,7 @@ async fn execute_task_instance(
 
     info!(task_instance_id = %id, "task execution dispatched");
 
-    Ok(Json(Response::success(updated)))
+    Ok(Json(Response::success(task_instance_entity)))
 }
 
 async fn retry_task_instance(
@@ -131,8 +162,21 @@ async fn retry_task_instance(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Response<TaskInstanceEntity>>, ApiError> {
-    handler.service.get_task_instance_entity_scoped(&auth.tenant_id, &id).await?;
+    let instance = handler.service.get_task_instance_entity_scoped(&auth.tenant_id, &id).await?;
     let result = handler.service.retry_instance(&id).await?;
+
+    if instance.caller_context.is_none() {
+        handler.dispatcher.dispatch_task(ExecuteTaskJob {
+            task_instance_id: result.task_instance_id.clone(),
+            tenant_id: auth.tenant_id,
+            caller_context: None,
+        }).await.map_err(|e| {
+            error!(task_instance_id = %id, error = %e, "failed to dispatch task retry");
+            ApiError::internal(e.to_string())
+        })?;
+        info!(task_instance_id = %id, "standalone task retry dispatched");
+    }
+
     Ok(Json(Response::success(result)))
 }
 

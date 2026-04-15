@@ -586,7 +586,7 @@ impl PluginManager {
     }
 }
 
-pub(super) fn resolved_llm_request_snapshot(
+pub fn resolved_llm_request_snapshot(
     tpl: &crate::task::entity::task_definition::LlmTemplate,
     ctx: &serde_json::Value,
 ) -> serde_json::Value {
