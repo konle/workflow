@@ -65,6 +65,8 @@ pub struct WorkflowInstanceEntity {
     pub locked_at: Option<DateTime<Utc>>,
     pub parent_context: Option<WorkflowCallerContext>,
     pub depth: u32,
+    #[serde(default)]
+    pub created_by: Option<String>,
 }
 
 impl fmt::Display for WorkflowInstanceEntity {

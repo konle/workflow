@@ -144,6 +144,7 @@ impl WorkflowInstanceService {
         context: JsonValue,
         parent_context: Option<WorkflowCallerContext>,
         depth: u32,
+        created_by: Option<String>,
     ) -> Result<WorkflowInstanceEntity, RepositoryError> {
         let now = Utc::now();
         let instance_id = Uuid::new_v4().to_string();
@@ -201,6 +202,7 @@ impl WorkflowInstanceService {
             locked_at: None,
             parent_context,
             depth,
+            created_by,
         };
 
         self.repository.create_workflow_instance(&instance).await

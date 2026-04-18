@@ -33,6 +33,7 @@ impl ApprovalService {
         node_id: &str,
         template: &ApprovalTemplate,
         context: &serde_json::Value,
+        applicant_id: Option<String>,
     ) -> Result<ApprovalInstanceEntity, RepositoryError> {
         let approvers = self
             .resolve_approvers(tenant_id, &template.approvers, context)
@@ -60,6 +61,7 @@ impl ApprovalService {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             expires_at,
+            applicant_id,
         };
 
         self.repository.create(&entity).await

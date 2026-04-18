@@ -82,6 +82,7 @@ export interface WorkflowInstanceEntity {
   locked_at: string | null
   parent_context: WorkflowCallerContext | null
   depth: number
+  created_by: string | null
 }
 
 export interface CreateWorkflowMetaRequest {

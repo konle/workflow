@@ -50,6 +50,7 @@ impl PluginInterface for ApprovalPlugin {
                 &node_instance.node_id,
                 template,
                 &node_instance.context,
+                workflow_instance.created_by.clone(),
             )
             .await
             .map_err(|e| {

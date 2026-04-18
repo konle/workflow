@@ -434,6 +434,7 @@ mod tests {
             nodes: vec![],
             parent_context: None,
             depth: 0,
+            created_by: None,
             epoch: 0,
             locked_by: None,
             locked_at: None,

@@ -1060,6 +1060,231 @@ POST   /api/v1/approvals/{id}/decide         # 提交决策
 | 提交决策 | 必须在 approvers 列表内，且 Viewer 角色除外 |
 | 查看所有审批 | TenantAdmin+ |
 
+### 10.8 工作流发起人与审批申请人 (`created_by`)
+
+#### 10.8.1 问题
+
+当前 `WorkflowInstanceEntity` 和 `ApprovalInstanceEntity` 均无发起人/申请人字段。API 层虽然有 `auth.user_id`（JWT `sub`），但仅用于租户校验后即丢弃。导致：
+
+- 审批通知无法发给"流程发起人"（§16.2.2 `approval.approved/rejected` 的推送目标 = "审批发起方"，当前无法定位）
+- 无法实现自审批防护（不知道谁是申请人）
+- 前端"我发起的"工作流查询无法实现
+- 子工作流的发起人语义不明确
+
+#### 10.8.2 实体变更
+
+**`WorkflowInstanceEntity`**（`domain/workflow/entity/workflow_definition.rs`）新增：
+
+```rust
+#[serde(default)]
+pub created_by: Option<String>,  // 发起人 user_id；None = 系统/定时触发
+```
+
+**`ApprovalInstanceEntity`**（`domain/approval/entity/mod.rs`）新增：
+
+```rust
+#[serde(default)]
+pub applicant_id: Option<String>,  // 审批申请人 = workflow_instance.created_by
+```
+
+两个字段均使用 `Option<String>` + `#[serde(default)]`：
+- MongoDB 中已有旧文档不含此字段，反序列化时 `default` 为 `None` 而非报错，**无需数据迁移**
+- 系统自动触发的工作流（定时任务、事件驱动）可能没有人类发起人，`None` 准确表达此语义
+
+#### 10.8.3 `create_instance` 签名变更
+
+`WorkflowInstanceService::create_instance` 新增 `created_by: Option<String>` 参数。两个调用点的传值策略：
+
+| 调用点 | `created_by` 值 | 说明 |
+|--------|-----------------|------|
+| HTTP Handler（`workflow_instance_handler.rs`） | `Some(auth.user_id.clone())` | 人类用户发起 |
+| SubWorkflow Plugin（`subworkflow.rs`） | `workflow_instance.created_by.clone()` | 继承根发起人（见 §10.8.4） |
+
+#### 10.8.4 子工作流继承策略（定案：继承根发起人）
+
+```
+用户 Alice 发起 W1 (根工作流)
+  → W1 执行到 SubWorkflow 节点
+    → 引擎内部调用 create_instance 创建 W2 (子工作流)
+      → W2 中有审批节点
+```
+
+| 策略 | W2.created_by | 评估 |
+|------|---------------|------|
+| **A. 继承根发起人（定案）** | `Alice` | 业务语义最直观："我发起的"查询可追踪整条链路；自审批防护可生效 |
+| B. 设为 None | `None` | 审批没有申请人，自审批策略失效，通知无目标 |
+| C. 双字段 | 复杂度高 | 两个字段增加理解成本，收益不大 |
+
+**选择 A 的理由**：
+
+1. **审批语义正确**：子工作流中的审批**就是**根发起人的操作引发的，审批人看到"申请人：Alice"完全正确。
+2. **自审批防护依赖此信息**：`applicant_id = None` 时自审批策略无法生效。
+3. **父子关系已有独立追踪**：`WorkflowCallerContext`（`parent_context`）已记录父实例 ID 和触发节点，不需要 `created_by` 承担此职责。
+4. **实现极简**：SubWorkflow 插件只需 `.clone()` 透传，无额外查询。
+
+**边界情况**：事件/定时触发的根工作流 `created_by = None`，子工作流自然继承 `None`。此时审批的 `applicant_id` 为 `None`，前端可展示为"系统触发"，自审批策略因无 applicant 而不做过滤——这是正确行为。
+
+**未来扩展点**：若出现"中间人触发"场景（如审批人批准后自动触发下一段流程，此时子流程发起人应为审批人而非根发起人），可在 `SubWorkflowTemplate` 上增加 `override_initiator` 配置项（`inherit` / `from_context_variable` / `none`），当前版本不需要。
+
+#### 10.8.5 `ApprovalService::create_approval` 签名变更
+
+新增 `applicant_id: Option<String>` 参数，写入 `ApprovalInstanceEntity.applicant_id`。
+
+调用方 `ApprovalPlugin::execute` 从 `workflow_instance.created_by` 取值传入。
+
+#### 10.8.6 系统变量 `__initiator__` 注入
+
+在 `PluginManager::run_node`（`plugin/manager/workflow.rs`）中，`resolve_variables` 合并完成 **之后**、`augment_merged_context_with_nodes` **之前**，注入系统保留变量：
+
+```rust
+if let Some(ref uid) = instance.created_by {
+    if let Some(obj) = node.context.as_object_mut() {
+        obj.insert("__initiator__".into(), json!(uid));
+    }
+}
+```
+
+| 维度 | 说明 |
+|------|------|
+| 注入时机 | `resolve_variables` 之后，覆盖用户在 context 中伪造的同名 key |
+| 命名约定 | `__` 前缀表示系统保留，不鼓励用户直接使用 |
+| 优先级 | 高于 instance_context 和 node_context（§8.2），低于 `nodes`（§8.6） |
+| 用途 | 审批模板的 `ApproverRule::ContextVariable("__initiator__")` 可引用发起人 |
+| `created_by = None` 时 | 不注入 `__initiator__`，context 中无此 key |
+
+#### 10.8.7 MongoDB 持久化
+
+| 变更 | 说明 |
+|------|------|
+| `workflow_instances` collection | 文档自动包含 `created_by` 字段（serde 序列化） |
+| `approval_instances` collection | 文档自动包含 `applicant_id` 字段 |
+| `indexes.rs` 新增索引 | `workflow_instances: (tenant_id, created_by)` — 支持"我发起的"查询 |
+| 旧数据兼容 | `serde(default)` → 旧文档读出 `None`，**无需数据迁移** |
+
+#### 10.8.8 前端影响
+
+| 层面 | 变更 |
+|------|------|
+| `types/workflow.d.ts` | `WorkflowInstanceEntity` 增加 `created_by?: string` |
+| `types/approval.d.ts` | `ApprovalInstanceEntity` 增加 `applicant_id?: string` |
+| 工作流实例列表页 | 可展示"发起人"列，可增加"我发起的"筛选 |
+| 审批详情页 | 展示"申请人"信息 |
+| 创建实例 | **无变更** — `created_by` 由服务端从 JWT 提取，前端不感知 |
+
+#### 10.8.9 涉及文件清单
+
+```
+后端（必改）:
+  domain/workflow/entity/workflow_definition.rs    # 实体 +created_by
+  domain/workflow/service.rs                        # create_instance 签名 +created_by
+  domain/approval/entity/mod.rs                     # 实体 +applicant_id
+  domain/approval/service.rs                        # create_approval 签名 +applicant_id
+  domain/plugin/plugins/approval.rs                 # 传入 workflow_instance.created_by
+  domain/plugin/plugins/subworkflow.rs              # 透传 workflow_instance.created_by
+  domain/plugin/manager/workflow.rs                 # run_node 注入 __initiator__
+  api/handler/workflow/workflow_instance_handler.rs  # 传入 auth.user_id
+  infrastructure/mongodb/indexes.rs                 # (tenant_id, created_by) 索引
+
+后端（编译适配 — struct literal 补字段）:
+  domain/plugin/plugins/parallel.rs                 # make_instance fixture
+  domain/plugin/plugins/forkjoin.rs                 # make_instance fixture
+  domain/workflow/resolution_context.rs              # 测试 fixture
+
+前端:
+  frontend/src/types/workflow.d.ts
+  frontend/src/types/approval.d.ts
+```
+
+#### 10.8.10 为后续特性铺路
+
+| 后续特性 | 依赖关系 |
+|---------|---------|
+| 自审批策略（§10.9） | `ApprovalInstanceEntity.applicant_id` + `resolve_approvers` 过滤 |
+| 跳过审批的审计日志（§10.10） | `created_by` 用于"操作人"对比 |
+| 通知发起人（§16.2.2） | `NotificationService` 从 `created_by` / `applicant_id` 获取目标用户 |
+| "我发起的"列表 | `(tenant_id, created_by)` 索引支持查询 |
+
+### 10.9 自审批策略 (Self-Approval Policy)（规划）
+
+> 本节依赖 §10.8 `created_by` / `applicant_id` 先行落地。
+
+#### 10.9.1 问题
+
+当前 `ApprovalService::decide` 仅校验：用户在审批人列表中 + 未重复审批。如果工作流发起人碰巧也是审批人（通过角色匹配或指定用户），可以自己批准自己的申请。
+
+#### 10.9.2 策略枚举
+
+在 `ApprovalTemplate`（`task/entity/task_definition.rs`）上新增字段：
+
+```rust
+#[serde(default = "default_self_approval_policy")]
+pub self_approval: SelfApprovalPolicy,
+
+pub enum SelfApprovalPolicy {
+    Allow,   // 允许自审批
+    Skip,    // 从审批人列表中移除发起人（默认）
+}
+
+fn default_self_approval_policy() -> SelfApprovalPolicy {
+    SelfApprovalPolicy::Skip
+}
+```
+
+| 策略 | 行为 | 适用场景 |
+|------|------|----------|
+| `Skip`（默认） | `resolve_approvers` 阶段移除 `applicant_id` | 财务、合规、权限变更 |
+| `Allow` | 不做过滤 | 低风险流程、测试环境 |
+
+业界参考：Oracle Procurement 的 "Prohibit User Self-Approval" 配置；飞书审批的"发起人自动跳过"规则。
+
+#### 10.9.3 执行逻辑
+
+在 `ApprovalService::create_approval` 的 `resolve_approvers` 之后、空列表检查之前插入过滤：
+
+```
+resolve_approvers(rules, context) → user_ids
+if policy == Skip && applicant_id ∈ user_ids:
+    user_ids.remove(applicant_id)
+if user_ids.is_empty():
+    return Err("过滤自审批后无可用审批人")
+```
+
+**`applicant_id = None` 时**（系统触发）不做过滤，策略无效但不报错。
+
+#### 10.9.4 前端
+
+审批模板编辑器（任务模板 + 工作流节点编辑）增加"自审批策略"下拉：`跳过发起人`（默认）/ `允许`。
+
+### 10.10 跳过审批节点的权限控制（规划）
+
+> 本节是对 §1.4.5 跳过节点的审批特化补充。
+
+#### 10.10.1 问题
+
+当前 `skip_workflow_node` 允许任何有 API 权限的用户跳过审批节点。对于审批这类有合规含义的节点，应当增加额外的权限控制和审计。
+
+#### 10.10.2 增强方案
+
+| 维度 | 当前 | 增强 |
+|------|------|------|
+| **谁能跳过审批节点** | 任何有 API 权限的用户 | 限制为 TenantAdmin+，普通 Operator 不可跳过 Approval 类型节点 |
+| **跳过理由** | 无 | `SkipNodeRequest` 增加 `reason: String` 必填字段（仅 Approval 节点强制） |
+| **审计记录** | 无 | 跳过操作写入审计日志：操作人 + 理由 + 被跳过的节点 + 时间 |
+| **超时策略** | 超时后 `Suspended`，需手动操作 | 模板可配置超时策略：`Suspend`（当前）/ `AutoSkip` / `AutoReject` |
+
+超时策略扩展 `ApprovalTemplate`：
+
+```rust
+#[serde(default)]
+pub timeout_action: ApprovalTimeoutAction,
+
+pub enum ApprovalTimeoutAction {
+    Suspend,     // 当前行为：挂起等人处理
+    AutoReject,  // Sweeper 自动驳回（§13.11 已实现）
+    AutoSkip,    // Sweeper 自动跳过并继续流程
+}
+```
+
 ---
 
 ## 11. 暂停节点 (Pause Plugin)
@@ -2568,6 +2793,8 @@ db.notification_records.createIndex({ created_at: 1 }, { expireAfterSeconds: 259
 **LLM 大模型插件**：见 **§15 LLM Plugin**，采用统一 OpenAI 兼容接口，与 HTTP 任务完全对齐的双层架构（编排插件 + 执行器），复用 Variable 系统管理 API Key，支持 Prompt 模板插值和 JSON Mode 结构化输出。
 
 **通知系统**：见 **§16 通知系统 (Notification System)**，异步队列驱动，两层订阅（全局 + 资源级），V1 支持站内通知 + Webhook（HMAC-SHA256 签名），30 天自动过期，容器节点不冒泡。
+
+**审批增强**：见 **§10.8–10.10**。§10.8 为 `WorkflowInstanceEntity` 和 `ApprovalInstanceEntity` 增加发起人/申请人字段（`created_by` / `applicant_id`），子工作流继承根发起人，`__initiator__` 系统变量注入执行上下文。§10.9（规划）基于 `applicant_id` 实现自审批策略（默认跳过发起人）。§10.10（规划）增强跳过审批节点的权限控制和审计。
 
 未来的扩展方案：
 1. **Prometheus metrics 埋点**：sweeper_recovered_total / sweeper_expired_approvals_total / sweeper_expired_pauses_total 等 Counter。

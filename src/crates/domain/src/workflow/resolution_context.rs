@@ -142,6 +142,7 @@ mod tests {
             locked_at: None,
             parent_context: None,
             depth: 0,
+            created_by: None,
         };
 
         let nodes = build_nodes_object(&instance, "c");
@@ -176,6 +177,7 @@ mod tests {
             locked_at: None,
             parent_context: None,
             depth: 0,
+            created_by: None,
         };
 
         let nodes = build_nodes_object(&instance, "b");
@@ -208,6 +210,7 @@ mod tests {
             locked_at: None,
             parent_context: None,
             depth: 0,
+            created_by: None,
         };
 
         let merged = json!({

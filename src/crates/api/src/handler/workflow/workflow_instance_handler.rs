@@ -88,7 +88,7 @@ async fn create_instance(
     }
 
     let instance = handler.instance_service
-        .create_instance(&auth.tenant_id, &workflow_entity, req.context, None, 0)
+        .create_instance(&auth.tenant_id, &workflow_entity, req.context, None, 0, Some(auth.user_id.clone()))
         .await?;
 
     info!(

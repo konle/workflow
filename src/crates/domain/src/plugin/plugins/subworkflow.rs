@@ -86,7 +86,7 @@ impl PluginInterface for SubWorkflowPlugin {
         };
 
         let child_instance = self.instance_svc
-            .create_instance(&workflow_instance.tenant_id, &workflow_entity, child_context, Some(parent_ctx), child_depth)
+            .create_instance(&workflow_instance.tenant_id, &workflow_entity, child_context, Some(parent_ctx), child_depth, workflow_instance.created_by.clone())
             .await
             .map_err(|e| {
                 error!(

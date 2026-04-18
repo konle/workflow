@@ -39,4 +39,6 @@ pub struct ApprovalInstanceEntity {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub applicant_id: Option<String>,
 }

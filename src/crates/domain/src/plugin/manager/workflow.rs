@@ -496,6 +496,12 @@ impl PluginManager {
             }
         }
 
+        if let Some(ref uid) = instance.created_by {
+            if let Some(obj) = node.context.as_object_mut() {
+                obj.insert("__initiator__".into(), serde_json::json!(uid));
+            }
+        }
+
         node.context = augment_merged_context_with_nodes(
             instance,
             &node.node_id,

@@ -26,6 +26,7 @@ pub async fn ensure_all_indexes(db: &Database) -> Result<(), Box<dyn std::error:
             { "key": { "workflow_instance_id": 1 }, "name": "uk_workflow_instance_id", "unique": true },
             { "key": { "tenant_id": 1 }, "name": "idx_tenant_id" },
             { "key": { "workflow_meta_id": 1 }, "name": "idx_workflow_meta_id" },
+            { "key": { "tenant_id": 1, "created_by": 1 }, "name": "idx_tenant_id_created_by" },
         ],
     }).await?;
 
