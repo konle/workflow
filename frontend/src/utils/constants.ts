@@ -62,6 +62,11 @@ export const APPROVAL_MODE_MAP: Record<string, { label: string; color: string }>
   Majority: { label: '投票模式', color: 'cyan' },
 }
 
+export const SELF_APPROVAL_POLICY_MAP: Record<string, { label: string }> = {
+  Skip: { label: '跳过发起人' },
+  Allow: { label: '允许自审批' },
+}
+
 export const VARIABLE_TYPE_OPTIONS = [
   { label: 'String', value: 'String' },
   { label: 'Number', value: 'Number' },

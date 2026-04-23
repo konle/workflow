@@ -157,10 +157,22 @@ pub struct ApprovalTemplate {
     #[serde(default = "default_approval_mode")]
     pub approval_mode: ApprovalMode,
     pub timeout: Option<u64>,
+    #[serde(default = "default_self_approval_policy")]
+    pub self_approval: SelfApprovalPolicy,
 }
 
 fn default_approval_mode() -> ApprovalMode {
     ApprovalMode::Any
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SelfApprovalPolicy {
+    Allow,
+    Skip,
+}
+
+fn default_self_approval_policy() -> SelfApprovalPolicy {
+    SelfApprovalPolicy::Skip
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

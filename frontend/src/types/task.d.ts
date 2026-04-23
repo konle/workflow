@@ -72,6 +72,7 @@ export interface SubWorkflowTemplate {
 }
 
 export type ApprovalMode = 'Any' | 'All' | 'Majority'
+export type SelfApprovalPolicy = 'Allow' | 'Skip'
 
 export interface ApproverRule {
   User?: string
@@ -86,6 +87,7 @@ export interface ApprovalTemplate {
   approvers: ApproverRule[]
   approval_mode: ApprovalMode
   timeout: number | null
+  self_approval?: SelfApprovalPolicy
 }
 
 export type PauseMode = 'Auto' | 'Manual'

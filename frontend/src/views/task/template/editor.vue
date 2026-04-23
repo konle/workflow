@@ -210,9 +210,23 @@
                   </a-button>
                 </div>
               </a-form-item>
-              <a-form-item label="超时 (秒)">
-                <a-input-number v-model="approvalConfig.timeout" :min="0" placeholder="不填则不超时" />
-              </a-form-item>
+              <a-row :gutter="16">
+                <a-col :span="8">
+                  <a-form-item label="自审批策略">
+                    <a-tooltip content="跳过发起人：当工作流发起人在审批人列表中时，自动将其移除">
+                      <a-select v-model="approvalConfig.self_approval">
+                        <a-option value="Skip">跳过发起人</a-option>
+                        <a-option value="Allow">允许自审批</a-option>
+                      </a-select>
+                    </a-tooltip>
+                  </a-form-item>
+                </a-col>
+                <a-col :span="8">
+                  <a-form-item label="超时 (秒)">
+                    <a-input-number v-model="approvalConfig.timeout" :min="0" placeholder="不填则不超时" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
             </template>
 
             <!-- ==================== gRPC 预留 ==================== -->
@@ -384,6 +398,7 @@ const approvalConfig = reactive({
   description: '' as string,
   approval_mode: 'Any' as string,
   approvers: [] as { type: string; value: string }[],
+  self_approval: 'Skip' as string,
   timeout: null as number | null,
 })
 
@@ -464,6 +479,7 @@ function buildTaskTemplate() {
         }),
         approval_mode: approvalConfig.approval_mode,
         timeout: approvalConfig.timeout || null,
+        self_approval: approvalConfig.self_approval,
       },
     }
   }
@@ -670,6 +686,7 @@ onMounted(async () => {
         approvalConfig.description = tpl.description || ''
         approvalConfig.approval_mode = tpl.approval_mode
         approvalConfig.timeout = tpl.timeout
+        approvalConfig.self_approval = tpl.self_approval || 'Skip'
         approvalConfig.approvers = tpl.approvers.map((r: any) => {
           if (r.User !== undefined) return { type: 'User', value: r.User }
           if (r.Role !== undefined) return { type: 'Role', value: r.Role }

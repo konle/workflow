@@ -8,6 +8,8 @@ export interface ApproverRule {
   ContextVariable?: string
 }
 
+export type SelfApprovalPolicy = 'Allow' | 'Skip'
+
 export interface ApprovalTemplate {
   name: string
   title: string
@@ -15,6 +17,7 @@ export interface ApprovalTemplate {
   approvers: ApproverRule[]
   approval_mode: ApprovalMode
   timeout: number | null
+  self_approval?: SelfApprovalPolicy
 }
 
 export interface ApprovalDecision {

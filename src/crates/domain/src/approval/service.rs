@@ -6,7 +6,7 @@ use crate::approval::entity::{
     ApprovalDecision, ApprovalInstanceEntity, ApprovalStatus, Decision,
 };
 use crate::approval::repository::{ApprovalRepository, RepositoryError};
-use crate::task::entity::task_definition::{ApprovalMode, ApprovalTemplate, ApproverRule};
+use crate::task::entity::task_definition::{ApprovalMode, ApprovalTemplate, ApproverRule, SelfApprovalPolicy};
 use crate::user::repository::UserTenantRoleRepository;
 
 #[derive(Clone)]
@@ -35,12 +35,18 @@ impl ApprovalService {
         context: &serde_json::Value,
         applicant_id: Option<String>,
     ) -> Result<ApprovalInstanceEntity, RepositoryError> {
-        let approvers = self
+        let mut approvers = self
             .resolve_approvers(tenant_id, &template.approvers, context)
             .await?;
 
+        if template.self_approval == SelfApprovalPolicy::Skip {
+            if let Some(ref uid) = applicant_id {
+                approvers.retain(|id| id != uid);
+            }
+        }
+
         if approvers.is_empty() {
-            return Err("no approvers resolved from rules".into());
+            return Err("no approvers resolved from rules (self-approval filtering may have removed all candidates)".into());
         }
 
         let expires_at = template
