@@ -8,13 +8,14 @@
         @update:model-value="onKindChange"
       >
         <a-option value="Http">HTTP</a-option>
+        <a-option value="Llm">LLM 大模型</a-option>
         <a-option value="Grpc">gRPC</a-option>
         <a-option value="SubWorkflow">子工作流</a-option>
       </a-select>
     </a-form-item>
 
     <PublishedTaskRefFields
-      v-if="kind === 'Http' || kind === 'Grpc'"
+      v-if="kind === 'Http' || kind === 'Grpc' || kind === 'Llm'"
       section-title="任务选择"
       :task-type="kind"
       v-model:task-id="innerTaskId"

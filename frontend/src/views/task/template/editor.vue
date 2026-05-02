@@ -16,6 +16,7 @@
                 <a-form-item field="task_type" label="任务类型" :rules="[{ required: true, message: '请选择类型' }]">
                   <a-select v-model="form.task_type" :disabled="isEdit">
                     <a-option value="Http">HTTP</a-option>
+                    <a-option value="Llm">LLM 大模型</a-option>
                     <a-option value="Grpc">gRPC</a-option>
                     <a-option value="Approval">审批</a-option>
                   </a-select>
@@ -162,6 +163,82 @@
               <a-form-item label="成功条件">
                 <a-input v-model="httpConfig.success_condition" placeholder="可选，如 status == 200" />
               </a-form-item>
+            </template>
+
+            <!-- ==================== LLM 配置 ==================== -->
+            <template v-else-if="form.task_type === 'Llm'">
+              <a-divider>模型配置</a-divider>
+              <a-row :gutter="16">
+                <a-col :span="12">
+                  <a-form-item label="API Base URL" required>
+                    <a-input v-model="llmConfig.base_url" placeholder="https://api.openai.com/v1" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="12">
+                  <a-form-item label="模型名称" required>
+                    <a-input v-model="llmConfig.model" placeholder="如 gpt-4o、qwen3:8b" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+              <a-row :gutter="16">
+                <a-col :span="12">
+                  <a-form-item label="API Key 变量引用" required>
+                    <a-input v-model="llmConfig.api_key_ref" placeholder="引用 Secret 变量的 key，如 OPENAI_API_KEY" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="12">
+                  <a-form-item label="输出格式">
+                    <a-select v-model="llmConfig.response_format" allow-clear placeholder="默认文本">
+                      <a-option value="Text">文本 (Text)</a-option>
+                      <a-option value="JsonObject">JSON 对象 (JsonObject)</a-option>
+                    </a-select>
+                  </a-form-item>
+                </a-col>
+              </a-row>
+
+              <a-divider>Prompt 配置</a-divider>
+              <a-alert type="info" style="margin-bottom: 16px">
+                Prompt 支持 <code>{<!-- -->{变量}}</code> 模板插值，可引用上下文变量和前序节点输出。
+              </a-alert>
+              <a-form-item label="System Prompt (系统提示词)">
+                <a-textarea v-model="llmConfig.system_prompt" :auto-size="{ minRows: 2, maxRows: 8 }" placeholder="可选。定义 AI 的角色和行为约束" />
+              </a-form-item>
+              <a-form-item label="User Prompt (用户提示词)" required>
+                <a-textarea v-model="llmConfig.user_prompt" :auto-size="{ minRows: 3, maxRows: 12 }" placeholder="必填。实际任务指令" />
+              </a-form-item>
+
+              <a-divider>模型参数</a-divider>
+              <a-row :gutter="16">
+                <a-col :span="8">
+                  <a-form-item label="Temperature">
+                    <a-input-number v-model="llmConfig.temperature" :min="0" :max="2" :step="0.1" placeholder="默认由模型决定" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="8">
+                  <a-form-item label="最大输出 Token">
+                    <a-input-number v-model="llmConfig.max_tokens" :min="1" placeholder="默认由模型决定" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+
+              <a-divider>运行参数</a-divider>
+              <a-row :gutter="16">
+                <a-col :span="8">
+                  <a-form-item label="超时 (秒)">
+                    <a-input-number v-model="llmConfig.timeout" :min="1" :max="600" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="8">
+                  <a-form-item label="重试次数">
+                    <a-input-number v-model="llmConfig.retry_count" :min="0" :max="10" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="8">
+                  <a-form-item label="重试延迟 (秒)">
+                    <a-input-number v-model="llmConfig.retry_delay" :min="0" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
             </template>
 
             <!-- ==================== 审批配置 ==================== -->
@@ -393,6 +470,20 @@ const httpConfig = reactive({
   success_condition: null as string | null,
 })
 
+const llmConfig = reactive({
+  base_url: 'https://api.openai.com/v1',
+  model: '',
+  api_key_ref: '',
+  system_prompt: '' as string | null,
+  user_prompt: '',
+  temperature: null as number | null,
+  max_tokens: null as number | null,
+  timeout: 60,
+  retry_count: 0,
+  retry_delay: 3,
+  response_format: null as string | null,
+})
+
 const approvalConfig = reactive({
   title: '',
   description: '' as string,
@@ -463,6 +554,23 @@ function buildTaskTemplate() {
         retry_delay: httpConfig.retry_delay,
         timeout: httpConfig.timeout,
         success_condition: httpConfig.success_condition || null,
+      },
+    }
+  }
+  if (form.task_type === 'Llm') {
+    return {
+      Llm: {
+        base_url: llmConfig.base_url,
+        model: llmConfig.model,
+        api_key_ref: llmConfig.api_key_ref,
+        system_prompt: llmConfig.system_prompt || null,
+        user_prompt: llmConfig.user_prompt,
+        temperature: llmConfig.temperature,
+        max_tokens: llmConfig.max_tokens,
+        timeout: llmConfig.timeout,
+        retry_count: llmConfig.retry_count,
+        retry_delay: llmConfig.retry_delay,
+        response_format: llmConfig.response_format || null,
       },
     }
   }
@@ -680,6 +788,19 @@ onMounted(async () => {
         httpConfig.retry_delay = tpl.retry_delay
         httpConfig.timeout = tpl.timeout
         httpConfig.success_condition = tpl.success_condition
+      } else if (entity.task_type === 'Llm' && typeof entity.task_template === 'object' && 'Llm' in entity.task_template) {
+        const tpl = entity.task_template.Llm
+        llmConfig.base_url = tpl.base_url
+        llmConfig.model = tpl.model
+        llmConfig.api_key_ref = tpl.api_key_ref
+        llmConfig.system_prompt = tpl.system_prompt
+        llmConfig.user_prompt = tpl.user_prompt
+        llmConfig.temperature = tpl.temperature
+        llmConfig.max_tokens = tpl.max_tokens
+        llmConfig.timeout = tpl.timeout
+        llmConfig.retry_count = tpl.retry_count
+        llmConfig.retry_delay = tpl.retry_delay
+        llmConfig.response_format = tpl.response_format
       } else if (entity.task_type === 'Approval' && typeof entity.task_template === 'object' && 'Approval' in entity.task_template) {
         const tpl = entity.task_template.Approval
         approvalConfig.title = tpl.title

@@ -30,6 +30,15 @@
             <a-descriptions-item label="模式">{{ taskSnapshot.Approval.approval_mode }}</a-descriptions-item>
           </a-descriptions>
         </template>
+        <template v-else-if="taskType === 'Llm' && taskSnapshot.Llm">
+          <a-descriptions :column="1" size="small" bordered>
+            <a-descriptions-item label="Base URL">{{ taskSnapshot.Llm.base_url }}</a-descriptions-item>
+            <a-descriptions-item label="模型">{{ taskSnapshot.Llm.model }}</a-descriptions-item>
+            <a-descriptions-item label="API Key 引用">{{ taskSnapshot.Llm.api_key_ref }}</a-descriptions-item>
+            <a-descriptions-item label="超时">{{ taskSnapshot.Llm.timeout }}s</a-descriptions-item>
+            <a-descriptions-item label="重试">{{ taskSnapshot.Llm.retry_count }}次</a-descriptions-item>
+          </a-descriptions>
+        </template>
         <template v-else-if="taskType === 'Grpc'">
           <a-descriptions :column="1" size="small" bordered>
             <a-descriptions-item label="类型">gRPC</a-descriptions-item>
@@ -72,7 +81,7 @@ import type { EditorFormField } from './workflow-editor-form-utils'
 const props = withDefaults(
   defineProps<{
     sectionTitle?: string
-    taskType: 'Http' | 'Approval' | 'Grpc'
+    taskType: 'Http' | 'Approval' | 'Grpc' | 'Llm'
     taskId: string | null
     tasks: TaskEntity[]
     /** Task template payload; may be a string (e.g. gRPC). */

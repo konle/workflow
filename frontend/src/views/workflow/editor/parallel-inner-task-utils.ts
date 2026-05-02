@@ -3,7 +3,7 @@ import type { EditorFormField } from './workflow-editor-form-utils'
 import { buildFormFields, formFieldsToFormArray } from './workflow-editor-form-utils'
 import type { WorkflowMetaEntity } from '../../../types/workflow'
 
-export type ParallelInnerKind = 'Http' | 'Grpc' | 'SubWorkflow'
+export type ParallelInnerKind = 'Http' | 'Grpc' | 'SubWorkflow' | 'Llm'
 
 export function defaultParallelInnerTemplate(kind: ParallelInnerKind): TaskTemplate {
   switch (kind) {
@@ -19,6 +19,22 @@ export function defaultParallelInnerTemplate(kind: ParallelInnerKind): TaskTempl
           retry_delay: 0,
           timeout: 30,
           success_condition: null,
+        },
+      }
+    case 'Llm':
+      return {
+        Llm: {
+          base_url: '',
+          model: '',
+          api_key_ref: '',
+          system_prompt: null,
+          user_prompt: '',
+          temperature: null,
+          max_tokens: null,
+          timeout: 60,
+          retry_count: 0,
+          retry_delay: 3,
+          response_format: null,
         },
       }
     case 'Grpc':
@@ -42,6 +58,7 @@ export function detectParallelInnerKind(tt: TaskTemplate | null | undefined): Pa
   if (typeof tt === 'string' && tt === 'Grpc') return 'Grpc'
   if (typeof tt === 'object' && tt !== null) {
     if ('Http' in tt) return 'Http'
+    if ('Llm' in tt) return 'Llm'
     if ('SubWorkflow' in tt) return 'SubWorkflow'
     if ('Grpc' in tt) return 'Grpc'
   }
@@ -77,6 +94,15 @@ export function hydrateParallelEditorState(
     const match = taskCache.find(
       t =>
         t.task_type === 'Http' &&
+        t.status === 'Published' &&
+        JSON.stringify(t.task_template) === JSON.stringify(tt),
+    )
+    if (match) data.parallelInnerTaskId = match.id
+  } else if (kind === 'Llm' && tt && typeof tt === 'object' && 'Llm' in tt) {
+    data.parallelInnerSnapshot = tt
+    const match = taskCache.find(
+      t =>
+        t.task_type === 'Llm' &&
         t.status === 'Published' &&
         JSON.stringify(t.task_template) === JSON.stringify(tt),
     )
@@ -126,6 +152,10 @@ export function buildParallelTaskTemplateForSave(data: Record<string, unknown>):
         form: fields.length ? formFieldsToFormArray(fields) : base.form,
       },
     }
+  }
+
+  if (kind === 'Llm' && typeof tt === 'object' && tt !== null && 'Llm' in tt) {
+    return tt as TaskTemplate
   }
 
   if (kind === 'Grpc') {
