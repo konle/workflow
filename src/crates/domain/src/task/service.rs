@@ -3,7 +3,7 @@ use common::pagination::PaginatedData;
 use uuid::Uuid;
 use crate::shared::workflow::{TaskInstanceStatus, TaskStatus, TaskType};
 use crate::task::entity::query::TaskInstanceQuery;
-use crate::task::entity::task_definition::{TaskEntity, TaskInstanceEntity, TaskTemplate};
+use crate::task::entity::task_definition::{TaskEntity, TaskInstanceEntity, TaskTemplate, TaskTransitionFields};
 use crate::task::repository::{TaskEntityRepository, TaskInstanceEntityRepository, RepositoryError};
 use std::sync::Arc;
 
@@ -132,11 +132,12 @@ impl TaskInstanceService {
         self.task_instance_entity_repository.update_task_instance_entity(task_instance_entity).await
     }
 
-    async fn transfer_status(
+    async fn transfer_status_with_fields(
         &self,
         task_instance_id: &str,
         from: &TaskInstanceStatus,
         to: &TaskInstanceStatus,
+        fields: TaskTransitionFields,
     ) -> Result<TaskInstanceEntity, RepositoryError> {
         if !from.can_transition_to(to) {
             return Err(format!(
@@ -145,7 +146,7 @@ impl TaskInstanceService {
             ).into());
         }
         self.task_instance_entity_repository
-            .transfer_status(task_instance_id, from, to)
+            .transfer_status_with_fields(task_instance_id, from, to, fields)
             .await
     }
 
@@ -154,10 +155,11 @@ impl TaskInstanceService {
         &self,
         task_instance_id: &str,
     ) -> Result<TaskInstanceEntity, RepositoryError> {
-        self.transfer_status(
+        self.transfer_status_with_fields(
             task_instance_id,
             &TaskInstanceStatus::Pending,
             &TaskInstanceStatus::Running,
+            TaskTransitionFields::default(),
         ).await
     }
 
@@ -166,10 +168,11 @@ impl TaskInstanceService {
         &self,
         task_instance_id: &str,
     ) -> Result<TaskInstanceEntity, RepositoryError> {
-        self.transfer_status(
+        self.transfer_status_with_fields(
             task_instance_id,
             &TaskInstanceStatus::Running,
             &TaskInstanceStatus::Completed,
+            TaskTransitionFields::default(),
         ).await
     }
 
@@ -178,10 +181,48 @@ impl TaskInstanceService {
         &self,
         task_instance_id: &str,
     ) -> Result<TaskInstanceEntity, RepositoryError> {
-        self.transfer_status(
+        self.transfer_status_with_fields(
             task_instance_id,
             &TaskInstanceStatus::Running,
             &TaskInstanceStatus::Failed,
+            TaskTransitionFields::default(),
+        ).await
+    }
+
+    /// Running -> Completed with output and input set atomically.
+    pub async fn complete_with_output(
+        &self,
+        task_instance_id: &str,
+        output: Option<serde_json::Value>,
+        input: Option<serde_json::Value>,
+    ) -> Result<TaskInstanceEntity, RepositoryError> {
+        self.transfer_status_with_fields(
+            task_instance_id,
+            &TaskInstanceStatus::Running,
+            &TaskInstanceStatus::Completed,
+            TaskTransitionFields {
+                output,
+                input,
+                error_message: None,
+            },
+        ).await
+    }
+
+    /// Running -> Failed with error_message set atomically.
+    pub async fn fail_with_error(
+        &self,
+        task_instance_id: &str,
+        error_message: String,
+    ) -> Result<TaskInstanceEntity, RepositoryError> {
+        self.transfer_status_with_fields(
+            task_instance_id,
+            &TaskInstanceStatus::Running,
+            &TaskInstanceStatus::Failed,
+            TaskTransitionFields {
+                output: None,
+                input: None,
+                error_message: Some(error_message),
+            },
         ).await
     }
 
@@ -190,10 +231,11 @@ impl TaskInstanceService {
         &self,
         task_instance_id: &str,
     ) -> Result<TaskInstanceEntity, RepositoryError> {
-        self.transfer_status(
+        self.transfer_status_with_fields(
             task_instance_id,
             &TaskInstanceStatus::Failed,
             &TaskInstanceStatus::Pending,
+            TaskTransitionFields::default(),
         ).await
     }
 
@@ -213,10 +255,11 @@ impl TaskInstanceService {
 
         match instance.task_status {
             TaskInstanceStatus::Pending | TaskInstanceStatus::Failed => {
-                self.transfer_status(
+                self.transfer_status_with_fields(
                     task_instance_id,
                     &instance.task_status,
                     &TaskInstanceStatus::Canceled,
+                    TaskTransitionFields::default(),
                 ).await
             }
             other => Err(format!(

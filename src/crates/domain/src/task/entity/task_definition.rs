@@ -266,6 +266,13 @@ impl TaskEntity {
 
 use crate::shared::job::WorkflowCallerContext;
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TaskTransitionFields {
+    pub output: Option<JsonValue>,
+    pub input: Option<JsonValue>,
+    pub error_message: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskInstanceEntity {
     pub id: String,

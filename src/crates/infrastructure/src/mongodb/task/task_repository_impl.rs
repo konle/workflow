@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use common::pagination::PaginatedData;
 use domain::shared::workflow::TaskInstanceStatus;
 use domain::task::entity::query::TaskInstanceQuery;
-use domain::task::entity::task_definition::{TaskEntity, TaskInstanceEntity};
+use domain::task::entity::task_definition::{TaskEntity, TaskInstanceEntity, TaskTransitionFields};
 use domain::task::repository::{
     RepositoryError, TaskEntityRepository, TaskInstanceEntityRepository,
 };
@@ -160,27 +160,36 @@ impl TaskInstanceEntityRepository for TaskInstanceRepositoryImpl {
         Ok(task_instance_entity)
     }
 
-    async fn transfer_status(
+    async fn transfer_status_with_fields(
         &self,
         task_instance_id: &str,
         from_status: &TaskInstanceStatus,
         to_status: &TaskInstanceStatus,
+        fields: TaskTransitionFields,
     ) -> Result<TaskInstanceEntity, RepositoryError> {
         let from_bson = mongodb::bson::to_bson(from_status)
             .map_err(|e| format!("serialize from_status: {e}"))?;
-        let to_bson =
-            mongodb::bson::to_bson(to_status).map_err(|e| format!("serialize to_status: {e}"))?;
+        let to_bson = mongodb::bson::to_bson(to_status)
+            .map_err(|e| format!("serialize to_status: {e}"))?;
 
         let filter = doc! {
             "task_instance_id": task_instance_id,
             "task_status": from_bson,
         };
-        let update = doc! {
-            "$set": {
-                "task_status": to_bson,
-                "updated_at": chrono::Utc::now().to_rfc3339(),
-            }
+        let mut set_fields = doc! {
+            "task_status": to_bson,
+            "updated_at": chrono::Utc::now().to_rfc3339(),
         };
+        if let Some(ref out) = fields.output {
+            set_fields.insert("output", mongodb::bson::to_bson(out).map_err(|e| format!("serialize output: {e}"))?);
+        }
+        if let Some(ref inp) = fields.input {
+            set_fields.insert("input", mongodb::bson::to_bson(inp).map_err(|e| format!("serialize input: {e}"))?);
+        }
+        if let Some(ref err) = fields.error_message {
+            set_fields.insert("error_message", err);
+        }
+        let update = doc! { "$set": set_fields };
 
         let result = self
             .collection

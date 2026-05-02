@@ -1,20 +1,24 @@
-use std::sync::Arc;
 use apalis::prelude::*;
 use apalis_redis::RedisStorage;
 use clap::Parser;
-use tracing::{info, warn, error};
+use domain::approval::service::ApprovalService;
 use domain::plugin::manager::PluginManager;
-use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob};
+use domain::shared::job::{ExecuteTaskJob, ExecuteWorkflowJob, WorkflowEvent};
 use domain::sweeper::{Sweeper, SweeperConfig};
 use domain::task::service::TaskInstanceService;
-use domain::approval::service::ApprovalService;
 use domain::variable::service::VariableService;
+use domain::workflow::entity::workflow_definition::NodeExecutionStatus;
 use domain::workflow::service::{WorkflowDefinitionService, WorkflowInstanceService};
 use infrastructure::queue::consumer;
 use infrastructure::queue::dispatcher::ApalisDispatcher;
+use std::sync::Arc;
+use tracing::{error, info, warn};
 use workflow::config::AppConfig;
 
-async fn handle_workflow_job(job: ExecuteWorkflowJob, manager: Data<Arc<PluginManager>>) -> Result<(), std::io::Error> {
+async fn handle_workflow_job(
+    job: ExecuteWorkflowJob,
+    manager: Data<Arc<PluginManager>>,
+) -> Result<(), std::io::Error> {
     info!(
         workflow_instance_id = %job.workflow_instance_id,
         event = ?job.event,
@@ -34,20 +38,44 @@ async fn handle_workflow_job(job: ExecuteWorkflowJob, manager: Data<Arc<PluginMa
     Ok(())
 }
 
-use domain::task::manager::TaskManager;
 use domain::task::executors::http::HttpTaskExecutor;
 use domain::task::executors::llm::LlmTaskExecutor;
+use domain::task::manager::TaskManager;
+
+fn build_node_callback(
+    job: &ExecuteTaskJob,
+    status: NodeExecutionStatus,
+    output: Option<serde_json::Value>,
+    error_message: Option<String>,
+    input: Option<serde_json::Value>,
+) -> ExecuteWorkflowJob {
+    let caller = job
+        .caller_context
+        .as_ref()
+        .expect("caller_context must be present when building node callback");
+    ExecuteWorkflowJob {
+        workflow_instance_id: caller.workflow_instance_id.clone(),
+        tenant_id: job.tenant_id.clone(),
+        event: WorkflowEvent::NodeCallback {
+            node_id: caller.node_id.clone(),
+            child_task_id: job.task_instance_id.clone(),
+            status,
+            output,
+            error_message,
+            input,
+        },
+    }
+}
 
 async fn handle_task_job(
     job: ExecuteTaskJob,
-    ctx: Data<(Arc<PluginManager>, Arc<TaskManager>)>
+    ctx: Data<(Arc<PluginManager>, Arc<TaskManager>)>,
 ) -> Result<(), std::io::Error> {
     let manager = &ctx.0;
     let task_manager = &ctx.1;
     let task_svc = task_manager.task_instance_svc();
     info!(task_instance_id = %job.task_instance_id, "processing task job");
 
-    // CAS claim: Pending → Running (only one worker can succeed)
     let task_instance_entity = match task_svc.submit_instance(&job.task_instance_id).await {
         Ok(inst) => inst,
         Err(e) => {
@@ -66,77 +94,67 @@ async fn handle_task_job(
                 error = %e,
                 "task execution failed"
             );
-
-            // CAS: Running → Failed
-            let _ = task_svc.fail_instance(&job.task_instance_id).await;
-            if let Ok(mut ti) = task_svc.get_task_instance_entity(job.task_instance_id.clone()).await {
-                ti.error_message = Some(e.to_string());
-                let _ = task_svc.update_task_instance_entity(ti).await;
+            // CAS: running -> failed
+            if let Err(cas_err) = task_svc.fail_with_error(&job.task_instance_id, e.to_string()).await {
+                warn!(task_instance_id = %job.task_instance_id, error = %cas_err, "CAS fail_with_error failed (may already be terminal)");
             }
 
-            if let Some(caller) = job.caller_context {
-                let _ = manager
+            if let Some(caller) = job.caller_context.as_ref() {
+                let callback = build_node_callback(&job, NodeExecutionStatus::Failed, None, Some(e.to_string()), None);
+                manager
                     .dispatcher()
-                    .dispatch_workflow(ExecuteWorkflowJob {
-                        workflow_instance_id: caller.workflow_instance_id.clone(),
-                        tenant_id: job.tenant_id,
-                        event: domain::shared::job::WorkflowEvent::NodeCallback {
-                            node_id: caller.node_id,
-                            child_task_id: job.task_instance_id.clone(),
-                            status: domain::workflow::entity::workflow_definition::NodeExecutionStatus::Failed,
-                            output: None,
-                            error_message: Some(e.to_string()),
-                            input: None,
-                        },
-                    })
-                    .await;
+                    .dispatch_workflow(callback)
+                    .await
+                    .map_err(|dispatch_err| {
+                        error!(
+                            task_instance_id = %job.task_instance_id,
+                            workflow_instance_id = %caller.workflow_instance_id,
+                            error = %dispatch_err,
+                            "failed to dispatch workflow callback"
+                        );
+                        std::io::Error::other(dispatch_err)
+                    })?;
             }
 
-            return Err(std::io::Error::other(e));
+            return Ok(());
         }
     };
-
     // CAS finalize: Running → Completed or Running → Failed
-    let final_status = match exec_result.status {
-        domain::workflow::entity::workflow_definition::NodeExecutionStatus::Success => {
-            let _ = task_svc.complete_instance(&job.task_instance_id).await;
-            domain::shared::workflow::TaskInstanceStatus::Completed
+    match exec_result.status {
+        NodeExecutionStatus::Success => {
+            if let Err(e) = task_svc.complete_with_output(
+                &job.task_instance_id,
+                exec_result.output.clone(),
+                exec_result.input.clone(),
+            ).await {
+                warn!(task_instance_id = %job.task_instance_id, error = %e, "CAS complete_with_output failed");
+            }
         }
         _ => {
-            let _ = task_svc.fail_instance(&job.task_instance_id).await;
-            domain::shared::workflow::TaskInstanceStatus::Failed
+            let error_msg = exec_result.error_message.clone().unwrap_or_default();
+            if let Err(e) = task_svc.fail_with_error(&job.task_instance_id, error_msg).await {
+                warn!(task_instance_id = %job.task_instance_id, error = %e, "CAS fail_with_error failed");
+            }
         }
-    };
-
-    // Write output/error fields (non-status update)
-    if let Ok(mut entity) = task_svc.get_task_instance_entity(job.task_instance_id.clone()).await {
-        entity.output = exec_result.output.clone();
-        entity.input = exec_result.input.clone();
-        entity.error_message = exec_result.error_message.clone();
-        let _ = task_svc.update_task_instance_entity(entity).await;
     }
 
     info!(
         task_instance_id = %job.task_instance_id,
-        status = ?final_status,
+        status = ?exec_result.status,
         "task completed"
     );
 
-    if let Some(caller) = job.caller_context {
+    if let Some(caller) = job.caller_context.as_ref() {
+        let callback = build_node_callback(
+            &job,
+            exec_result.status,
+            exec_result.output,
+            exec_result.error_message,
+            exec_result.input,
+        );
         manager
             .dispatcher()
-            .dispatch_workflow(ExecuteWorkflowJob {
-                workflow_instance_id: caller.workflow_instance_id.clone(),
-                tenant_id: job.tenant_id,
-                event: domain::shared::job::WorkflowEvent::NodeCallback {
-                    node_id: caller.node_id,
-                    child_task_id: job.task_instance_id.clone(),
-                    status: exec_result.status,
-                    output: exec_result.output,
-                    error_message: exec_result.error_message,
-                    input: exec_result.input,
-                },
-            })
+            .dispatch_workflow(callback)
             .await
             .map_err(|e| {
                 error!(
@@ -151,8 +169,7 @@ async fn handle_task_job(
 
     Ok(())
 }
-
-fn create_plugin_manager(
+    fn create_plugin_manager(
     workflow_definition_svc: WorkflowDefinitionService,
     workflow_instance_svc: Arc<WorkflowInstanceService>,
     task_instance_svc: Arc<TaskInstanceService>,
@@ -166,15 +183,27 @@ fn create_plugin_manager(
         .with_task_instance_service(task_instance_svc)
         .with_variable_service(variable_svc);
     manager.register(Box::new(domain::plugin::plugins::http::HttpPlugin::new()));
-    manager.register(Box::new(domain::plugin::plugins::parallel::ParallelPlugin::new()));
-    manager.register(Box::new(domain::plugin::plugins::ifcondition::IfConditionPlugin::new()));
-    manager.register(Box::new(domain::plugin::plugins::contextrewrite::ContextRewritePlugin::new()));
-    manager.register(Box::new(domain::plugin::plugins::forkjoin::ForkJoinPlugin::new()));
-    manager.register(Box::new(domain::plugin::plugins::approval::ApprovalPlugin::new(approval_svc)));
-    manager.register(Box::new(domain::plugin::plugins::subworkflow::SubWorkflowPlugin::new(
-        workflow_definition_svc,
-        (*workflow_instance_svc).clone(),
-    )));
+    manager.register(Box::new(
+        domain::plugin::plugins::parallel::ParallelPlugin::new(),
+    ));
+    manager.register(Box::new(
+        domain::plugin::plugins::ifcondition::IfConditionPlugin::new(),
+    ));
+    manager.register(Box::new(
+        domain::plugin::plugins::contextrewrite::ContextRewritePlugin::new(),
+    ));
+    manager.register(Box::new(
+        domain::plugin::plugins::forkjoin::ForkJoinPlugin::new(),
+    ));
+    manager.register(Box::new(
+        domain::plugin::plugins::approval::ApprovalPlugin::new(approval_svc),
+    ));
+    manager.register(Box::new(
+        domain::plugin::plugins::subworkflow::SubWorkflowPlugin::new(
+            workflow_definition_svc,
+            (*workflow_instance_svc).clone(),
+        ),
+    ));
     manager.register(Box::new(domain::plugin::plugins::pause::PausePlugin::new()));
     manager.register(Box::new(domain::plugin::plugins::llm::LlmPlugin::new()));
     Arc::new(manager)
@@ -216,25 +245,39 @@ async fn main() {
     );
     let workflow_definition_svc = WorkflowDefinitionService::new(workflow_def_repo);
 
-    let task_repo = Arc::new(infrastructure::mongodb::task::task_repository_impl::TaskInstanceRepositoryImpl::new(mongo_client.clone()));
+    let task_repo = Arc::new(
+        infrastructure::mongodb::task::task_repository_impl::TaskInstanceRepositoryImpl::new(
+            mongo_client.clone(),
+        ),
+    );
     let task_svc = Arc::new(TaskInstanceService::new(task_repo));
     let task_manager = create_task_manager(task_svc.clone());
 
     let workflow_repo = Arc::new(
         infrastructure::mongodb::workflow::workflow_repository_impl::WorkflowInstanceRepositoryImpl::new(mongo_client.clone())
     );
-    let workflow_instance_svc = Arc::new(WorkflowInstanceService::new(workflow_repo, task_svc.clone()));
+    let workflow_instance_svc = Arc::new(WorkflowInstanceService::new(
+        workflow_repo,
+        task_svc.clone(),
+    ));
 
     let variable_repo = Arc::new(
-        infrastructure::mongodb::variable::variable_repository_impl::VariableRepositoryImpl::new(mongo_client.clone())
+        infrastructure::mongodb::variable::variable_repository_impl::VariableRepositoryImpl::new(
+            mongo_client.clone(),
+        ),
     );
-    let variable_svc = VariableService::new(variable_repo, config.security.variable_encrypt_key.clone());
+    let variable_svc =
+        VariableService::new(variable_repo, config.security.variable_encrypt_key.clone());
 
     let role_repo = Arc::new(
-        infrastructure::mongodb::user::user_repository_impl::UserTenantRoleRepositoryImpl::new(mongo_client.clone())
+        infrastructure::mongodb::user::user_repository_impl::UserTenantRoleRepositoryImpl::new(
+            mongo_client.clone(),
+        ),
     );
     let approval_repo = Arc::new(
-        infrastructure::mongodb::approval::approval_repository_impl::ApprovalRepositoryImpl::new(mongo_client.clone())
+        infrastructure::mongodb::approval::approval_repository_impl::ApprovalRepositoryImpl::new(
+            mongo_client.clone(),
+        ),
     );
     let approval_svc = ApprovalService::new(approval_repo, role_repo);
 
@@ -277,9 +320,8 @@ async fn main() {
         );
         let interval_secs = config.sweeper.interval_secs;
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(
-                tokio::time::Duration::from_secs(interval_secs),
-            );
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
             interval.tick().await; // skip first immediate tick
             loop {
                 interval.tick().await;

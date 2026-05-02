@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use common::pagination::PaginatedData;
 use crate::shared::workflow::TaskInstanceStatus;
 use crate::task::entity::query::TaskInstanceQuery;
-use crate::task::entity::task_definition::{TaskEntity, TaskInstanceEntity};
+use crate::task::entity::task_definition::{TaskEntity, TaskInstanceEntity, TaskTransitionFields};
 use std::error::Error;
 
 pub type RepositoryError = Box<dyn Error + Send + Sync>;
@@ -26,11 +26,14 @@ pub trait TaskInstanceEntityRepository: Send + Sync {
     async fn list_task_instance_entities(&self, query: &TaskInstanceQuery) -> Result<PaginatedData<TaskInstanceEntity>, RepositoryError>;
     async fn update_task_instance_entity(&self, task_instance_entity: TaskInstanceEntity) -> Result<TaskInstanceEntity, RepositoryError>;
 
-    /// CAS-style atomic status transition.
-    async fn transfer_status(
+    /// CAS-style atomic status transition with optional extra fields set in the same operation.
+    /// `fields` carries Optional fields (output, input, error_message) to be $set alongside
+    /// the status change; None values are simply omitted from the update (not unset).
+    async fn transfer_status_with_fields(
         &self,
         task_instance_id: &str,
         from_status: &TaskInstanceStatus,
         to_status: &TaskInstanceStatus,
+        fields: TaskTransitionFields,
     ) -> Result<TaskInstanceEntity, RepositoryError>;
 }

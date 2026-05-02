@@ -1636,6 +1636,7 @@ dependencies = [
  "futures",
  "mongodb",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]
