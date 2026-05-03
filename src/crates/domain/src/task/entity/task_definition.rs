@@ -271,6 +271,7 @@ pub struct TaskTransitionFields {
     pub output: Option<JsonValue>,
     pub input: Option<JsonValue>,
     pub error_message: Option<String>,
+    pub execution_duration: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

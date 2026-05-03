@@ -11,6 +11,7 @@ use domain::workflow::entity::workflow_definition::NodeExecutionStatus;
 use domain::workflow::service::{WorkflowDefinitionService, WorkflowInstanceService};
 use infrastructure::queue::consumer;
 use infrastructure::queue::dispatcher::ApalisDispatcher;
+use tokio::time::Instant;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 use workflow::config::AppConfig;
@@ -75,7 +76,6 @@ async fn handle_task_job(
     let task_manager = &ctx.1;
     let task_svc = task_manager.task_instance_svc();
     info!(task_instance_id = %job.task_instance_id, "processing task job");
-
     let task_instance_entity = match task_svc.submit_instance(&job.task_instance_id).await {
         Ok(inst) => inst,
         Err(e) => {
@@ -84,6 +84,7 @@ async fn handle_task_job(
             return Ok(());
         }
     };
+    let start = Instant::now(); // 记录开始时间
 
     let exec_result = match task_manager.execute_task(&task_instance_entity).await {
         Ok(r) => r,
@@ -95,7 +96,7 @@ async fn handle_task_job(
                 "task execution failed"
             );
             // CAS: running -> failed
-            if let Err(cas_err) = task_svc.fail_with_error(&job.task_instance_id, e.to_string()).await {
+            if let Err(cas_err) = task_svc.fail_with_error(&job.task_instance_id, e.to_string(), Some(start.elapsed().as_millis() as u64)).await {
                 warn!(task_instance_id = %job.task_instance_id, error = %cas_err, "CAS fail_with_error failed (may already be terminal)");
             }
 
@@ -119,6 +120,7 @@ async fn handle_task_job(
             return Ok(());
         }
     };
+    let execution_duration = start.elapsed().as_millis() as u64;
     // CAS finalize: Running → Completed or Running → Failed
     match exec_result.status {
         NodeExecutionStatus::Success => {
@@ -126,13 +128,14 @@ async fn handle_task_job(
                 &job.task_instance_id,
                 exec_result.output.clone(),
                 exec_result.input.clone(),
+                Some(execution_duration),
             ).await {
                 warn!(task_instance_id = %job.task_instance_id, error = %e, "CAS complete_with_output failed");
             }
         }
         _ => {
             let error_msg = exec_result.error_message.clone().unwrap_or_default();
-            if let Err(e) = task_svc.fail_with_error(&job.task_instance_id, error_msg).await {
+            if let Err(e) = task_svc.fail_with_error(&job.task_instance_id, error_msg, Some(execution_duration)).await {
                 warn!(task_instance_id = %job.task_instance_id, error = %e, "CAS fail_with_error failed");
             }
         }

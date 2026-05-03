@@ -195,6 +195,7 @@ impl TaskInstanceService {
         task_instance_id: &str,
         output: Option<serde_json::Value>,
         input: Option<serde_json::Value>,
+        execution_duration: Option<u64>,
     ) -> Result<TaskInstanceEntity, RepositoryError> {
         self.transfer_status_with_fields(
             task_instance_id,
@@ -204,6 +205,7 @@ impl TaskInstanceService {
                 output,
                 input,
                 error_message: None,
+                execution_duration,
             },
         ).await
     }
@@ -213,6 +215,7 @@ impl TaskInstanceService {
         &self,
         task_instance_id: &str,
         error_message: String,
+        execution_duration: Option<u64>,
     ) -> Result<TaskInstanceEntity, RepositoryError> {
         self.transfer_status_with_fields(
             task_instance_id,
@@ -222,6 +225,7 @@ impl TaskInstanceService {
                 output: None,
                 input: None,
                 error_message: Some(error_message),
+                execution_duration,
             },
         ).await
     }

@@ -189,6 +189,9 @@ impl TaskInstanceEntityRepository for TaskInstanceRepositoryImpl {
         if let Some(ref err) = fields.error_message {
             set_fields.insert("error_message", err);
         }
+        if let Some(execution_duration) = fields.execution_duration {
+            set_fields.insert("execution_duration", execution_duration as i64);
+        }
         let update = doc! { "$set": set_fields };
 
         let result = self
