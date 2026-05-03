@@ -104,7 +104,7 @@ async function handleExecute() {
   if (!entity.value) return
   operating.value = true
   try {
-    await taskInstanceApi.execute(entity.value.id)
+    await taskInstanceApi.execute(entity.value.task_instance_id)
     Notification.success({ content: '已提交执行' })
     startPolling()
     await fetchDetail()
@@ -115,7 +115,7 @@ async function handleRetry() {
   if (!entity.value) return
   operating.value = true
   try {
-    await taskInstanceApi.retry(entity.value.id)
+    await taskInstanceApi.retry(entity.value.task_instance_id)
     Notification.success({ content: '已提交重试' })
     startPolling()
     await fetchDetail()
@@ -126,7 +126,7 @@ async function handleCancel() {
   if (!entity.value) return
   operating.value = true
   try {
-    await taskInstanceApi.cancel(entity.value.id)
+    await taskInstanceApi.cancel(entity.value.task_instance_id)
     Notification.success({ content: '已取消' })
     await fetchDetail()
   } catch {} finally { operating.value = false }

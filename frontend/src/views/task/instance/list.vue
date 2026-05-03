@@ -42,10 +42,10 @@
         <template #created_at="{ record }">{{ formatDate(record.created_at) }}</template>
         <template #action="{ record }">
           <a-space>
-            <a-button type="text" size="small" @click="$router.push(`/tasks/instances/${record.id}`)">详情</a-button>
-            <a-button v-if="record.task_status === 'Pending' && canExecute" type="text" size="small" status="success" @click="handleExecute(record.id)">执行</a-button>
-            <a-button v-if="record.task_status === 'Failed' && canExecute" type="text" size="small" @click="handleRetry(record.id)">重试</a-button>
-            <a-button v-if="['Pending','Failed'].includes(record.task_status) && canExecute" type="text" size="small" status="danger" @click="handleCancel(record.id)">取消</a-button>
+            <a-button type="text" size="small" @click="$router.push(`/tasks/instances/${record.task_instance_id}`)">详情</a-button>
+            <a-button v-if="record.task_status === 'Pending' && canExecute" type="text" size="small" status="success" @click="handleExecute(record.task_instance_id)">执行</a-button>
+            <a-button v-if="record.task_status === 'Failed' && canExecute" type="text" size="small" @click="handleRetry(record.task_instance_id)">重试</a-button>
+            <a-button v-if="['Pending','Failed'].includes(record.task_status) && canExecute" type="text" size="small" status="danger" @click="handleCancel(record.task_instance_id)">取消</a-button>
           </a-space>
         </template>
       </a-table>

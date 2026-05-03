@@ -358,7 +358,7 @@
             <template #duration="{ record }">{{ formatDuration(record.execution_duration) }}</template>
             <template #created_at="{ record }">{{ formatDate(record.created_at) }}</template>
             <template #action="{ record }">
-              <a-button type="text" size="small" @click="$router.push(`/tasks/instances/${record.id}`)">详情</a-button>
+              <a-button type="text" size="small" @click="$router.push(`/tasks/instances/${record.task_instance_id}`)">详情</a-button>
             </template>
           </a-table>
         </a-card>
@@ -412,7 +412,7 @@
               </a-descriptions-item>
             </a-descriptions>
             <a-space style="margin-top: 12px">
-              <a-button type="text" @click="$router.push(`/tasks/instances/${execResultInstance.id}`)">查看详情</a-button>
+              <a-button type="text" @click="$router.push(`/tasks/instances/${execResultInstance.task_instance_id}`)">查看详情</a-button>
             </a-space>
           </template>
         </a-card>
@@ -753,7 +753,7 @@ async function handleCreateAndExecute() {
   try {
     const context = buildExecContext()
     const createRes = await taskInstanceApi.create({ task_id: taskId.value, context })
-    const instanceId = createRes.data.id
+    const instanceId = createRes.data.task_instance_id
     await taskInstanceApi.execute(instanceId)
     execResultInstance.value = createRes.data
     Notification.success({ content: '已创建并提交执行' })
